@@ -175,6 +175,23 @@ class Backend(ABC):
         Return elements chosen from `x` or `y` depending on `condition`.
         """
 
+    @abstractmethod
+    def unique(self, x: Any) -> Any:
+        """
+        Return the unique elements of the input array `x`.
+        """
+    
+    @abstractmethod
+    def any(self, x: Any) -> bool:
+        """
+        Return True if any element of `x` is True (non-zero).
+        """
+    
+    @abstractmethod
+    def clamp(self, x: Any, min_value: float, max_value: float) -> Any:
+        """
+        Clamp all elements in `x` to be within the range [min_value, max_value].
+        """
     # ---------------------------------------------------------
     # Fourier transforms
     # ---------------------------------------------------------
@@ -300,6 +317,16 @@ class Backend(ABC):
     def mod(self, x, y): 
         """
         Compute the element-wise modulus of `x` by `y`.
+
+        Requirements
+        ------------
+        - Must preserve device and dtype.
+        """
+
+    @abstractmethod
+    def sigmoid(self, x: Any) -> Any:
+        """
+        Compute the element-wise sigmoid function of `x`.
 
         Requirements
         ------------
@@ -608,10 +635,36 @@ class TorchBackend(Backend):
         self.validate(y)
         return torch.where(condition, x, y)
     
+    def unique(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Return the unique elements of the input tensor `x`.
+        """
+        self.validate(x)
+        return torch.unique(x)
+    
+    def any(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Return True if any element of `x` is True (non-zero).
+        """
+        # condition must be boolean
+        if not isinstance(x, torch.Tensor):
+            raise TypeError("x must be a torch.Tensor")
+
+        if x.dtype != torch.bool:
+            raise TypeError(f"x must have dtype torch.bool, got {x.dtype}")
+        
+        return torch.any(x)
+    
+    def clamp(self, x: torch.Tensor, min_value: float, max_value: float) -> torch.Tensor:
+        """
+        Clamp all elements in `x` to be within the range [min_value, max_value].
+        """
+        self.validate(x)
+        return torch.clamp(x, min=min_value, max=max_value)
     # -------------------------------------------------------------------------
     # FFT Operations
     # -------------------------------------------------------------------------
-    def fft2(self, x: torch.Tensor) -> torch.Tensor:
+    def fft2(self, x: torch.Tensor, dim: tuple[int, int] = (-2, -1)) -> torch.Tensor:
         """
         Compute a 2D FFT using torch.fft.
 
@@ -619,6 +672,8 @@ class TorchBackend(Backend):
         ----------
         x : torch.Tensor
             Input array (..., Nx, Ny). Must be on this backend's device.
+        dim : tuple of int
+            Dimensions over which to compute the FFT.
 
         Returns
         -------
@@ -632,9 +687,9 @@ class TorchBackend(Backend):
         - Input may be real or complex; output is always complex.
         """
         self.validate(x)
-        return torch.fft.fft2(x)
+        return torch.fft.fft2(x, dim=dim)
 
-    def ifft2(self, x: torch.Tensor) -> torch.Tensor:
+    def ifft2(self, x: torch.Tensor, dim: tuple[int, int] = (-2, -1)) -> torch.Tensor:
         """
         Compute a 2D inverse FFT using torch.fft.
 
@@ -642,6 +697,8 @@ class TorchBackend(Backend):
         ----------
         x : torch.Tensor
             Input array in Fourier domain.
+        dim : tuple of int
+            Dimensions over which to compute the inverse FFT.
 
         Returns
         -------
@@ -653,21 +710,21 @@ class TorchBackend(Backend):
         - Uses PyTorch's default normalization convention ("backward").
         """
         self.validate(x)
-        return torch.fft.ifft2(x)
+        return torch.fft.ifft2(x, dim=dim)
 
-    def fftshift(self, x: torch.Tensor) -> torch.Tensor:    
+    def fftshift(self, x: torch.Tensor, dim: tuple[int, int] = (-2, -1)) -> torch.Tensor:    
         """
         Shift the zero-frequency component to the center of the spectrum.
         """
         self.validate(x)
-        return torch.fft.fftshift(x)
+        return torch.fft.fftshift(x, dim=dim)
     
-    def ifftshift(self, x: torch.Tensor) -> torch.Tensor:
+    def ifftshift(self, x: torch.Tensor, dim: tuple[int, int] = (-2, -1)) -> torch.Tensor:
         """
         Inverse of fftshift: shift the center back to the original position.
         """
         self.validate(x)
-        return torch.fft.ifftshift(x)
+        return torch.fft.ifftshift(x, dim=dim)
     # -------------------------------------------------------------------------
     # Linear Algebra
     # -------------------------------------------------------------------------
@@ -832,6 +889,27 @@ class TorchBackend(Backend):
         self.validate(x)
         self.validate(y)
         return torch.remainder(x, y)
+    
+    def sigmoid(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Compute the element-wise sigmoid function of `x`.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor.
+
+        Returns
+        -------
+        torch.Tensor
+            Element-wise sigmoid of x.
+
+        Notes
+        -----
+        - Uses torch.sigmoid which is differentiable.
+        """
+        self.validate(x)
+        return torch.sigmoid(x)
     # -------------------------------------------------------------------------
     # Optional JIT Compilation
     # -------------------------------------------------------------------------
