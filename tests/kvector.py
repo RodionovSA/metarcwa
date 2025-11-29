@@ -35,46 +35,71 @@ def test_k0xy_oblique_phi_zero():
 def test_k0xy_reduced_independent_of_lambda():
     backend = TorchBackend(device="cpu", dtype=torch.float32, use_compile=False)
 
-    wavelengths = backend.asarray(torch.tensor([0.5, 0.8, 1.0]), complex=False)
-    theta = torch.tensor(0.7)
-    phi = torch.tensor(1.1)
-    n_inc = backend.asarray(torch.ones_like(wavelengths) * 1.5, complex=False)
+    # 3 wavelengths, scalar theta, scalar phi, n_inc per-wavelength
+    wavelengths = backend.asarray(torch.tensor([0.5, 0.8, 1.0]), complex=False)  # [Nw]
+    theta       = backend.asarray(torch.tensor(0.7), complex=False)              # scalar
+    phi         = backend.asarray(torch.tensor(1.1), complex=False)              # scalar
+    n_inc       = backend.asarray(torch.ones_like(wavelengths) * 1.5,
+                                  complex=False)                                  # [Nw]
 
-    k0x, k0y = compute_k0xy(backend, wavelengths, theta, phi, n_inc=n_inc, reduced=True)
+    k0x, k0y = compute_k0xy(
+        backend,
+        wavelengths=wavelengths,
+        theta=theta,
+        phi=phi,
+        n_inc=n_inc,
+        reduced=True,
+    )
 
-    sin_th = torch.sin(theta)
-    cos_ph = torch.cos(phi)
-    sin_ph = torch.sin(phi)
+    # With new broadcasting rules and scalar theta/phi:
+    # shapes must be [Nw, 1, 1]
+    Nw = wavelengths.shape[0]
+    assert k0x.shape == (Nw, 1, 1)
+    assert k0y.shape == (Nw, 1, 1)
 
-    expected_k0x = n_inc * sin_th * cos_ph
-    expected_k0y = n_inc * sin_th * sin_ph
+    # Manual expected value: reduced → no 2π/λ, only direction cosines * n_inc
+    sin_th = torch.sin(theta)      # scalar
+    cos_ph = torch.cos(phi)        # scalar
+    sin_ph = torch.sin(phi)        # scalar
 
-    # Broadcasting: expected is scalar, k0x has shape (n_lambda,)
-    assert torch.allclose(k0x, expected_k0x.expand_as(k0x), atol=1e-6)
-    assert torch.allclose(k0y, expected_k0y.expand_as(k0y), atol=1e-6)
+    # n_inc is [Nw], so these are [Nw]
+    expected_k0x = n_inc * sin_th * cos_ph   # [Nw]
+    expected_k0y = n_inc * sin_th * sin_ph   # [Nw]
+
+    # Match the new [Nw,1,1] output shape
+    expected_k0x = expected_k0x.view(Nw, 1, 1)
+    expected_k0y = expected_k0y.view(Nw, 1, 1)
+
+    assert torch.allclose(k0x, expected_k0x, atol=1e-6)
+    assert torch.allclose(k0y, expected_k0y, atol=1e-6)
     
 def test_k0xy_broadcast_theta_phi():
     backend = TorchBackend(device="cpu", dtype=torch.float32, use_compile=False)
 
-    # 3 wavelengths, 1 theta, 1 phi
-    wavelengths = backend.asarray(torch.tensor([0.5, 0.6, 0.7]), complex=False)
-    theta = backend.asarray(torch.tensor(0.3), complex=False)
-    phi = backend.asarray(torch.tensor(0.9), complex=False)
-    n_inc = backend.asarray(torch.tensor(2.5), complex=False)
+    # 3 wavelengths, scalar theta, scalar phi
+    wavelengths = backend.asarray(torch.tensor([0.5, 0.6, 0.7]), complex=False)  # [Nw]
+    theta       = backend.asarray(torch.tensor(0.3), complex=False)               # scalar
+    phi         = backend.asarray(torch.tensor(0.9), complex=False)               # scalar
+    n_inc       = backend.asarray(torch.tensor(2.5), complex=False)               # scalar
 
     k0x, k0y = compute_k0xy(backend, wavelengths, theta, phi, n_inc=n_inc)
 
-    # Manually compute for each wavelength
-    k0 = 2.0 * torch.pi / wavelengths
-    sin_th = torch.sin(theta)
-    cos_ph = torch.cos(phi)
-    sin_ph = torch.sin(phi)
+    # Shapes should be [Nw, 1, 1]
+    assert k0x.shape == (wavelengths.shape[0], 1, 1)
+    assert k0y.shape == (wavelengths.shape[0], 1, 1)
 
-    expected_k0x = k0 * n_inc * sin_th * cos_ph
-    expected_k0y = k0 * n_inc * sin_th * sin_ph
+    # Manually compute expected values per wavelength (1D), then reshape to [Nw,1,1]
+    k0     = 2.0 * torch.pi / wavelengths        # [Nw]
+    sin_th = torch.sin(theta)                    # scalar
+    cos_ph = torch.cos(phi)                      # scalar
+    sin_ph = torch.sin(phi)                      # scalar
 
-    assert k0x.shape == wavelengths.shape
-    assert k0y.shape == wavelengths.shape
+    expected_k0x = k0 * n_inc * sin_th * cos_ph  # [Nw]
+    expected_k0y = k0 * n_inc * sin_th * sin_ph  # [Nw]
+
+    expected_k0x = expected_k0x.view(-1, 1, 1)   # [Nw,1,1]
+    expected_k0y = expected_k0y.view(-1, 1, 1)   # [Nw,1,1]
+
     assert torch.allclose(k0x, expected_k0x, atol=1e-6)
     assert torch.allclose(k0y, expected_k0y, atol=1e-6)
     
@@ -112,9 +137,9 @@ def make_backend():
 def test_Kxy_shape_single_wavelength():
     backend = make_backend()
 
-    # Single wavelength, kx0=ky0=0 (normal incidence in air)
-    kx0 = torch.tensor([0.0])
-    ky0 = torch.tensor([0.0])
+    # Single wavelength, kx0=ky0=0 (normal incidence)
+    kx0 = backend.reshape(backend.asarray(torch.tensor([0.0]), complex=False), (1, 1, 1))  # shape [1, 1, 1]
+    ky0 = backend.reshape(backend.asarray(torch.tensor([0.0]), complex=False), (1, 1, 1))  # shape [1, 1, 1]
 
     Lx = 0.5
     Ly = 0.5
@@ -123,8 +148,12 @@ def test_Kxy_shape_single_wavelength():
 
     Kx, Ky = compute_Kxy(backend, kx0, ky0, Lx, Ly, M, N)
 
-    assert Kx.shape == (1, 2 * M + 1, 2 * N + 1)
-    assert Ky.shape == (1, 2 * M + 1, 2 * N + 1)
+    # Expected output: (*batch_shape, 2M+1, 2N+1)
+    # batch_shape = (1,) → (1, 1, 1, 5, 5)
+    expected_shape = (1, 1, 1, 2 * M + 1, 2 * N + 1)
+
+    assert Kx.shape == expected_shape, f"Kx.shape={Kx.shape}, expected={expected_shape}"
+    assert Ky.shape == expected_shape, f"Ky.shape={Ky.shape}, expected={expected_shape}"
 
 
 def test_Kxy_values_normal_incidence_unit_period():
@@ -133,13 +162,20 @@ def test_Kxy_values_normal_incidence_unit_period():
 
     m ∈ {-1,0,1}, n ∈ {-1,0,1}
 
-    Kx[0, :, :] = [ -2π, 0, 2π ] along axis-1, constant along axis-2
-    Ky[0, :, :] = [ -2π, 0, 2π ] along axis-2, constant along axis-1
+    Kx[..., m, n]: varies along m, constant along n
+    Ky[..., m, n]: varies along n, constant along m
     """
     backend = make_backend()
 
-    kx0 = torch.tensor([0.0])
-    ky0 = torch.tensor([0.0])
+    # Single wavelength, single theta, single phi → (Nw,Nt,Np) = (1,1,1)
+    kx0 = backend.reshape(
+        backend.asarray(torch.tensor([0.0]), complex=False),
+        (1, 1, 1),
+    )
+    ky0 = backend.reshape(
+        backend.asarray(torch.tensor([0.0]), complex=False),
+        (1, 1, 1),
+    )
 
     Lx = 1.0
     Ly = 1.0
@@ -148,15 +184,19 @@ def test_Kxy_values_normal_incidence_unit_period():
 
     Kx, Ky = compute_Kxy(backend, kx0, ky0, Lx, Ly, M, N)
 
-    # Extract batch 0
-    Kx0 = Kx[0]  # shape (3, 3)
-    Ky0 = Ky[0]  # shape (3, 3)
+    # Shapes should be (Nw,Nt,Np, 2M+1, 2N+1) = (1,1,1,3,3)
+    assert Kx.shape == (1, 1, 1, 2 * M + 1, 2 * N + 1)
+    assert Ky.shape == (1, 1, 1, 2 * M + 1, 2 * N + 1)
+
+    # Extract the only (wavelength, theta, phi) combination → (3,3)
+    Kx0 = Kx[0, 0, 0]  # (3,3)
+    Ky0 = Ky[0, 0, 0]  # (3,3)
 
     m_vals = torch.tensor([-1.0, 0.0, 1.0], dtype=Kx0.dtype, device=Kx0.device)
     n_vals = torch.tensor([-1.0, 0.0, 1.0], dtype=Ky0.dtype, device=Ky0.device)
 
-    expected_Kx_line = 2.0 * torch.pi * m_vals  # shape (3,)
-    expected_Ky_line = 2.0 * torch.pi * n_vals  # shape (3,)
+    expected_Kx_line = 2.0 * torch.pi * m_vals  # (3,)
+    expected_Ky_line = 2.0 * torch.pi * n_vals  # (3,)
 
     # Kx should be constant along n, varying along m
     assert torch.allclose(Kx0[:, 0], expected_Kx_line, atol=1e-6)
@@ -171,13 +211,19 @@ def test_Kxy_values_normal_incidence_unit_period():
 
 def test_Kxy_batch_two_wavelengths():
     """
-    Two different kx0 values should shift the entire Kx grid for each batch.
+    Two different kx0 values should shift the entire Kx grid for each wavelength.
     """
     backend = make_backend()
 
-    # Two wavelengths → two different base kx0; ky0 stays zero
-    kx0 = torch.tensor([0.1, 0.3])
-    ky0 = torch.tensor([0.0, 0.0])
+    # Two wavelengths → shape (Nw,Nt,Np) = (2,1,1)
+    kx0 = backend.reshape(
+        backend.asarray(torch.tensor([0.1, 0.3]), complex=False),
+        (2, 1, 1),
+    )
+    ky0 = backend.reshape(
+        backend.asarray(torch.tensor([0.0, 0.0]), complex=False),
+        (2, 1, 1),
+    )
 
     Lx = 1.0
     Ly = 1.0
@@ -186,19 +232,23 @@ def test_Kxy_batch_two_wavelengths():
 
     Kx, Ky = compute_Kxy(backend, kx0, ky0, Lx, Ly, M, N)
 
-    assert Kx.shape == (2, 3, 3)
-    assert Ky.shape == (2, 3, 3)
+    # (Nw, Nt, Np, 2M+1, 2N+1) = (2,1,1,3,3)
+    assert Kx.shape == (2, 1, 1, 2 * M + 1, 2 * N + 1)
+    assert Ky.shape == (2, 1, 1, 2 * M + 1, 2 * N + 1)
 
-    # For each batch b, the whole grid should be shifted by kx0[b]
-    # relative to the symmetric base [-2π,0,2π].
+    # For each wavelength b, the whole grid should be shifted by kx0[b,0,0]
+    # relative to the symmetric base [-2π, 0, 2π].
     m_vals = torch.tensor([-1.0, 0.0, 1.0], dtype=Kx.dtype, device=Kx.device)
     base_line = 2.0 * torch.pi * m_vals  # (3,)
 
     for b in range(2):
-        Kx_b = Kx[b]  # (3,3)
-        expected_line = base_line + kx0[b]
+        # Extract the (Nt=0, Np=0) slice → shape (3,3)
+        Kx_b = Kx[b, 0, 0]  # (3,3)
+        kx0_b = kx0[b, 0, 0]
 
-        # check first column; all columns must match this along axis-2
+        expected_line = base_line + kx0_b  # (3,)
+
+        # Kx should be constant along n, shifted along m
         assert torch.allclose(Kx_b[:, 0], expected_line, atol=1e-6)
         assert torch.allclose(Kx_b[:, 1], expected_line, atol=1e-6)
         assert torch.allclose(Kx_b[:, 2], expected_line, atol=1e-6)
@@ -211,8 +261,15 @@ def test_Kxy_spacing_matches_2pi_over_L():
     """
     backend = make_backend()
 
-    kx0 = torch.tensor([0.0])
-    ky0 = torch.tensor([0.0])
+    # Single (wavelength, theta, phi) → (Nw,Nt,Np) = (1,1,1)
+    kx0 = backend.reshape(
+        backend.asarray(torch.tensor([0.0]), complex=False),
+        (1, 1, 1),
+    )
+    ky0 = backend.reshape(
+        backend.asarray(torch.tensor([0.0]), complex=False),
+        (1, 1, 1),
+    )
 
     Lx = 0.5
     Ly = 0.25
@@ -221,8 +278,13 @@ def test_Kxy_spacing_matches_2pi_over_L():
 
     Kx, Ky = compute_Kxy(backend, kx0, ky0, Lx, Ly, M, N)
 
-    Kx0 = Kx[0]  # (2M+1, 2N+1)
-    Ky0 = Ky[0]  # (2M+1, 2N+1)
+    # Shape must be (1,1,1, 2M+1, 2N+1)
+    assert Kx.shape == (1, 1, 1, 2 * M + 1, 2 * N + 1)
+    assert Ky.shape == (1, 1, 1, 2 * M + 1, 2 * N + 1)
+
+    # Extract the only (wavelength, theta, phi) slice → (2M+1, 2N+1)
+    Kx0 = Kx[0, 0, 0]  # (2M+1, 2N+1)
+    Ky0 = Ky[0, 0, 0]  # (2M+1, 2N+1)
 
     # Difference along m (axis 0) should be constant 2π/Lx
     delta_Kx = Kx0[1:, 0] - Kx0[:-1, 0]  # shape (2M,)

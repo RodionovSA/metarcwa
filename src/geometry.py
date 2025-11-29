@@ -12,7 +12,7 @@ class Canvas:
         Parameters
         ----------
         period : tuple of float
-            (Lx, Ly) period of the unit cell.
+            (Lx, Ly) period of the unit cell. Length units.
         grid : tuple of int
             (Nx, Ny) grid size for sampling the material functions.
         '''
@@ -36,7 +36,7 @@ class Canvas:
         Parameters
         ----------
         period : tuple of float
-            (Lx, Ly) period of the unit cell.
+            (Lx, Ly) period of the unit cell. Length units.
         grid : tuple of int
             (Nx, Ny) grid size for sampling the material functions.
         '''
@@ -75,7 +75,7 @@ class VectorObject:
             Canvas object defining the simulation domain.
         center : tuple of float
             (x,y) coordinates of the object's center (in the range [-Lx/2, Lx/2] x [-Ly/2, Ly/2]).
-            If center is outside this range, it will be wrapped into the principal cell.
+            Length units. If center is outside this range, it will be wrapped into the principal cell.
         epsilon : Any
             Electric permittivity.
         mu : Any
@@ -433,9 +433,9 @@ class Rectangle(VectorObject):
             Canvas object defining the simulation domain.
         center : tuple of float
             (x,y) coordinates of the object's center (in the range [-Lx/2, Lx/2] x [-Ly/2, Ly/2]).
-            If center is outside this range, it will be wrapped into the principal cell.
+            Length units. If center is outside this range, it will be wrapped into the principal cell.
         size : tuple of float
-            (width, height) of the rectangle.
+            (width, height) of the rectangle. Length units.
         epsilon : Any
             Electric permittivity.
         mu : Any
