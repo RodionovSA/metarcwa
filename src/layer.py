@@ -1,4 +1,4 @@
-from typing import Union, List, Tuple, Any
+from typing import Union, Any
 from src.geometry import VectorObject, Bitmap, VectorGroup
 from src.compute import fft_matfunc
 from src.material import BaseMaterial
@@ -95,7 +95,7 @@ class Layer:
         Parameters
         ----------
         M, N : int
-            Number of harmonics along x and y.
+            Harmonics orders along x and y.
         use_closed_form : bool, optional
             Whether to use closed-form expressions for Fourier coefficients. Default is True.
             Works only if objects is VectorObject or VectorGroup.
@@ -135,7 +135,7 @@ class Layer:
         Parameters
         ----------
         M, N : int
-            Number of harmonics along x and y.
+            Harmonics orders along x and y.
         use_closed_form : bool, optional
             Whether to use closed-form expressions for Fourier coefficients. Default is True.
             Works only if objects is VectorObject or VectorGroup.

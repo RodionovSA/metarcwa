@@ -140,8 +140,8 @@ class VectorObject:
         
         self._center = VectorObject._wrap_center(self.backend, 
                                            value[0], value[1], 
-                                           self.canvas.period[0], 
-                                           self.canvas.period[1])
+                                           self.lattice.period[0], 
+                                           self.lattice.period[1])
         self._center = self.backend.asarray(self._center, complex=False)
 
     @property
@@ -555,7 +555,7 @@ class Rectangle(VectorObject):
                         matval: complex,
                         matbg: complex):
         """
-        Analytic Fourier coefficients matfunc_{m,n} for a single rectangle
+        Closed-form Fourier coefficients matfunc_{m,n} for a single rectangle
         in a periodic cell.
 
         Uses the standard formula:
@@ -706,9 +706,6 @@ class Bitmap:
         self._backend = backend
         self._bitmap = bitmap_new  # (Nx, Ny), real, values ∈ {0,1}
         self._material = material
-        
-        # Setup lattice
-        lattice._grid = self._bitmap.shape  # enforce grid from bitmap shape
         self._lattice = lattice
     
     """ Simulation properties """
@@ -839,6 +836,8 @@ class Bitmap:
         shape = bm.shape
         if len(shape) != 2:
             raise ValueError(f"bitmap must be 2D, got shape {shape}")
+        if shape != lattice.grid:
+            raise ValueError(f"bitmap shape {shape} does not match lattice grid {lattice.grid}")
         
         # --- Validate that the bitmap only contains 0/1 ---
         # Compute unique values using backend (works for torch/numpy/jax)
