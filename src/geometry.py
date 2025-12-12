@@ -1,10 +1,11 @@
 from typing import Tuple, Any
 
 from src.backend import Backend
+from src.material import BaseMaterial
 
-class Canvas:
+class Lattice:
     """
-    Canvas base class for geometric objects.
+    Lattice base class for geometric objects.
     """
     def __init__(self, period: Tuple[float, float],
                  grid: Tuple[int, int]):
@@ -12,11 +13,11 @@ class Canvas:
         Parameters
         ----------
         period : tuple of float
-            (Lx, Ly) period of the unit cell. Length units.
+            (Lx, Ly) period of the lattice. Length units.
         grid : tuple of int
             (Nx, Ny) grid size for sampling the material functions.
         '''
-        Canvas._init_validation(period, grid)
+        Lattice._init_validation(period, grid)
         
         self._period = period
         self._grid = grid
@@ -59,10 +60,9 @@ class VectorObject:
     """
     def __init__(self,
                  backend: Backend,
-                 canvas: Canvas,
+                 lattice: Lattice,
                  center: Tuple[float, float], 
-                 epsilon: Any,
-                 mu: Any = 1.0,
+                 material: BaseMaterial,
                  angle: float = 0.0,
                  soft_mask: bool = False,
                  smoothness: float = 0.05):
@@ -71,15 +71,13 @@ class VectorObject:
         ----------
         backend : Backend
             Computational backend.
-        canvas : Canvas
-            Canvas object defining the simulation domain.
+        lattice : Lattice
+            Lattice object defining the simulation domain.
         center : tuple of float
             (x,y) coordinates of the object's center (in the range [-Lx/2, Lx/2] x [-Ly/2, Ly/2]).
             Length units. If center is outside this range, it will be wrapped into the principal cell.
-        epsilon : Any
-            Electric permittivity.
-        mu : Any
-            Magnetic permeability. Default is 1.0.
+        material : BaseMaterial
+            Material object defining the electromagnetic properties.
         angle : float
             Rotation angle in radians.
         soft_mask : bool
@@ -90,30 +88,27 @@ class VectorObject:
         smoothness : float
             Smoothness parameter for sigmoid. Default is 0.05.
         '''
-        mu_t = VectorObject._init_validation(backend, 
-                                       canvas, 
-                                       center, 
-                                       angle, 
-                                       epsilon, 
-                                       mu,
-                                       soft_mask,
-                                       smoothness)
+        VectorObject._init_validation(backend, 
+                                    lattice, 
+                                    center, 
+                                    angle, 
+                                    material,
+                                    soft_mask,
+                                    smoothness)
         
         self._backend = backend
-        self._canvas = canvas
+        self._lattice = lattice
+        self._material = material
         
         self._center = VectorObject._wrap_center(backend,
                                            center[0], center[1], 
-                                           self.canvas.period[0], 
-                                           self.canvas.period[1])
-        self._angle = backend.asarray(angle, complex=False)
+                                           self.lattice.period[0], 
+                                           self.lattice.period[1])
+        self._angle = self.backend.asarray(angle, complex=False)
 
         # Differentiability settings
         self._soft_mask = soft_mask
         self._smoothness = smoothness
-        
-        self._epsilon = backend.asarray(epsilon, complex=True)
-        self._mu = mu_t
 
     """ Simulation properties """
     @property
@@ -121,8 +116,8 @@ class VectorObject:
         return self._backend
 
     @property
-    def canvas(self) -> Canvas:
-        return self._canvas
+    def lattice(self) -> Lattice:
+        return self._lattice
 
     """ Autograd properties """
     @property
@@ -155,242 +150,222 @@ class VectorObject:
     
     @angle.setter
     def angle(self, value: float) -> None:
-        if not isinstance(value, float) and not isinstance(value, int):
-            raise ValueError(f"angle must be a float, got {value}")
-        self._angle = self.backend.asarray(value, complex=False)
+        angle = self.backend.asarray(value, complex=False)
+        if len(angle.shape) != 0:
+            raise ValueError(f"angle must be a scalar float, got shape {angle.shape}")
+        self._angle = angle
     
     """ Material properties """
     @property
+    def material(self) -> BaseMaterial:
+        return self._material
+    
+    @property
     def epsilon(self) -> Any:
-        return self._epsilon
+        return self.material.epsilon_tensor
     
     @property
     def mu(self) -> Any:
-        return self._mu
+        return self.material.mu_tensor
     
     """ Calculate material distributions """
-    def epsilon_xy(self, epsilonbg: Any = 1.0):
+    def epsilon_xy(self, material_bg: BaseMaterial):
         '''
         Compute the real-space permittivity distribution.
         Parameters
         ----------
-        epsilonbg : Any
-            Background permittivity. Default is 1.0.
+        material_bg : BaseMaterial
+            Background material.
         Returns
         -------
         epsilon_xy : backend tensor
-            Permittivity distribution in real space, shape (Nx, Ny), complex dtype.
+            Permittivity distribution tensor in real space, shape (wvl, 3, 3, Nx, Ny), complex dtype.
         '''
-        return self._matdist_real(self.epsilon, 
-                                  epsilonbg)
+        return self._matdist_real(material_bg, 
+                                  mode='epsilon')
     
-    def mu_xy(self, mubg: Any = 1.0):
+    def mu_xy(self, material_bg: BaseMaterial):
         '''
         Compute the real-space permittivity distribution.
         Parameters
         ----------
-        mubg : Any
-            Background permeability. Default is 1.0.
+        material_bg : BaseMaterial
+            Background material.
         Returns
         -------
         mu_xy : backend tensor
-            Permeability distribution in real space, shape (Nx, Ny), complex dtype.
+            Permeability distribution in real space, shape (wvl, 3, 3, Nx, Ny), complex dtype.
         '''
-        return self._matdist_real(self.mu, 
-                                  mubg)
+        return self._matdist_real(material_bg, 
+                                  mode='mu')
     
     def epsilon_mn(self,
                    M: int,
                    N: int,
-                   epsilonbg: Any = 1.0):
+                   mat_bg: BaseMaterial,
+                   inverse: bool = False,
+                   regularized: bool = False,
+                   regularization: float = 1e-8):
         '''
         Compute the Fourier coefficients of the permittivity distribution in the closed form.
         Parameters
         ----------
         M, N : int
             Number of harmonics along x and y.
-        epsilonbg : Any
-            Background permittivity. Default is 1.0.
+        material_bg : BaseMaterial
+            Background material.
+        inverse : bool
+            Whether to compute Fourier coefficients for the inverse permittivity. 
+            Default is False.
+        regularized : bool
+            Whether to apply regularization in inverse case. Default is False.
+        regularization : float
+            Regularization parameter. Default is 1e-8.
         Returns
         -------
         epsilon_mn : backend tensor
-            Fourier coefficients epsilon_{m,n}, shape (2M+1, 2N+1), complex.
+            Fourier coefficients epsilon_{m,n}, shape (wvl, 3, 3, 2M+1, 2N+1), complex.
         '''
+        epsilon_tensor = self.epsilon      # (wvl, 3, 3)
+        epsilonbg_tensor = mat_bg.epsilon_tensor  # (wvl, 3, 3)
+        
+        if inverse:
+            if regularized:
+                epsilon_eff = 1.0 / (epsilon_tensor + regularization)
+                epsilon_eff_bg = 1.0 / (epsilonbg_tensor + regularization)
+            else:
+                epsilon_eff = 1.0 / epsilon_tensor
+                epsilon_eff_bg = 1.0 / epsilonbg_tensor
+            return self._matdist_fourier(M, N, 
+                                         epsilon_eff, epsilon_eff_bg)
+        
         return self._matdist_fourier(M, N, 
-                                     self.epsilon, epsilonbg)
+                                     epsilon_tensor, epsilonbg_tensor)
     
     def mu_mn(self,
                M: int,
                N: int,
-               mubg: Any = 1.0):
+               mat_bg: BaseMaterial,
+               inverse: bool = False,
+               regularized: bool = False,
+               regularization: float = 1e-8):
         '''
         Compute the Fourier coefficients of the permeability distribution in the closed form.
         Parameters
         ----------
         M, N : int
             Number of harmonics along x and y.
-        mubg : Any
-            Background permeability. Default is 1.0.
+        mat_bg : BaseMaterial
+            Background material.
+        inverse : bool
+            Whether to compute Fourier coefficients for the inverse permeability. 
+            Default is False.
+        regularized : bool
+            Whether to apply regularization in inverse case. Default is False.
+        regularization : float
+            Regularization parameter. Default is 1e-8.
         Returns
         -------
         mu_mn : backend tensor
-            Fourier coefficients mu_{m,n}, shape (2M+1, 2N+1), complex.
+            Fourier coefficients mu_{m,n}, shape (wvl, 3, 3, 2M+1, 2N+1), complex.
         '''
-        return self._matdist_fourier(M, N, 
-                                     self.mu, mubg)
+        mu_tensor = self.mu      # (wvl, 3, 3)
+        mubg_tensor = mat_bg.mu_tensor  # (wvl, 3, 3)
         
-    def _matdist_real(self, 
-                    matval: Any,
-                    matbg: Any):
+        if inverse:
+            if regularized:
+                mu_eff = 1.0 / (mu_tensor + regularization)
+                mu_eff_bg = 1.0 / (mubg_tensor + regularization)
+            else:
+                mu_eff = 1.0 / mu_tensor
+                mu_eff_bg = 1.0 / mubg_tensor
+            return self._matdist_fourier(M, N, 
+                                         mu_eff, mu_eff_bg)
+        
+        return self._matdist_fourier(M, N, 
+                                     mu_tensor, mubg_tensor)
+        
+    def _matdist_real(self, material_bg: BaseMaterial, mode: str):
         '''
         Compute the real-space material distribution for the object.
 
         Parameters
         ----------
-        matval : Any
-            Material value inside the object.
-        matbg : Any
+        material_bg : BaseMaterial
             Background material value.
-
+        mode : str
+            'epsilon' or 'mu' to specify which material property to compute.
         Returns
         -------
         matdist_xy : backend tensor
-            Material distribution in real space, shape (Nx, Ny), complex dtype.
+            Material distribution in real space, shape (B, 3, 3, Nx, Ny), complex dtype.
         '''
-        Nx, Ny = self.canvas.grid
+        Nx, Ny = self.lattice.grid
 
+        # Get bitmap mask
         mask_c = self.bitmap          # (Nx, Ny), bool
-        mask_c = self.backend.reshape(mask_c, (1, Nx, Ny))  # (1, Nx, Ny)
+        mask_c = self.backend.reshape(mask_c, (1, 1, 1, Nx, Ny))  # (1, 1, 1, Nx, Ny)
         
+        # Material values
+        if mode == 'epsilon':
+            mat_tensor = self.epsilon  # (wvl, 3, 3)
+            mat_bg_tensor = material_bg.epsilon_tensor  # (wvl, 3, 3)
+        elif mode == 'mu':
+            mat_tensor = self.mu  # (wvl, 3, 3)
+            mat_bg_tensor = material_bg.mu_tensor  # (wvl, 3, 3)
+        else:
+            raise ValueError(f"Unsupported mode '{mode}', must be 'epsilon' or 'mu'")
         
-        bg_b, val_b = self.adjustshapes(self.backend, matval, matbg)
-        matdist_xy = self.backend.expand(bg_b, (bg_b.shape[0], Nx, Ny))
-
+        if mat_tensor.shape[0] != mat_bg_tensor.shape[0]:
+            if mat_bg_tensor.shape[0] == 1:
+                # replicate along wavelength dimension
+                target_shape = (mat_tensor.shape[0],) + mat_bg_tensor.shape[1:]
+                mat_bg_tensor = self.backend.expand(mat_bg_tensor, target_shape)
+            else:
+                raise ValueError("Material and background material must have the same number of wavelengths")
+        
+        # Broadcast epsilon and epsilon_bg to (wvl, 3, 3, 1, 1)
+        init_shape = mat_tensor.shape      # (wvl, 3, 3)
+        mat = self.backend.reshape(mat_tensor, init_shape + (1, 1))# (wvl, 3, 3, 1, 1)
+        mat_bg = self.backend.reshape(mat_bg_tensor, init_shape + (1, 1))# (wvl, 3, 3, 1, 1)
+        
+        # Expand eps_bg to (wvl, 3, 3, Nx, Ny)
+        matdist_xy = self.backend.expand(mat_bg,init_shape + (Nx, Ny))# (wvl, 3, 3, Nx, Ny)
         # Δmat per batch
-        delta_mat_b = val_b - bg_b                          # (B, 1, 1)
+        delta_mat_b = mat - mat_bg                          # (B, 3, 3, 1, 1)
 
         # mat = bg + Δmat * mask
-        matdist_xy = matdist_xy + delta_mat_b * mask_c      # (B, Nx, Ny)
+        matdist_xy = matdist_xy + delta_mat_b * mask_c      # (B, 3, 3, Nx, Ny)
 
         return matdist_xy
     
     """ Static helper methods """
     @staticmethod
-    def adjustshapes(backend: Backend, matval: Any, matbg: Any):
-        '''
-        Adjust shapes of matval and matbg to be compatible for broadcasting.
-        Parameters
-        ----------
-        backend : Backend
-            Computational backend.
-        matval : Any
-            Material value inside the object.
-        matbg : Any
-            Background material value.
-        Returns
-        -------
-        bg_b : backend tensor
-            Reshaped background material value, shape (B, 1, 1).
-        val_b : backend tensor
-            Reshaped material value inside the object, shape (B, 1, 1).
-        '''
-        bg = backend.asarray(matbg, complex=True)   # shape () or (B,)
-        val = backend.asarray(matval, complex=True) # shape () or (B,)
-        
-        # Make sure shapes are compatible
-        bg_shape = backend.shape(bg)
-        val_shape = backend.shape(val)
-
-        if len(bg_shape) == 0 and len(val_shape) == 0:
-            # both scalars → B = 1
-            B = 1
-            bg_b = backend.reshape(bg, (B, 1, 1))     # (1,1,1)
-            val_b = backend.reshape(val, (B, 1, 1))   # (1,1,1)
-        elif len(bg_shape) == 1 and len(val_shape) == 1:
-            if bg_shape[0] != val_shape[0]:
-                raise ValueError(f"matbg and matval batch sizes differ: {bg_shape[0]} vs {val_shape[0]}")
-            B = bg_shape[0]
-            bg_b = backend.reshape(bg, (B, 1, 1))     # (B,1,1)
-            val_b = backend.reshape(val, (B, 1, 1))   # (B,1,1)
-        else:
-            # one is scalar, one is 1D
-            if len(bg_shape) == 0 and len(val_shape) == 1:
-                B = val_shape[0]
-                bg_b = backend.reshape(bg, (1, 1, 1))        # scalar
-                bg_b = backend.expand(bg_b, (B, 1, 1))  # broadcast over B
-                val_b = backend.reshape(val, (B, 1, 1))
-            elif len(bg_shape) == 1 and len(val_shape) == 0:
-                B = bg_shape[0]
-                val_b = backend.reshape(val, (1, 1, 1))
-                val_b = backend.expand(val_b, (B, 1, 1))  # broadcast over B
-                bg_b = backend.reshape(bg, (B, 1, 1))
-            else:
-                raise ValueError(
-                    f"Unsupported shapes for matbg {bg_shape} and matval {val_shape}"
-                )
-                
-        return bg_b, val_b
-    
-    @staticmethod
     def _init_validation(backend: Backend, 
-                        canvas: Canvas,
+                        lattice: Lattice,
                         center: Tuple[float, float],
                         angle: float,
-                        epsilon: Any,
-                        mu: Any,
+                        material: BaseMaterial,
                         soft_mask: bool,
                         smoothness: float) -> None:
         
+        angle = backend.asarray(angle, complex=False)
         if not isinstance(backend, Backend):
             raise TypeError("backend must be a Backend instance")
-        if not isinstance(canvas, Canvas):
-            raise TypeError("canvas must be a Canvas instance")
+        if not isinstance(lattice, Lattice):
+            raise TypeError("lattice must be a Lattice instance")
         if len(center) != 2:
             raise ValueError(f"center must be tuple of 2 floats, got {center}")
+        if len(angle.shape) != 0:
+            raise ValueError(f"angle must be a scalar float, got shape {angle.shape}")
         if not isinstance(soft_mask, bool):
             raise TypeError(f"soft_mask must be bool, got {type(soft_mask)}")
         if not isinstance(smoothness, float) and not isinstance(smoothness, int):
             raise TypeError(f"smoothness must be float, got {type(smoothness)}")
         if smoothness <= 0:
             raise ValueError(f"smoothness must be positive, got {smoothness}")
-        
-        # Convert to backend tensors 
-        eps_t = backend.asarray(epsilon, complex=True)
-        eps_shape = backend.shape(eps_t)
-        
-        is_scalar_number = isinstance(mu, (int, float, complex))
-        if is_scalar_number and (mu == 1 or mu == 1.0 or mu == 1+0j):
-        # If epsilon is scalar → scalar mu is fine
-        # If epsilon is batch → create matching batch of ones
-            if len(eps_shape) == 0:
-                mu_t = backend.asarray(1.0, complex=True)
-            else:
-                B = eps_shape[0]
-                mu_t = backend.asarray(backend.ones((B,)), complex=True)
-                
-        else:
-            mu_t = backend.asarray(mu, complex=True)
-
-        mu_shape  = backend.shape(mu_t)
-
-        # Only allow scalar or 1D for both
-        if len(eps_shape) > 1:
-            raise ValueError(
-                f"epsilon must be scalar or 1D (batch), got shape {eps_shape}"
-            )
-        if len(mu_shape) > 1:
-            raise ValueError(
-                f"mu must be scalar or 1D (batch), got shape {mu_shape}"
-            )
-
-        # If both are 1D, batch sizes must match
-        if len(eps_shape) == 1 and len(mu_shape) == 1:
-            if eps_shape[0] != mu_shape[0]:
-                raise ValueError(
-                    f"epsilon and mu batch sizes differ: "
-                    f"{eps_shape[0]} vs {mu_shape[0]}"
-                )
-        return mu_t
+        if not isinstance(material, BaseMaterial):
+            raise TypeError("material must be a BaseMaterial instance")
         
     @staticmethod
     def _wrap_center(backend, cx, cy, Lx, Ly):
@@ -416,11 +391,10 @@ class Rectangle(VectorObject):
     """
     def __init__(self,
                  backend: Backend,
-                 canvas: Canvas,
+                 lattice: Lattice,
                  center: Tuple[float, float],
                  size: Tuple[float, float], 
-                 epsilon: Any,
-                 mu: Any = 1.0,
+                 material: BaseMaterial,
                  angle: float = 0.0,
                  soft_mask: bool = False,
                  smoothness: float = 0.05):
@@ -429,17 +403,15 @@ class Rectangle(VectorObject):
         ----------
         backend : Backend
             Computational backend.
-        canvas : Canvas
-            Canvas object defining the simulation domain.
+        lattice : Lattice
+            Lattice object defining the simulation domain.
         center : tuple of float
             (x,y) coordinates of the object's center (in the range [-Lx/2, Lx/2] x [-Ly/2, Ly/2]).
             Length units. If center is outside this range, it will be wrapped into the principal cell.
         size : tuple of float
             (width, height) of the rectangle. Length units.
-        epsilon : Any
-            Electric permittivity.
-        mu : Any
-            Magnetic permeability. Default is 1.0.
+        material : BaseMaterial
+            Material of the rectangle.
         angle : float
             Rotation angle in radians.
         soft_mask : bool
@@ -453,10 +425,9 @@ class Rectangle(VectorObject):
         """
         
         super().__init__(backend,
-                         canvas,
+                         lattice,
                          center,
-                         epsilon,
-                         mu,
+                         material,
                          angle,
                          soft_mask,
                          smoothness)
@@ -494,8 +465,8 @@ class Rectangle(VectorObject):
             Bitmap representation of the rectangle, shape (Nx, Ny), dtype bool.
         '''
         
-        Lx, Ly = self.canvas.period
-        Nx, Ny = self.canvas.grid
+        Lx, Ly = self.lattice.period
+        Nx, Ny = self.lattice.grid
         
         # Coordinate grid 
         ix = self.backend.arange(0, Nx)
@@ -558,6 +529,26 @@ class Rectangle(VectorObject):
 
         return self.backend.asarray(mask, complex=False)
 
+    @property
+    def fraction(self) -> Any:
+        '''
+        Compute the fill fraction of the rectangle in the unit cell.
+        
+        Returns
+        -------
+        fraction : backend tensor
+            Fill fraction of the rectangle, shape (B,), float dtype.
+        '''
+        Lx, Ly = self.lattice.period
+        w, h = self.size
+        
+        area_rect = w * h
+        area_cell = Lx * Ly
+        
+        fill_fraction = area_rect / area_cell
+        
+        return self.backend.asarray(fill_fraction, complex=False)
+    
     def _matdist_fourier(self,
                         M: int,
                         N: int,
@@ -579,17 +570,17 @@ class Rectangle(VectorObject):
         M, N : int
             Number of harmonics along x and y.
         matval : complex
-            Material value inside the rectangle.
+            Material value tensor inside the rectangle (B, 3, 3).
         matbg : complex
-            Background material value.
+            Background material value tensor (B, 3, 3).
 
         Returns
         -------
         mat_mn : backend tensor
-            Fourier coefficients mat_{m,n}, shape (B, 2M+1, 2N+1), complex.
+            Fourier coefficients mat_{m,n}, shape (B, 3, 3, 2M+1, 2N+1), complex.
             Indices correspond to m ∈ [-M..M], n ∈ [-N..N].
         """
-        Lx, Ly = self.canvas.period
+        Lx, Ly = self.lattice.period
         w, h = self.size
         cx, cy = self.center
         
@@ -597,10 +588,20 @@ class Rectangle(VectorObject):
         cx = cx + Lx / 2.0
         cy = cy + Ly / 2.0
         
-        bg_b, val_b = self.adjustshapes(self.backend,matval, matbg)
+        # Adjust shapes
+        if matval.shape[0] != matbg.shape[0]:
+            if matbg.shape[0] == 1:
+                # replicate along wavelength dimension
+                target_shape = (matval.shape[0],) + matbg.shape[1:]
+                matbg = self.backend.expand(matbg, target_shape)
+            else:
+                raise ValueError("Material and background material must have the same number of wavelengths")
+            
+        val_b = self.backend.reshape(matval, (matval.shape[0], 3, 3, 1, 1)) # (B, 3, 3, 1, 1)
+        bg_b  = self.backend.reshape(matbg,  (matbg.shape[0], 3, 3, 1, 1)) # (B, 3, 3, 1, 1)
 
         # Material contrast
-        delta_mat = val_b - bg_b   # (B, 1, 1)
+        delta_mat = val_b - bg_b   # (B, 3, 3, 1, 1)
 
         # Harmonic indices m, n
         m = self.backend.arange(-M, M + 1)   # (2M+1,)
@@ -643,29 +644,34 @@ class Rectangle(VectorObject):
         zx = ku * (w / 2.0)
         zy = kv * (h / 2.0)
 
-        Sx = sinc(zx)
-        Sy = sinc(zy)
+        Sx = sinc(zx) # (2M+1, 2N+1)
+        Sy = sinc(zy) # (2M+1, 2N+1)
 
         # Phase factor exp(-j(Gm x_c + Gn y_c))
         phase_arg = Gm_grid * cx + Gn_grid * cy
-        phase = self.backend.exp(-1j * phase_arg)
+        phase = self.backend.exp(-1j * phase_arg) # (2M+1, 2N+1)
+        
+        #Broadcast to (B, 3, 3, 2M+1, 2N+1)
+        Sx = self.backend.reshape(Sx, (1, 1, 1, 2 * M + 1, 2 * N + 1))
+        Sy = self.backend.reshape(Sy, (1, 1, 1, 2 * M + 1, 2 * N + 1))
+        phase = self.backend.reshape(phase, (1, 1, 1, 2 * M + 1, 2 * N + 1))
 
         # Contrast contribution
         area_factor = (w * h) / (Lx * Ly)
         
-        delta_mat_mn = delta_mat * area_factor * Sx * Sy * phase  # (2M+1, 2N+1)
+        delta_mat_mn = delta_mat * area_factor * Sx * Sy * phase  # (B, 3, 3, 2M+1, 2N+1)
 
         # Initialize with contrast term
         mat_mn = delta_mat_mn
 
         # --- Add background at (m=0,n=0), i.e. index (M,N) ---
 
-        # bg_b: (B,1,1) or (1,1,1); broadcast to (B,)
+        # bg_b: (B, 3, 3, 1, 1)
         # We add bg_b to mat_mn[:, M, N]
         # For Torch/NumPy this indexing is fine:
         if hasattr(mat_mn, "__setitem__"):
             # mat_{00} = matbg + Δmat * fill_fraction (already in mat_mn[:, M, N])
-            mat_mn[:, M, N] = mat_mn[:, M, N] + self.backend.reshape(bg_b, (-1,))
+            mat_mn[..., M, N] = mat_mn[..., M, N] + bg_b[..., 0, 0]
         else:
             # if it is a different backend without in-place assignment,
             # should implement a functional update here.
@@ -674,51 +680,44 @@ class Rectangle(VectorObject):
         return mat_mn
           
 class Bitmap:
-    """Material distribution defined from 2D bitmap masks for epsilon and mu."""
+    """Material distribution defined from 2D bitmap masks for a given material."""
     def __init__(self,
                   backend: Backend,
-                  canvas: Canvas,
+                  lattice: Lattice,
                   bitmap: Any,
-                  epsilon: Any,
-                  mu: Any = 1.0):
+                  material: BaseMaterial):
         """
         Parameters
         ----------
         backend : Backend
             Computational backend.
-        canvas : Canvas
-            Canvas object defining the simulation domain.
+        lattice : Lattice
+            Lattice object defining the simulation domain.
         bitmap : array-like or backend tensor
             2D array representing the bitmap of material distribution.
             Must be 0/1 or False/True. 
             0 → epsilon_bg, mu_bg, 1 → epsilon, mu.
-        epsilon : Any
-            Permittivity inside pixels where bitmap == 1.
-        mu : Any, optional
-            Permeability inside pixels where bitmap == 1 (default is 1.0).
+        material : BaseMaterial
+            Material object defining epsilon and mu inside pixels where bitmap == 1.
 
         """
-        bitmap_new, mu_t = Bitmap._init_validation(backend, canvas, bitmap, 
-                                                   epsilon, mu)
+        bitmap_new = Bitmap._init_validation(backend, lattice, bitmap, material)
         
         self._backend = backend
         self._bitmap = bitmap_new  # (Nx, Ny), real, values ∈ {0,1}
+        self._material = material
         
-        # Setup canvas
-        canvas._grid = self._backend.shape(self._bitmap)  # enforce grid from bitmap shape
-        self._canvas = canvas
-        
-        # Store material values
-        self._epsilon = backend.asarray(epsilon, complex=True)
-        self._mu = mu_t
+        # Setup lattice
+        lattice._grid = self._backend.shape(self._bitmap)  # enforce grid from bitmap shape
+        self._lattice = lattice
     
     """ Simulation properties """
     @property
     def backend(self) -> Backend:
         return self._backend
     @property
-    def canvas(self) -> Canvas:
-        return self._canvas
+    def lattice(self) -> Lattice:
+        return self._lattice
     
     """ Geometric properties """
     @property    
@@ -733,58 +732,105 @@ class Bitmap:
     
     """ Material properties """
     @property
+    def material(self) -> BaseMaterial:
+        return self._material
+    @property
     def epsilon(self) -> Any:
-        return self._epsilon
+        return self.material.epsilon_tensor
     @property
     def mu(self) -> Any:
-        return self._mu
+        return self.material.mu_tensor
     
     """ Calculate material distributions """
-    def epsilon_xy(self, epsilon_bg: Any) -> Any:
+    def epsilon_xy(self, material_bg: BaseMaterial) -> Any:
         """
         Compute the real-space permittivity distribution.
+        
+        Parameters
+        ----------
+        material_bg : BaseMaterial
+            Background material value.
         
         Returns
         -------
         epsilon_xy : backend tensor
-            Permittivity distribution in real space, shape (Nx, Ny), complex dtype.   
+            Permittivity distribution in real space, shape (wvl, 3, 3, Nx, Ny), complex dtype.   
         """
-        bg_b, val_b = VectorObject.adjustshapes(self.backend, 
-                                        self.epsilon, 
-                                        epsilon_bg)
-        epsilon_xy = self.bitmap * (val_b - bg_b) + bg_b
+        # Init epsilon tensors
+        epsilon_tensor = self.epsilon  # (wvl, 3, 3)
+        epsilon_bg_tensor = material_bg.epsilon_tensor  # (wvl, 3, 3)
+        
+        if epsilon_tensor.shape[0] != epsilon_bg_tensor.shape[0]:
+            if epsilon_bg_tensor.shape[0] == 1:
+                # replicate along wavelength dimension
+                target_shape = (epsilon_tensor.shape[0],) + epsilon_bg_tensor.shape[1:]
+                epsilon_bg_tensor = self.backend.expand(epsilon_bg_tensor, target_shape)
+            else:
+                raise ValueError("Material and background material must have the same number of wavelengths")
+            
+        # Broadcast epsilon and epsilon_bg to (wvl, 3, 3, 1, 1)
+        init_shape = epsilon_tensor.shape      # (wvl, 3, 3)
+        eps = self.backend.reshape(epsilon_tensor, init_shape + (1, 1))# (wvl, 3, 3, 1, 1)
+        eps_bg = self.backend.reshape(epsilon_bg_tensor, init_shape + (1, 1))# (wvl, 3, 3, 1, 1)
+        
+        # Broadcast bitmap to (1, 1, 1, Nx, Ny)
+        bitmap = self.backend.reshape(self.bitmap, (1, 1, 1) + self.bitmap.shape)  # (1, 1, 1, Nx, Ny)
+        
+        epsilon_xy = bitmap * (eps - eps_bg) + eps_bg # (wvl, 3, 3, Nx, Ny)
         epsilon_xy = self.backend.asarray(epsilon_xy, complex=True)
         return epsilon_xy
     
-    def mu_xy(self, mu_bg: Any) -> Any:
+    def mu_xy(self, material_bg: Any) -> Any:
         """
         Compute the real-space permeability distribution.
+        
+        Parameters
+        ----------
+        material_bg : BaseMaterial
+            Background material value.
         
         Returns
         -------
         mu_xy : backend tensor
-            Permeability distribution in real space, shape (Nx, Ny), complex dtype.   
+            Permeability distribution in real space, shape (wvl, 3, 3, Nx, Ny), complex dtype.   
         """
-        bg_b, val_b = VectorObject.adjustshapes(self.backend, 
-                                        self.mu, 
-                                        mu_bg)
+        # Init epsilon tensors
+        mu_tensor = self.mu  # (wvl, 3, 3)
+        mu_bg_tensor = material_bg.mu_tensor  # (wvl, 3, 3)
         
-        mu_xy = self.bitmap * (val_b - bg_b) + bg_b
+        if mu_tensor.shape[0] != mu_bg_tensor.shape[0]:
+            if mu_bg_tensor.shape[0] == 1:
+                # replicate along wavelength dimension
+                target_shape = (mu_tensor.shape[0],) + mu_bg_tensor.shape[1:]
+                mu_bg_tensor = self.backend.expand(mu_bg_tensor, target_shape)
+            else:
+                raise ValueError("Material and background material must have the same number of wavelengths")
+            
+        # Broadcast epsilon and epsilon_bg to (wvl, 3, 3, 1, 1)
+        init_shape = mu_tensor.shape      # (wvl, 3, 3)
+        mu = self.backend.reshape(mu_tensor, init_shape + (1, 1))# (wvl, 3, 3, 1, 1)
+        mu_bg = self.backend.reshape(mu_bg_tensor, init_shape + (1, 1))# (wvl, 3, 3, 1, 1)
+        
+        # Broadcast bitmap to (1, 1, 1, Nx, Ny)
+        bitmap = self.backend.reshape(self.bitmap, (1, 1, 1) + self.bitmap.shape)  # (1, 1, 1, Nx, Ny)
+        
+        mu_xy = bitmap * (mu - mu_bg) + mu_bg
         mu_xy = self.backend.asarray(mu_xy, complex=True)
         return mu_xy
     
     """ Static helper methods """
     @staticmethod
     def _init_validation(backend: Backend, 
-                        canvas: Canvas,
+                        lattice: Lattice,
                         bitmap: Any,
-                        epsilon: Any,
-                        mu: Any) -> None:
+                        material: BaseMaterial) -> None:
         
         if not isinstance(backend, Backend):
             raise TypeError("backend must be a Backend instance")
-        if not isinstance(canvas, Canvas):
-            raise TypeError("canvas must be a Canvas instance")
+        if not isinstance(lattice, Lattice):
+            raise TypeError("lattice must be a Lattice instance")
+        if not isinstance(material, BaseMaterial):
+            raise TypeError("material must be a BaseMaterial instance")
         
         # --- Convert bitmap to backend real tensors ---
         bm = backend.asarray(bitmap, complex=False)
@@ -820,43 +866,7 @@ class Bitmap:
          # --- Force it to be strict 0 to 1 mask ---
         bm_bin = backend.clamp(bm, 0, 1)
         
-        # Convert to backend tensors 
-        eps_t = backend.asarray(epsilon, complex=True)
-        eps_shape = backend.shape(eps_t)
-        
-        is_scalar_number = isinstance(mu, (int, float, complex))
-        if is_scalar_number and (mu == 1 or mu == 1.0 or mu == 1+0j):
-        # If epsilon is scalar → scalar mu is fine
-        # If epsilon is batch → create matching batch of ones
-            if len(eps_shape) == 0:
-                mu_t = backend.asarray(1.0, complex=True)
-            else:
-                B = eps_shape[0]
-                mu_t = backend.asarray(backend.ones((B,)), complex=True)
-                
-        else:
-            mu_t = backend.asarray(mu, complex=True)
-
-        mu_shape  = backend.shape(mu_t)
-
-        # Only allow scalar or 1D for both
-        if len(eps_shape) > 1:
-            raise ValueError(
-                f"epsilon must be scalar or 1D (batch), got shape {eps_shape}"
-            )
-        if len(mu_shape) > 1:
-            raise ValueError(
-                f"mu must be scalar or 1D (batch), got shape {mu_shape}"
-            )
-
-        # If both are 1D, batch sizes must match
-        if len(eps_shape) == 1 and len(mu_shape) == 1:
-            if eps_shape[0] != mu_shape[0]:
-                raise ValueError(
-                    f"epsilon and mu batch sizes differ: "
-                    f"{eps_shape[0]} vs {mu_shape[0]}"
-                )
-        return bm_bin, mu_t
+        return bm_bin
     
 class VectorGroup:
     """

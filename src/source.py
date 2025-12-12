@@ -1,11 +1,11 @@
 from src.backend import Backend
-from src.geometry import Canvas
-from src.kvector import compute_k0xy, compute_Kxy
+from src.geometry import Lattice
+from src.compute import compute_k0xy, compute_Kxy
 from typing import Any
 
 class Source:
     def __init__(self, backend: Backend, wavelength: Any,
-                 theta: float, phi: float):
+                 theta: Any, phi: Any):
         """
         Initialize the Source object with given parameters.
         Parameters
@@ -14,9 +14,9 @@ class Source:
             Computational backend to use.
         wavelength : Any
             Wavelength(s) of the source. Length units.
-        theta : float
+        theta : Any
             Incident angle theta in radians.
-        phi : float
+        phi : Any
             Incident angle phi in radians.
         """
         self._wavelength, self._theta, self._phi = self._init_validation(backend, 
@@ -57,7 +57,7 @@ class Source:
         -------
         k0x, k0y : torch.Tensor
             Tensors of k0x and k0y values. 
-            Shape (Nw, Nt, Np) where Nw is number of wavelengths.
+            Shape (Nw, Nt, Np) where Nw is number of wavelengths, Nt number of thetas, Np number of phis.
         """
         return compute_k0xy(self._backend,
                             self._wavelength,
@@ -66,7 +66,7 @@ class Source:
                             n_inc,
                             reduced)
     
-    def Kxy(self, n_inc: Any, M: int, N: int, canvas: Canvas):
+    def Kxy(self, n_inc: Any, M: int, N: int, lattice: Lattice):
         """
         Compute Kx, Ky matrices for the source parameters.
         
@@ -77,6 +77,8 @@ class Source:
             Scalar or array-like broadcastable to wavelength.
         M, N : int
             Number of harmonics along x and y.
+        lattice : Lattice
+            Lattice object defining the periodicity.
         
         Returns
         -------
@@ -84,7 +86,7 @@ class Source:
             Tensors of shape (Nw, Nt, Np, 2M+1, 2N+1) where Nw is number of wavelengths.
         """
         k0x, k0y = self.k0xy(n_inc, reduced=True)
-        Lx, Ly = canvas.period
+        Lx, Ly = lattice.period
         
         Kx, Ky = compute_Kxy(self._backend, k0x, k0y, Lx, Ly, M, N)
         return Kx, Ky

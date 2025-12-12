@@ -34,6 +34,57 @@ class Backend(ABC):
         Validate that input `x` is compatible with this backend.
         """
     # ---------------------------------------------------------
+    # Data types
+    # ---------------------------------------------------------
+    @property
+    @abstractmethod
+    def float32(self) -> Any:
+        """
+        Return the backend's float32 data type.
+        """
+        
+    @property
+    @abstractmethod
+    def float64(self) -> Any:
+        """
+        Return the backend's float64 data type.
+        """
+        
+    @property
+    @abstractmethod
+    def complex64(self) -> Any:
+        """
+        Return the backend's complex64 data type.
+        """
+        
+    @property
+    @abstractmethod
+    def complex128(self) -> Any:
+        """
+        Return the backend's complex128 data type.
+        """
+    
+    @property
+    @abstractmethod
+    def long(self) -> Any:
+        """
+        Return the backend's long/integer data type.
+        """
+        
+    @property
+    @abstractmethod
+    def int32(self) -> Any:
+        """
+        Return the backend's int32 data type.
+        """
+    
+    @property
+    @abstractmethod
+    def bool(self) -> Any:
+        """
+        Return the backend's boolean data type.
+        """
+    # ---------------------------------------------------------
     # Array creation / casting
     # ---------------------------------------------------------
     @abstractmethod
@@ -94,7 +145,23 @@ class Backend(ABC):
         array : backend-specific array type
             An array of ones with the specified shape, dtype, and device.
         """
-        
+    
+    @abstractmethod
+    def eye(self, n: int) -> Any:
+        """
+        Create a backend-specific identity matrix of size n x n.
+
+        Parameters
+        ----------
+        n : int
+            Size of the identity matrix.
+
+        Returns
+        -------
+        array : backend-specific array type
+            An identity matrix of shape (n, n) with the correct dtype and device.
+        """
+    
     @abstractmethod
     def zeros_like(self, x: Any) -> Any:
         """
@@ -192,6 +259,102 @@ class Backend(ABC):
         """
         Clamp all elements in `x` to be within the range [min_value, max_value].
         """
+    
+    @abstractmethod
+    def cat(self, arrays: list[Any], dim: int) -> Any:
+        """
+        Concatenate a list of arrays along the specified dimension.
+        """
+    
+    @abstractmethod
+    def roll(self, x: Any, shifts: int, dims: int) -> Any:
+        """
+        Roll the elements of `x` along the specified dimension by `shifts`.
+        """
+    
+    @abstractmethod
+    def amin(self, x: Any, dim: int | tuple[int, ...] = None, keepdim: bool = False) -> Any:
+        """
+        Compute the minimum of array elements over given axes.
+
+        Parameters
+        ----------
+        x : array-like
+            Input array to compute the minimum over.
+        dim : int or tuple of int, optional
+            Axis or axes along which to compute the minimum. By default, compute over all axes.
+        keepdim : bool, default=False
+            If True, retains reduced dimensions with size 1.
+
+        Returns
+        -------
+        array
+            Minimum of the array elements over the specified axes.
+
+        Requirements
+        ------------
+        - Must preserve device and dtype.
+        """
+    
+    @abstractmethod
+    def amax(self, x: Any, dim: int | tuple[int, ...] = None, keepdim: bool = False) -> Any:
+        """
+        Compute the maximum of array elements over given axes.
+
+        Parameters
+        ----------
+        x : array-like
+            Input array to compute the maximum over.
+        dim : int or tuple of int, optional
+            Axis or axes along which to compute the maximum. By default, compute over all axes.
+        keepdim : bool, default=False
+            If True, retains reduced dimensions with size 1.
+
+        Returns
+        -------
+        array
+            Maximum of the array elements over the specified axes.
+
+        Requirements
+        ------------
+        - Must preserve device and dtype.
+        """
+    
+    @abstractmethod
+    def nonzero(self, x: Any) -> Any:
+        """
+        Return the indices of the non-zero elements of `x`.
+        """
+    
+    @abstractmethod
+    def take_along_axis(self, arr: Any, indices: Any, axis: int) -> Any:
+        """
+        Take values from `arr` along the specified axis using `indices`.
+        """
+    
+    @abstractmethod
+    def unsqueeze(self, x: Any, axis: int) -> Any:
+        """
+        Add a singleton dimension to `x` at the specified axis.
+        """
+    
+    @abstractmethod
+    def repeat(self, x: Any, repeats: tuple[int, ...]) -> Any:
+        """
+        Repeat the elements of `x` according to `repeats` along each dimension.
+        """
+    
+    @abstractmethod
+    def repeat_interleave(self, x: Any, repeats: int, dim: int) -> Any:
+        """
+        Repeat elements of `x` along dimension `dim` `repeats` times.
+        """
+    
+    @abstractmethod
+    def stack(self, arrays: list[Any], dim: int) -> Any:
+        """
+        Stack a sequence of arrays along a new dimension.
+        """
     # ---------------------------------------------------------
     # Fourier transforms
     # ---------------------------------------------------------
@@ -256,6 +419,26 @@ class Backend(ABC):
         - Must not modify inputs in place.
         """
 
+    @abstractmethod
+    def diag_embed(self, x: Any, dim1: int = -2, dim2: int = -1) -> Any:
+        """
+        Create a batch of diagonal matrices from the last dimension of `x`.
+
+        Parameters
+        ----------
+        x : array-like
+            Input array of shape (..., N), where N is the size of the diagonal.
+        dim1 : int, default=-2
+            The first dimension of the output diagonal matrices.
+        dim2 : int, default=-1
+            The second dimension of the output diagonal matrices.
+
+        Returns
+        -------
+        array
+            Output array of shape (..., N, N) where each slice along the leading
+            dimensions is a diagonal matrix with the corresponding elements from `x`.
+        """
     # ---------------------------------------------------------
     # Complex utilities
     # ---------------------------------------------------------
@@ -332,9 +515,98 @@ class Backend(ABC):
         ------------
         - Must preserve device and dtype.
         """
+    
+    @abstractmethod
+    def sqrt(self, x: Any) -> Any:
+        """
+        Compute the element-wise square root of `x`.
+
+        Requirements
+        ------------
+        - Must preserve device and dtype.
+        """
+    
+    @abstractmethod
+    def sum(self, x: Any, dim: int | tuple[int, ...] = None, keepdim: bool = False) -> Any:
+        """
+        Compute the sum of array elements over given axes.
+
+        Parameters
+        ----------
+        x : array-like
+            Input array to sum over.
+        dim : int or tuple of int, optional
+            Axis or axes along which to sum. By default, sum over all axes.
+        keepdim : bool, default=False
+            If True, retains reduced dimensions with size 1.
+
+        Returns
+        -------
+        array
+            Sum of the array elements over the specified axes.
+
+        Requirements
+        ------------
+        - Must preserve device and dtype.
+        """
     # ---------------------------------------------------------
-    # Optional just-in-time compilation
+    # Optional 
     # ---------------------------------------------------------
+    @abstractmethod
+    def astype(self, x: Any, dtype: Any) -> Any:
+        """
+        Cast the input array `x` to the specified `dtype`.
+
+        Parameters
+        ----------
+        x : array-like
+            Input array to cast.
+        dtype : Any
+            Target data type for the cast.
+
+        Returns
+        -------
+        array
+            A new array with the same data as `x` but cast to `dtype`.
+
+        Requirements
+        ------------
+        - Must preserve device.
+        """
+    
+    @abstractmethod
+    def detach(self, x: Any) -> Any:
+        """
+        Return a new array that is detached from the computation graph, if applicable.
+
+        Returns
+        -------
+        array
+            A detached version of `x`.
+
+        Notes
+        -----
+        - For backends without automatic differentiation, this may be a no-op.
+        - For backends with AD (e.g. PyTorch, JAX), this should return an array
+          that does not track gradients.
+        """
+    
+    @abstractmethod
+    def no_grad(self) -> Any:
+        """
+        Context manager to disable gradient tracking, if supported by the backend.
+
+        Returns
+        -------
+        context manager
+            A context manager that disables gradient tracking within its scope.
+
+        Notes
+        -----
+        - For backends without automatic differentiation, this may be a no-op.
+        - For backends with AD (e.g. PyTorch, JAX), this should disable gradient tracking.
+        """
+        
     @abstractmethod
     def jit(self, fn: Callable) -> Callable:
         """
@@ -458,11 +730,72 @@ class TorchBackend(Backend):
         if x.device.type != self.device.type:
             raise ValueError(f"Tensor must be on device type {self.device.type}, got {x.device}")
         
-        if x.dtype != self.dtype and not x.dtype.is_complex:
-            raise ValueError(
-                f"Tensor dtype must be {self.dtype} or its complex counterpart, got {x.dtype}"
-            )
+        self._check_dtype(x)
+        
+    def _check_dtype(self, x: torch.Tensor) -> None:
+        """
+        Validate dtype according to backend rules.
+        Allows: bool, integer, backend float dtype, backend complex dtype.
+        """
 
+        # Allow boolean
+        if x.dtype == torch.bool:
+            return
+
+        # Allow signed/unsigned integers
+        if x.dtype.is_signed or x.dtype.is_unsigned:
+            return
+
+        # Floating-point case
+        if x.dtype == self.dtype:
+            return
+
+        # Complex case
+        if x.dtype == self.complex_dtype:
+            return
+
+        raise ValueError(
+            f"Tensor dtype must be {self.dtype} or {self.complex_dtype}, "
+            f"or any bool/int type. Got {x.dtype} instead."
+        )
+    # ---------------------------------------------------------
+    # Data types
+    # ---------------------------------------------------------
+    @property
+    def float32(self) -> torch.dtype:
+        """The torch.float32 data type."""
+        return torch.float32
+    
+    @property
+    def float64(self) -> torch.dtype:
+        """The torch.float64 data type."""
+        return torch.float64
+    
+    @property
+    def complex64(self) -> torch.dtype:
+        """The torch.complex64 data type."""
+        return torch.complex64
+    
+    @property
+    def complex128(self) -> torch.dtype:
+        """The torch.complex128 data type."""
+        return torch.complex128
+    
+    @property
+    def long(self) -> torch.dtype:
+        """The torch.int64 (long) data type."""
+        return torch.int64
+    
+    @property
+    def int32(self) -> torch.dtype:
+        """The torch.int32 data type."""
+        return torch.int32
+    
+    @property
+    def bool(self) -> torch.dtype:
+        """The torch.bool data type."""
+        return torch.bool
+    
     # -------------------------------------------------------------------------
     # Array Creation / Casting
     # -------------------------------------------------------------------------
@@ -537,6 +870,22 @@ class TorchBackend(Backend):
             Tensor of ones on backend.device with correct dtype.
         """
         return torch.ones(shape, dtype=self.dtype, device=self.device)
+    
+    def eye(self, n: int) -> torch.Tensor:
+        """
+        Create an identity matrix of size n x n with correct dtype and device.
+
+        Parameters
+        ----------
+        n : int
+            Size of the identity matrix.
+
+        Returns
+        -------
+        torch.Tensor
+            Identity matrix of shape (n, n) on backend.device with correct dtype.
+        """
+        return torch.eye(n, dtype=self.dtype, device=self.device)
     
     def zeros_like(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -661,6 +1010,114 @@ class TorchBackend(Backend):
         """
         self.validate(x)
         return torch.clamp(x, min=min_value, max=max_value)
+    
+    def cat(self, arrays: list[torch.Tensor], dim: int) -> torch.Tensor:
+        """
+        Concatenate a list of tensors along the specified dimension.
+        """
+        for arr in arrays:
+            self.validate(arr)
+        return torch.cat(arrays, dim=dim)
+    
+    def roll(self, x: torch.Tensor, shifts: int, dims: int) -> torch.Tensor:
+        """
+        Roll the elements of `x` along the specified dimension by `shifts`.
+        """
+        self.validate(x)
+        return torch.roll(x, shifts=shifts, dims=dims)
+    
+    def amin(self, x: torch.Tensor, dim: int | tuple[int, ...] = None, keepdim: bool = False) -> torch.Tensor:
+        """
+        Compute the minimum of tensor elements over given axes.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor to compute the minimum over.
+        dim : int or tuple of int, optional
+            Axis or axes along which to compute the minimum. By default, compute over all axes.
+        keepdim : bool, default=False
+            If True, retains reduced dimensions with size 1.
+
+        Returns
+        -------
+        torch.Tensor
+            Minimum of the tensor elements over the specified axes.
+
+        Requirements
+        ------------
+        - Must preserve device and dtype.
+        """
+        self.validate(x)
+        return torch.amin(x, dim=dim, keepdim=keepdim)
+    
+    def amax(self, x: torch.Tensor, dim: int | tuple[int, ...] = None, keepdim: bool = False) -> torch.Tensor:
+        """
+        Compute the maximum of tensor elements over given axes.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor to compute the maximum over.
+        dim : int or tuple of int, optional
+            Axis or axes along which to compute the maximum. By default, compute over all axes.
+        keepdim : bool, default=False
+            If True, retains reduced dimensions with size 1.
+
+        Returns
+        -------
+        torch.Tensor
+            Maximum of the tensor elements over the specified axes.
+
+        Requirements
+        ------------
+        - Must preserve device and dtype.
+        """
+        self.validate(x)
+        return torch.amax(x, dim=dim, keepdim=keepdim)
+    
+    def nonzero(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Return the indices of the non-zero elements of `x`.
+        """
+        self.validate(x)
+        return torch.nonzero(x, as_tuple=False)
+    
+    def take_along_axis(self, arr: torch.Tensor, indices: torch.Tensor, axis: int) -> torch.Tensor:
+        """
+        Take values from `arr` along the specified axis using `indices`.
+        """
+        self.validate(arr)
+        return torch.take_along_dim(arr, indices, dim=axis)
+    
+    def unsqueeze(self, x: torch.Tensor, axis: int) -> torch.Tensor:
+        """
+        Add a singleton dimension to `x` at the specified axis.
+        """
+        self.validate(x)
+        return torch.unsqueeze(x, dim=axis)
+    
+    def repeat(self, x: torch.Tensor, repeats: tuple[int, ...]) -> torch.Tensor:
+        """
+        Repeat the elements of `x` according to `repeats` along each dimension.
+        """
+        self.validate(x)
+        return x.repeat(repeats)
+    
+    def repeat_interleave(self, x: torch.Tensor, repeats: int, dim: int) -> torch.Tensor:
+        """
+        Repeat elements of `x` along dimension `dim` `repeats` times.
+        """
+        self.validate(x)
+        return x.repeat_interleave(repeats, dim=dim)
+    
+    def stack(self, arrays: list[torch.Tensor], dim: int) -> torch.Tensor:
+        """
+        Stack a sequence of tensors along a new dimension.
+        """
+        for arr in arrays:
+            self.validate(arr)
+        return torch.stack(arrays, dim=dim)
     # -------------------------------------------------------------------------
     # FFT Operations
     # -------------------------------------------------------------------------
@@ -755,6 +1212,27 @@ class TorchBackend(Backend):
         self.validate(b)
         return a @ b
 
+    def diag_embed(self, x: torch.Tensor, dim1: int = -2, dim2: int = -1) -> torch.Tensor:
+        """
+        Create a batch of diagonal matrices from the last dimension of `x`.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor of shape (..., N).
+        dim1 : int, default=-2
+            The first dimension of the output diagonal matrices.
+        dim2 : int, default=-1
+            The second dimension of the output diagonal matrices.
+
+        Returns
+        -------
+        torch.Tensor
+            Output tensor of shape (..., N, N) where each slice along the leading
+            dimensions is a diagonal matrix with the corresponding elements from `x`.
+        """
+        self.validate(x)
+        return torch.diag_embed(x, dim1=dim1, dim2=dim2)
     # -------------------------------------------------------------------------
     # Complex Utilities
     # -------------------------------------------------------------------------
@@ -910,9 +1388,114 @@ class TorchBackend(Backend):
         """
         self.validate(x)
         return torch.sigmoid(x)
+    
+    def sqrt(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Compute the element-wise square root of `x`.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor.
+
+        Returns
+        -------
+        torch.Tensor
+            Element-wise square root of x.
+
+        Notes
+        -----
+        - Uses torch.sqrt which is differentiable.
+        """
+        self.validate(x)
+        return torch.sqrt(x)
+    
+    def sum(self, x: torch.Tensor, dim: int | tuple[int, ...] = None, keepdim: bool = False) -> torch.Tensor:
+        """
+        Compute the sum of tensor elements over given axes.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor to sum over.
+        dim : int or tuple of int, optional
+            Axis or axes along which to sum. By default, sum over all axes.
+        keepdim : bool, default=False
+            If True, retains reduced dimensions with size 1.
+
+        Returns
+        -------
+        torch.Tensor
+            Sum of the tensor elements over the specified axes.
+
+        Notes
+        -----
+        - Uses torch.sum which is differentiable.
+        """
+        self.validate(x)
+        return torch.sum(x, dim=dim, keepdim=keepdim)
     # -------------------------------------------------------------------------
-    # Optional JIT Compilation
+    # Optional 
     # -------------------------------------------------------------------------
+    def astype(self, x: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
+        """
+        Cast the input tensor `x` to the specified `dtype`.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor to cast.
+        dtype : torch.dtype
+            Target data type for the cast.
+
+        Returns
+        -------
+        torch.Tensor
+            A new tensor with the same data as `x` but cast to `dtype`.
+
+        Requirements
+        ------------
+        - Must preserve device.
+        """
+        self.validate(x)
+        return x.to(dtype=dtype, device=self.device)
+    
+    def detach(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Return a new tensor that is detached from the computation graph.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor.
+
+        Returns
+        -------
+        torch.Tensor
+            A detached version of `x`.
+
+        Notes
+        -----
+        - Uses x.detach() to create a tensor that does not track gradients.
+        """
+        self.validate(x)
+        return x.detach()
+    
+    def no_grad(self) -> Any:
+        """
+        Context manager to disable gradient tracking using torch.no_grad().
+
+        Returns
+        -------
+        context manager
+            A context manager that disables gradient tracking within its scope.
+
+        Notes
+        -----
+        - Uses torch.no_grad to disable gradient tracking.
+        """
+        return torch.no_grad()
+    
     def jit(self, fn: Callable) -> Callable:
         """
         Wrap a function using torch.compile, if enabled.

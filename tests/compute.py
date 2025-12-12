@@ -1,6 +1,7 @@
-from src.backend import TorchBackend
-from src.kvector import compute_k0xy, compute_Kxy
 import torch
+
+from src.backend import TorchBackend
+from src.compute import build_index_map, toeplitz_2d, compute_k0xy, compute_Kxy
 
 ''' Tests for k0xy computation '''
 
@@ -303,3 +304,57 @@ def test_Kxy_full():
     test_Kxy_spacing_matches_2pi_over_L()
 
     print("✓ full Kxy test passed.")
+
+def test_index_map_shapes_and_ranges(M, N):
+    backend = TorchBackend()
+    dm_map, dn_map = build_index_map(backend, M, N)
+
+    M2 = 2 * M + 1
+    N2 = 2 * N + 1
+
+    # shape
+    assert dm_map.shape == (M2, N2, M2, N2)
+    assert dn_map.shape == (M2, N2, M2, N2)
+
+    # range: 0..2M and 0..2N
+    assert dm_map.min() >= 0
+    assert dm_map.max() <= 2 * M
+    assert dn_map.min() >= 0
+    assert dn_map.max() <= 2 * N
+
+
+def test_toeplitz_matches_reference(M, N):
+    backend = TorchBackend()
+    dm_map, dn_map = build_index_map(backend, M, N)
+
+    M2 = 2 * M + 1
+    N2 = 2 * N + 1
+
+    B = 2
+    # random Fourier coefficients eps(b, m, n)
+    eps = torch.randn(B, M2, N2, dtype=torch.complex64)
+
+    T = toeplitz_2d(backend, eps, dm_map, dn_map)  # (B,M2,N2,M2,N2)
+
+    # ----- build slow reference Toeplitz -----
+    T_ref = torch.empty_like(T)
+
+    # index 0..M2-1 correspond to harmonics -M..M
+    for b in range(B):
+        for i in range(M2):
+            for j in range(N2):
+                for p in range(M2):
+                    for q in range(N2):
+                        di = (i - p) % M2
+                        dj = (j - q) % N2
+                        T_ref[b, i, j, p, q] = eps[b, di, dj]
+  
+    assert torch.allclose(T, T_ref, atol=1e-6)
+    
+def toeplitz_2d_full():
+    test_index_map_shapes_and_ranges(M=2, N=2)
+    test_index_map_shapes_and_ranges(M=3, N=4)
+    test_toeplitz_matches_reference(M=2, N=2)
+    test_toeplitz_matches_reference(M=3, N=3)
+
+    print("✓ full toeplitz_2d test passed.")

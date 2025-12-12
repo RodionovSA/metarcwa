@@ -1,6 +1,6 @@
 import torch
 from src.backend import TorchBackend
-from src.geometry import Rectangle, Canvas
+from src.geometry import Rectangle, Lattice
 
 ''' Test Rectangle geometry object:
     - real-space epsilon(x,y) and mu(x,y)
@@ -19,7 +19,7 @@ def test_rectangle_dc_term():
     Nx, Ny = 256, 256
     period = (Lx, Ly)
     grid = (Nx, Ny)
-    canv = Canvas(period, grid)
+    lattice = Lattice(period, grid)
 
     # Rectangle centered at 0 in [-L/2, L/2]
     center = (0.0, 0.0)
@@ -30,7 +30,7 @@ def test_rectangle_dc_term():
 
     rect = Rectangle(
         backend=backend,
-        canvas=canv,
+        lattice=lattice,
         center=center,
         size=size,
         epsilon=eps_rect,
@@ -64,7 +64,7 @@ def test_rectangle_fft_vs_analytic():
     Nx, Ny = 512, 512      # fairly fine grid
     period = (Lx, Ly)
     grid = (Nx, Ny)
-    canv = Canvas(period, grid)
+    lattice = Lattice(period, grid)
 
     center = (0.0, 0.0)    # in [-L/2, L/2]
     size = (0.3, 0.5)
@@ -74,7 +74,7 @@ def test_rectangle_fft_vs_analytic():
 
     rect = Rectangle(
         backend=backend,
-        canvas=canv,
+        lattice=lattice,
         center=center,
         size=size,
         epsilon=eps_rect,
@@ -123,7 +123,7 @@ def test_rectangle_batch_materials_shapes_and_dc():
     Nx, Ny = 512, 512
     period = (Lx, Ly)
     grid = (Nx, Ny)
-    canv = Canvas(period, grid)
+    lattice = Lattice(period, grid)
 
     center = (0.0, 0.0)
     size = (0.4, 0.4)
@@ -134,7 +134,7 @@ def test_rectangle_batch_materials_shapes_and_dc():
 
     rect = Rectangle(
         backend=backend,
-        canvas=canv,
+        lattice=lattice,
         center=center,
         size=size,
         epsilon=eps_rect,
@@ -167,7 +167,7 @@ def test_rectangle_mu_same_pipeline():
     Nx, Ny = 512, 512
     period = (Lx, Ly)
     grid = (Nx, Ny)
-    canv = Canvas(period, grid)
+    lattice = Lattice(period, grid)
 
     center = (0.0, 0.0)
     size = (0.4, 0.4)
@@ -177,7 +177,7 @@ def test_rectangle_mu_same_pipeline():
 
     rect = Rectangle(
         backend=backend,
-        canvas=canv,
+        lattice=lattice,
         center=center,
         size=size,
         epsilon=2.0,
