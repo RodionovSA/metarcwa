@@ -139,8 +139,8 @@ def test_Kxy_shape_single_wavelength():
     backend = make_backend()
 
     # Single wavelength, kx0=ky0=0 (normal incidence)
-    kx0 = backend.reshape(backend.asarray(torch.tensor([0.0]), complex=False), (1, 1, 1))  # shape [1, 1, 1]
-    ky0 = backend.reshape(backend.asarray(torch.tensor([0.0]), complex=False), (1, 1, 1))  # shape [1, 1, 1]
+    kx0 = backend.xp.reshape(backend.asarray(torch.tensor([0.0]), complex=False), (1, 1, 1))  # shape [1, 1, 1]
+    ky0 = backend.xp.reshape(backend.asarray(torch.tensor([0.0]), complex=False), (1, 1, 1))  # shape [1, 1, 1]
 
     Lx = 0.5
     Ly = 0.5
@@ -169,11 +169,11 @@ def test_Kxy_values_normal_incidence_unit_period():
     backend = make_backend()
 
     # Single wavelength, single theta, single phi → (Nw,Nt,Np) = (1,1,1)
-    kx0 = backend.reshape(
+    kx0 = backend.xp.reshape(
         backend.asarray(torch.tensor([0.0]), complex=False),
         (1, 1, 1),
     )
-    ky0 = backend.reshape(
+    ky0 = backend.xp.reshape(
         backend.asarray(torch.tensor([0.0]), complex=False),
         (1, 1, 1),
     )
@@ -217,11 +217,11 @@ def test_Kxy_batch_two_wavelengths():
     backend = make_backend()
 
     # Two wavelengths → shape (Nw,Nt,Np) = (2,1,1)
-    kx0 = backend.reshape(
+    kx0 = backend.xp.reshape(
         backend.asarray(torch.tensor([0.1, 0.3]), complex=False),
         (2, 1, 1),
     )
-    ky0 = backend.reshape(
+    ky0 = backend.xp.reshape(
         backend.asarray(torch.tensor([0.0, 0.0]), complex=False),
         (2, 1, 1),
     )
@@ -263,11 +263,11 @@ def test_Kxy_spacing_matches_2pi_over_L():
     backend = make_backend()
 
     # Single (wavelength, theta, phi) → (Nw,Nt,Np) = (1,1,1)
-    kx0 = backend.reshape(
+    kx0 = backend.xp.reshape(
         backend.asarray(torch.tensor([0.0]), complex=False),
         (1, 1, 1),
     )
-    ky0 = backend.reshape(
+    ky0 = backend.xp.reshape(
         backend.asarray(torch.tensor([0.0]), complex=False),
         (1, 1, 1),
     )

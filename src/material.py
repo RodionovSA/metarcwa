@@ -47,12 +47,12 @@ class Material(BaseMaterial):
     @property
     def epsilon_tensor(self) -> Any:
         """Return wvlx3×3 permittivity tensor."""
-        return self.backend.reshape(self._epsilon, (len(self._epsilon), 1, 1))*self.backend.eye(3)
+        return self.backend.xp.reshape(self._epsilon, (len(self._epsilon), 1, 1))*self.backend.eye(3)
     
     @property
     def mu_tensor(self) -> Any:
         """Return wvlx3×3 permeability tensor."""
-        return self.backend.reshape(self.backend.ones_like(self._epsilon), (len(self._epsilon), 1, 1))*self.backend.eye(3)
+        return self.backend.xp.reshape(self.backend.ones_like(self._epsilon), (len(self._epsilon), 1, 1))*self.backend.eye(3)
     
     @staticmethod
     def _init_validation(backend: Backend, 
@@ -67,7 +67,7 @@ class Material(BaseMaterial):
         if len(eps_t.shape) > 1:
             raise ValueError("epsilon must be a scalar or 1D tensor")
         if eps_t.shape == ():
-            eps_t = backend.reshape(eps_t, (1))
+            eps_t = backend.xp.reshape(eps_t, (1,))
         
         return eps_t
     

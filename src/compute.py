@@ -32,7 +32,7 @@ def fft_matfunc(
     """
     matfunc_xy = backend.asarray(matfunc_xy, complex=True)
 
-    shape = backend.shape(matfunc_xy)
+    shape = matfunc_xy.shape
     if len(shape) != 5:
         raise ValueError("matfunc_xy must have shape (wvl, 3, 3, Nx, Ny)")
     if shape[1] != 3 or shape[2] != 3:
@@ -60,61 +60,6 @@ def fft_matfunc(
 
     norm = Nx * Ny
     matfunc_mn = matfunc_crop / norm
-
-    return matfunc_mn
-
-def circ_fft_matfunc(
-    backend: Backend,
-    matfunc_xy,
-    M: int,
-    N: int,
-):
-    """
-    Compute Fourier coefficients matfunc_{m,n} from real-space matfunc(x,y)
-    using a circular crop in (m,n)-index space. matfunc_xy can be epsilon, mu,
-    or any other material function.
-    
-
-    Parameters
-    ----------
-    backend : Backend
-        Computational backend.
-
-    matfunc_xy : array-like or backend tensor
-        Material function map in real space. Can be real or complex.
-        Shape: (Nr, Ntheta) or (B, Nr, Ntheta).
-
-    M, N : int
-        Number of harmonics along r and theta.
-
-    Returns
-    -------
-    matfunc_mn : backend tensor
-        Fourier coefficients matfunc_{m,n}, shape (B, 2M+1, 2N+1),
-        complex-valued.
-    """
-    cropped_matfunc_mn = fft_matfunc(backend, matfunc_xy, M, N)
-    
-    # --- Circular mask in (m,n) index space ---
-    # m_idx ∈ [-M..M], n_idx ∈ [-N..N]
-    m_idx = backend.arange(-M, M + 1)              # (2M+1,)
-    n_idx = backend.arange(-N, N + 1)              # (2N+1,)
-
-    m_idx = backend.reshape(m_idx, (1, 2 * M + 1, 1))
-    n_idx = backend.reshape(n_idx, (1, 1, 2 * N + 1))
-
-    # radius in index space
-    R = min(M, N)
-    R2 = R * R
-
-    m2 = m_idx * m_idx
-    n2 = n_idx * n_idx
-    r2 = m2 + n2                         # (1, 2M+1, 2N+1)
-
-    # mask: inside circle => 1, outside => 0
-    mask = backend.asarray(r2 <= R2, complex=False)   # real mask
-
-    matfunc_mn = cropped_matfunc_mn * mask # (B, 2M+1, 2N+1)
 
     return matfunc_mn
 
@@ -170,8 +115,8 @@ def compute_k0xy(
     ph    = backend.asarray(phi,         complex=False)
     n_inc = backend.asarray(n_inc,       complex=False)
     
-    lam_shape = backend.shape(lam)
-    n_shape   = backend.shape(n_inc)
+    lam_shape = lam.shape
+    n_shape   = n_inc.shape
     # --- Minimal sanity: wavelengths and n_inc must be scalar or 1D ---
     if len(lam_shape) > 1:
         raise ValueError(f"wavelengths must be scalar or 1D, got shape={lam_shape}")
@@ -187,18 +132,18 @@ def compute_k0xy(
     
     # Force them into [Nw,1,1], [1,Nt,1], [1,1,Np] so that
     # broadcasting gives [Nw,Nt,Np] for everything.
-    if len(backend.shape(lam)) in (0, 1):
-        lam = backend.reshape(lam, (-1, 1, 1))   # [Nw,1,1]
-    if len(backend.shape(th)) in (0, 1):
-        th = backend.reshape(th, (1, -1, 1))     # [1,Nt,1]
-    if len(backend.shape(ph)) in (0, 1):
-        ph = backend.reshape(ph, (1, 1, -1))     # [1,1,Np]
+    if len(lam_shape) in (0, 1):
+        lam = backend.xp.reshape(lam, (-1, 1, 1))   # [Nw,1,1]
+    if len(th.shape) in (0, 1):
+        th = backend.xp.reshape(th, (1, -1, 1))     # [1,Nt,1]
+    if len(ph.shape) in (0, 1):
+        ph = backend.xp.reshape(ph, (1, 1, -1))     # [1,1,Np]
     
     # Number of wavelengths after reshaping
-    Nw = backend.shape(lam)[0]
+    Nw = lam.shape[0]
     
     # ---- Handle n_inc so it always ends up [Nw,1,1] ----
-    n_shape = backend.shape(n_inc)
+    n_shape = n_inc.shape
     if len(n_shape) == 0:
         # Scalar index: use same value for all wavelengths
         # lam/lam is a [Nw,1,1] array of ones
@@ -206,11 +151,11 @@ def compute_k0xy(
     elif len(n_shape) == 1:
         if n_shape[0] == 1:
             # Single value → use for all wavelengths
-            n_inc = backend.reshape(n_inc, (1, 1, 1))  # [1,1,1]
+            n_inc = backend.xp.reshape(n_inc, (1, 1, 1))  # [1,1,1]
             n_inc = n_inc * (lam / lam)               # [Nw,1,1]
         elif n_shape[0] == Nw:
             # Per-wavelength index
-            n_inc = backend.reshape(n_inc, (Nw, 1, 1))  # [Nw,1,1]
+            n_inc = backend.xp.reshape(n_inc, (Nw, 1, 1))  # [Nw,1,1]
         else:
             raise ValueError(
                 f"n_inc 1D length must be 1 or Nw={Nw}, got {n_shape[0]}"
@@ -220,9 +165,9 @@ def compute_k0xy(
         raise ValueError("n_inc must be scalar or 1D.")
 
     # Direction cosines
-    sin_th = backend.sin(th)
-    cos_ph = backend.cos(ph)
-    sin_ph = backend.sin(ph)
+    sin_th = backend.xp.sin(th)
+    cos_ph = backend.xp.cos(ph)
+    sin_ph = backend.xp.sin(ph)
 
     # These are ALWAYS real-valued physically.
     kx_dir = n_inc * sin_th * cos_ph
@@ -281,16 +226,16 @@ def compute_Kxy(
     kx0 = backend.asarray(kx0, complex=False)  # (B,)
     ky0 = backend.asarray(ky0, complex=False)  # (B,)
 
-    if backend.shape(kx0) != backend.shape(ky0):
-        raise ValueError(f"kx0 and ky0 must have the same shape, got {backend.shape(kx0)} and {backend.shape(ky0)}")
+    if kx0.shape != ky0.shape:
+        raise ValueError(f"kx0 and ky0 must have the same shape, got {ky0.shape} and {ky0.shape}")
     
-    if len(backend.shape(kx0)) != 3:
+    if len(kx0.shape) != 3:
         raise ValueError(
             f"kx0 and ky0 must have shape (Nw, Nt, Np); "
-            f"got ndim={len(backend.shape(kx0))}, shape={backend.shape(kx0)}"
+            f"got ndim={len(kx0.shape)}, shape={kx0.shape}"
         )
 
-    Nw, Nt, Np = backend.shape(kx0)
+    Nw, Nt, Np = kx0.shape
 
     # Periods → reciprocal lattice vectors
     Lx_t = backend.asarray(Lx, complex=False)
@@ -304,17 +249,17 @@ def compute_Kxy(
     n = backend.arange(-N, N+1)
 
     # Reshape for broadcasting:
-    kx0 = backend.reshape(kx0, (Nw, Nt, Np, 1, 1))
-    ky0 = backend.reshape(ky0, (Nw, Nt, Np, 1, 1))
+    kx0 = backend.xp.reshape(kx0, (Nw, Nt, Np, 1, 1))
+    ky0 = backend.xp.reshape(ky0, (Nw, Nt, Np, 1, 1))
 
     # m : (1, 1, 1, 2M+1, 1)
-    m = backend.reshape(m, (1, 1, 1, 2 * M + 1, 1))
+    m = backend.xp.reshape(m, (1, 1, 1, 2 * M + 1, 1))
     # n : (1, 1, 1, 1, 2N+1)
-    n = backend.reshape(n, (1, 1, 1, 1, 2 * N + 1))
+    n = backend.xp.reshape(n, (1, 1, 1, 1, 2 * N + 1))
 
     # Gx, Gy : (1, 1, 1, 1, 1) so they broadcast with everything
-    Gx = backend.reshape(Gx, (1, 1, 1, 1, 1))
-    Gy = backend.reshape(Gy, (1, 1, 1, 1, 1))
+    Gx = backend.xp.reshape(Gx, (1, 1, 1, 1, 1))
+    Gy = backend.xp.reshape(Gy, (1, 1, 1, 1, 1))
 
     # Compute "lines":
     Kx_line = kx0 + m * Gx       # (*batch_shape, 2M+1, 1)
@@ -334,12 +279,12 @@ def flatten_Kxy(backend: Backend, Kx: Any, Ky: Any) -> Tuple[Any, Any, int]:
     """
     
     # 1. Save Batch Shape
-    Nw, Nt, Np, Mm, Nn = backend.shape(Kx)
+    Nw, Nt, Np, Mm, Nn = Kx.shape
     N_rect = Mm * Nn
     
     # 2. Reshape to (B, N_rect)
-    Kx_flat = backend.reshape(Kx, (Nw, Nt, Np, N_rect))
-    Ky_flat = backend.reshape(Ky, (Nw, Nt, Np, N_rect))
+    Kx_flat = backend.xp.reshape(Kx, (Nw, Nt, Np, N_rect))
+    Ky_flat = backend.xp.reshape(Ky, (Nw, Nt, Np, N_rect))
     
     return Kx_flat, Ky_flat, N_rect
 
@@ -366,10 +311,10 @@ def diagonal_K_matrices(backend: Backend, Kx: Any, Ky: Any, circular: bool = Tru
     Kx = backend.asarray(Kx, complex=False)
     Ky = backend.asarray(Ky, complex=False)
     
-    if backend.shape(Kx) != backend.shape(Ky):
+    if Kx.shape != Ky.shape:
         raise ValueError("Kx and Ky must have the same shape")
     
-    _, _, _, Mm, Nn = backend.shape(Kx)
+    _, _, _, Mm, Nn = Kx.shape
     M = (Mm - 1) // 2
     N = (Nn - 1) // 2
     
@@ -377,7 +322,7 @@ def diagonal_K_matrices(backend: Backend, Kx: Any, Ky: Any, circular: bool = Tru
         mx, ny = build_harmonic_grid(backend, M, N)
         mask = elliptical_truncation_mask(mx, ny, M, N)
     else:
-        mask = backend.astype(backend.ones(Mm*Nn), backend.bool)
+        mask = backend.astype(backend.ones(Mm*Nn), backend.xp.bool)
     
     # Flatten Kx, Ky
     Kx_flat, Ky_flat, _ = flatten_Kxy(backend, Kx, Ky)
@@ -422,17 +367,17 @@ def build_index_map(backend, M , N, circular=True):
         
     Nsize = mx.shape[0]
     
-    p_row_mat = backend.reshape(mx, (Nsize, 1))
-    p_col_mat = backend.reshape(mx, (1, Nsize))
+    p_row_mat = backend.xp.reshape(mx, (Nsize, 1))
+    p_col_mat = backend.xp.reshape(mx, (1, Nsize))
 
-    q_row_mat = backend.reshape(ny, (Nsize, 1))
-    q_col_mat = backend.reshape(ny, (1, Nsize))
+    q_row_mat = backend.xp.reshape(ny, (Nsize, 1))
+    q_col_mat = backend.xp.reshape(ny, (1, Nsize))
     
     # Calculate Differences: The result is N_circ x N_circ
     dm_map = p_row_mat - p_col_mat + 2*M  # Delta P map
     dn_map = q_row_mat - q_col_mat + 2*N  # Delta Q map
     
-    return backend.astype(dm_map, backend.long), backend.astype(dn_map, backend.long)
+    return backend.astype(dm_map, backend.xp.long), backend.astype(dn_map, backend.xp.long)
 
 def build_harmonic_grid(backend, M, N):
     """
@@ -440,15 +385,15 @@ def build_harmonic_grid(backend, M, N):
         mx_flat, ny_flat : tensors of shape (K,)
         where K = (2M+1)(2N+1)
     """
-    m = backend.astype(backend.arange(-M, M+1), backend.long)
-    n = backend.astype(backend.arange(-N, N+1), backend.long)
+    m = backend.astype(backend.arange(-M, M+1), backend.xp.long)
+    n = backend.astype(backend.arange(-N, N+1), backend.xp.long)
 
-    mi, nj = backend.meshgrid(m, n, indexing='ij')
+    mi, nj = backend.xp.meshgrid(m, n, indexing='ij')
 
     # Flatten to 1D for convenience
     size = (2*M+1)*(2*N+1)
-    mx = backend.reshape(mi, (size,))
-    ny = backend.reshape(nj, (size,))
+    mx = backend.xp.reshape(mi, (size,))
+    ny = backend.xp.reshape(nj, (size,))
 
     return mx, ny
 

@@ -304,7 +304,7 @@ class VectorObject:
 
         # Get bitmap mask
         mask_c = self.bitmap          # (Nx, Ny), bool
-        mask_c = self.backend.reshape(mask_c, (1, 1, 1, Nx, Ny))  # (1, 1, 1, Nx, Ny)
+        mask_c = self.backend.xp.reshape(mask_c, (1, 1, 1, Nx, Ny))  # (1, 1, 1, Nx, Ny)
         
         # Material values
         if mode == 'epsilon':
@@ -326,8 +326,8 @@ class VectorObject:
         
         # Broadcast epsilon and epsilon_bg to (wvl, 3, 3, 1, 1)
         init_shape = mat_tensor.shape      # (wvl, 3, 3)
-        mat = self.backend.reshape(mat_tensor, init_shape + (1, 1))# (wvl, 3, 3, 1, 1)
-        mat_bg = self.backend.reshape(mat_bg_tensor, init_shape + (1, 1))# (wvl, 3, 3, 1, 1)
+        mat = self.backend.xp.reshape(mat_tensor, init_shape + (1, 1))# (wvl, 3, 3, 1, 1)
+        mat_bg = self.backend.xp.reshape(mat_bg_tensor, init_shape + (1, 1))# (wvl, 3, 3, 1, 1)
         
         # Expand eps_bg to (wvl, 3, 3, Nx, Ny)
         matdist_xy = self.backend.expand(mat_bg,init_shape + (Nx, Ny))# (wvl, 3, 3, Nx, Ny)
@@ -473,7 +473,7 @@ class Rectangle(VectorObject):
         iy = self.backend.arange(0, Ny)
         x = ix * (Lx / Nx)
         y = iy * (Ly / Ny)
-        X, Y = self.backend.meshgrid(x, y, indexing='ij')
+        X, Y = self.backend.xp.meshgrid(x, y, indexing='ij')
 
         w, h = self.size
         cx, cy = self.center
@@ -487,8 +487,8 @@ class Rectangle(VectorObject):
         
         # angle in radians (scalar → backend tensor)
         theta = self.backend.asarray(self.angle, complex=False)
-        cos_t = self.backend.cos(theta)
-        sin_t = self.backend.sin(theta)
+        cos_t = self.backend.xp.cos(theta)
+        sin_t = self.backend.xp.sin(theta)
 
         # coordinates relative to center
         dx = X - cx    # (Nx, Ny)
@@ -506,8 +506,8 @@ class Rectangle(VectorObject):
         yr = -dx_p * sin_t + dy_p * cos_t
 
         # mask in local coordinates
-        ax = self.backend.abs(xr)
-        ay = self.backend.abs(yr)
+        ax = self.backend.xp.abs(xr)
+        ay = self.backend.xp.abs(yr)
         
         if self.soft_mask:
             # Smooth mask
@@ -597,8 +597,8 @@ class Rectangle(VectorObject):
             else:
                 raise ValueError("Material and background material must have the same number of wavelengths")
             
-        val_b = self.backend.reshape(matval, (matval.shape[0], 3, 3, 1, 1)) # (B, 3, 3, 1, 1)
-        bg_b  = self.backend.reshape(matbg,  (matbg.shape[0], 3, 3, 1, 1)) # (B, 3, 3, 1, 1)
+        val_b = self.backend.xp.reshape(matval, (matval.shape[0], 3, 3, 1, 1)) # (B, 3, 3, 1, 1)
+        bg_b  = self.backend.xp.reshape(matbg,  (matbg.shape[0], 3, 3, 1, 1)) # (B, 3, 3, 1, 1)
 
         # Material contrast
         delta_mat = val_b - bg_b   # (B, 3, 3, 1, 1)
@@ -614,27 +614,27 @@ class Rectangle(VectorObject):
         Gn = (two_pi / Ly) * n   # (2N+1,)
 
         # 2D grids for Gm, Gn
-        Gm_grid, Gn_grid = self.backend.meshgrid(Gm, Gn, indexing='ij')  # (2M+1, 2N+1)
+        Gm_grid, Gn_grid = self.backend.xp.meshgrid(Gm, Gn, indexing='ij')  # (2M+1, 2N+1)
 
         # Helper: sinc(z) = sin(z)/z with safe handling of z=0
         def sinc(z):
             """
             Unnormalized sinc: sin(z) / z, with sinc(0) = 1.
             """
-            z_abs = self.backend.abs(z)
+            z_abs = self.backend.xp.abs(z)
             one = self.backend.ones_like(z)
             # Avoid division by zero
-            z_safe = self.backend.where(z_abs < 1e-14, one, z)
-            s = self.backend.sin(z) / z_safe
+            z_safe = self.backend.xp.where(z_abs < 1e-14, one, z)
+            s = self.backend.xp.sin(z) / z_safe
             # Enforce limit sinc(0) = 1
-            s = self.backend.where(z_abs < 1e-14, one, s)
+            s = self.backend.xp.where(z_abs < 1e-14, one, s)
             return s
 
         # --- Rotation: project (Gx, Gy) into local rectangle axes (u,v) ---
         # angle in radians
         theta = self.backend.asarray(self.angle, complex=False)
-        cos_t = self.backend.cos(theta)
-        sin_t = self.backend.sin(theta)
+        cos_t = self.backend.xp.cos(theta)
+        sin_t = self.backend.xp.sin(theta)
 
         # k_u, k_v in local frame
         ku = Gm_grid * cos_t + Gn_grid * sin_t          # (2M+1, 2N+1)
@@ -649,12 +649,12 @@ class Rectangle(VectorObject):
 
         # Phase factor exp(-j(Gm x_c + Gn y_c))
         phase_arg = Gm_grid * cx + Gn_grid * cy
-        phase = self.backend.exp(-1j * phase_arg) # (2M+1, 2N+1)
+        phase = self.backend.xp.exp(-1j * phase_arg) # (2M+1, 2N+1)
         
         #Broadcast to (B, 3, 3, 2M+1, 2N+1)
-        Sx = self.backend.reshape(Sx, (1, 1, 1, 2 * M + 1, 2 * N + 1))
-        Sy = self.backend.reshape(Sy, (1, 1, 1, 2 * M + 1, 2 * N + 1))
-        phase = self.backend.reshape(phase, (1, 1, 1, 2 * M + 1, 2 * N + 1))
+        Sx = self.backend.xp.reshape(Sx, (1, 1, 1, 2 * M + 1, 2 * N + 1))
+        Sy = self.backend.xp.reshape(Sy, (1, 1, 1, 2 * M + 1, 2 * N + 1))
+        phase = self.backend.xp.reshape(phase, (1, 1, 1, 2 * M + 1, 2 * N + 1))
 
         # Contrast contribution
         area_factor = (w * h) / (Lx * Ly)
@@ -708,7 +708,7 @@ class Bitmap:
         self._material = material
         
         # Setup lattice
-        lattice._grid = self._backend.shape(self._bitmap)  # enforce grid from bitmap shape
+        lattice._grid = self._bitmap.shape  # enforce grid from bitmap shape
         self._lattice = lattice
     
     """ Simulation properties """
@@ -770,11 +770,11 @@ class Bitmap:
             
         # Broadcast epsilon and epsilon_bg to (wvl, 3, 3, 1, 1)
         init_shape = epsilon_tensor.shape      # (wvl, 3, 3)
-        eps = self.backend.reshape(epsilon_tensor, init_shape + (1, 1))# (wvl, 3, 3, 1, 1)
-        eps_bg = self.backend.reshape(epsilon_bg_tensor, init_shape + (1, 1))# (wvl, 3, 3, 1, 1)
+        eps = self.backend.xp.reshape(epsilon_tensor, init_shape + (1, 1))# (wvl, 3, 3, 1, 1)
+        eps_bg = self.backend.xp.reshape(epsilon_bg_tensor, init_shape + (1, 1))# (wvl, 3, 3, 1, 1)
         
         # Broadcast bitmap to (1, 1, 1, Nx, Ny)
-        bitmap = self.backend.reshape(self.bitmap, (1, 1, 1) + self.bitmap.shape)  # (1, 1, 1, Nx, Ny)
+        bitmap = self.backend.xp.reshape(self.bitmap, (1, 1, 1) + self.bitmap.shape)  # (1, 1, 1, Nx, Ny)
         
         epsilon_xy = bitmap * (eps - eps_bg) + eps_bg # (wvl, 3, 3, Nx, Ny)
         epsilon_xy = self.backend.asarray(epsilon_xy, complex=True)
@@ -808,11 +808,11 @@ class Bitmap:
             
         # Broadcast epsilon and epsilon_bg to (wvl, 3, 3, 1, 1)
         init_shape = mu_tensor.shape      # (wvl, 3, 3)
-        mu = self.backend.reshape(mu_tensor, init_shape + (1, 1))# (wvl, 3, 3, 1, 1)
-        mu_bg = self.backend.reshape(mu_bg_tensor, init_shape + (1, 1))# (wvl, 3, 3, 1, 1)
+        mu = self.backend.xp.reshape(mu_tensor, init_shape + (1, 1))# (wvl, 3, 3, 1, 1)
+        mu_bg = self.backend.xp.reshape(mu_bg_tensor, init_shape + (1, 1))# (wvl, 3, 3, 1, 1)
         
         # Broadcast bitmap to (1, 1, 1, Nx, Ny)
-        bitmap = self.backend.reshape(self.bitmap, (1, 1, 1) + self.bitmap.shape)  # (1, 1, 1, Nx, Ny)
+        bitmap = self.backend.xp.reshape(self.bitmap, (1, 1, 1) + self.bitmap.shape)  # (1, 1, 1, Nx, Ny)
         
         mu_xy = bitmap * (mu - mu_bg) + mu_bg
         mu_xy = self.backend.asarray(mu_xy, complex=True)
@@ -836,13 +836,13 @@ class Bitmap:
         bm = backend.asarray(bitmap, complex=False)
 
         # --- Basic shape check (2D) ---
-        shape = backend.shape(bm)
+        shape = bm.shape
         if len(shape) != 2:
             raise ValueError(f"bitmap must be 2D, got shape {shape}")
         
         # --- Validate that the bitmap only contains 0/1 ---
         # Compute unique values using backend (works for torch/numpy/jax)
-        uniq = backend.unique(backend.clone(bm))
+        uniq = backend.xp.unique(backend.clone(bm))
 
         # Allowed values: 0 and 1
         allowed0 = backend.asarray(0, complex=False)
@@ -855,7 +855,7 @@ class Bitmap:
 
         # If any illegal values exist → issue a Python warning
         # This won't break autograd because only uniq is used
-        if backend.any(bad_mask):
+        if backend.xp.any(bad_mask):
             import warnings
             warnings.warn(
                 f"Bitmap contains values other than 0 and 1. "

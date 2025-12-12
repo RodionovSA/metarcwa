@@ -33,57 +33,7 @@ class Backend(ABC):
         """
         Validate that input `x` is compatible with this backend.
         """
-    # ---------------------------------------------------------
-    # Data types
-    # ---------------------------------------------------------
-    @property
-    @abstractmethod
-    def float32(self) -> Any:
-        """
-        Return the backend's float32 data type.
-        """
         
-    @property
-    @abstractmethod
-    def float64(self) -> Any:
-        """
-        Return the backend's float64 data type.
-        """
-        
-    @property
-    @abstractmethod
-    def complex64(self) -> Any:
-        """
-        Return the backend's complex64 data type.
-        """
-        
-    @property
-    @abstractmethod
-    def complex128(self) -> Any:
-        """
-        Return the backend's complex128 data type.
-        """
-    
-    @property
-    @abstractmethod
-    def long(self) -> Any:
-        """
-        Return the backend's long/integer data type.
-        """
-        
-    @property
-    @abstractmethod
-    def int32(self) -> Any:
-        """
-        Return the backend's int32 data type.
-        """
-    
-    @property
-    @abstractmethod
-    def bool(self) -> Any:
-        """
-        Return the backend's boolean data type.
-        """
     # ---------------------------------------------------------
     # Array creation / casting
     # ---------------------------------------------------------
@@ -195,12 +145,6 @@ class Backend(ABC):
         """
         
     @abstractmethod
-    def reshape(self, x: Any, shape: tuple[int, ...]) -> Any:
-        """
-        Reshape the input array `x` to the specified shape.
-        """
-        
-    @abstractmethod
     def expand(self, x: Any, shape: tuple[int, ...]) -> Any:
         """
         Expand the input array `x` to the specified shape using broadcasting rules.
@@ -213,21 +157,9 @@ class Backend(ABC):
         """
         
     @abstractmethod
-    def shape(self, x: Any) -> tuple[int, ...]:
-        """
-        Return the shape of the input array `x`.
-        """
-        
-    @abstractmethod
     def linspace(self, start: float, stop: float, num: int) -> Any:
         """
         Create a 1D array of `num` evenly spaced values between `start` and `stop`.
-        """
-        
-    @abstractmethod
-    def meshgrid(self, x: Any, y: Any, indexing: str = 'ij') -> tuple[Any, Any]:
-        """
-        Create coordinate matrices from coordinate vectors `x` and `y`.
         """
         
     @abstractmethod
@@ -236,24 +168,6 @@ class Backend(ABC):
         Create a copy of the input array `x`.
         """
         
-    @abstractmethod
-    def where(self, condition: Any, x: Any, y: Any) -> Any:
-        """
-        Return elements chosen from `x` or `y` depending on `condition`.
-        """
-
-    @abstractmethod
-    def unique(self, x: Any) -> Any:
-        """
-        Return the unique elements of the input array `x`.
-        """
-    
-    @abstractmethod
-    def any(self, x: Any) -> bool:
-        """
-        Return True if any element of `x` is True (non-zero).
-        """
-    
     @abstractmethod
     def clamp(self, x: Any, min_value: float, max_value: float) -> Any:
         """
@@ -336,18 +250,6 @@ class Backend(ABC):
     def unsqueeze(self, x: Any, axis: int) -> Any:
         """
         Add a singleton dimension to `x` at the specified axis.
-        """
-    
-    @abstractmethod
-    def repeat(self, x: Any, repeats: tuple[int, ...]) -> Any:
-        """
-        Repeat the elements of `x` according to `repeats` along each dimension.
-        """
-    
-    @abstractmethod
-    def repeat_interleave(self, x: Any, repeats: int, dim: int) -> Any:
-        """
-        Repeat elements of `x` along dimension `dim` `repeats` times.
         """
     
     @abstractmethod
@@ -457,46 +359,6 @@ class Backend(ABC):
     # Math function utilities
     # ---------------------------------------------------------
     @abstractmethod
-    def sin(self, x: Any) -> Any:
-        """
-        Compute the element-wise sine of `x`.
-
-        Requirements
-        ------------
-        - Must preserve device and dtype.
-        """
-        
-    @abstractmethod
-    def cos(self, x: Any) -> Any:
-        """
-        Compute the element-wise cosine of `x`.
-
-        Requirements
-        ------------
-        - Must preserve device and dtype.
-        """
-        
-    @abstractmethod
-    def exp(self, x: Any) -> Any:
-        """
-        Compute the element-wise exponential of `x`.
-
-        Requirements
-        ------------
-        - Must preserve device and dtype.
-        """
-        
-    @abstractmethod
-    def abs(self, x: Any) -> Any:
-        """
-        Compute the element-wise absolute value of `x`.
-
-        Requirements
-        ------------
-        - Must preserve device and dtype.
-        """
-
-    @abstractmethod
     def mod(self, x, y): 
         """
         Compute the element-wise modulus of `x` by `y`.
@@ -510,16 +372,6 @@ class Backend(ABC):
     def sigmoid(self, x: Any) -> Any:
         """
         Compute the element-wise sigmoid function of `x`.
-
-        Requirements
-        ------------
-        - Must preserve device and dtype.
-        """
-    
-    @abstractmethod
-    def sqrt(self, x: Any) -> Any:
-        """
-        Compute the element-wise square root of `x`.
 
         Requirements
         ------------
@@ -693,6 +545,8 @@ class TorchBackend(Backend):
         self.dtype_ = dtype
         
         self.use_compile = use_compile
+        
+        self.xp = torch  # Alias for convenience
     
     @property
     def device(self) -> torch.device:
@@ -758,43 +612,6 @@ class TorchBackend(Backend):
             f"Tensor dtype must be {self.dtype} or {self.complex_dtype}, "
             f"or any bool/int type. Got {x.dtype} instead."
         )
-    # ---------------------------------------------------------
-    # Data types
-    # ---------------------------------------------------------
-    @property
-    def float32(self) -> torch.dtype:
-        """The torch.float32 data type."""
-        return torch.float32
-    
-    @property
-    def float64(self) -> torch.dtype:
-        """The torch.float64 data type."""
-        return torch.float64
-    
-    @property
-    def complex64(self) -> torch.dtype:
-        """The torch.complex64 data type."""
-        return torch.complex64
-    
-    @property
-    def complex128(self) -> torch.dtype:
-        """The torch.complex128 data type."""
-        return torch.complex128
-    
-    @property
-    def long(self) -> torch.dtype:
-        """The torch.int64 (long) data type."""
-        return torch.int64
-    
-    @property
-    def int32(self) -> torch.dtype:
-        """The torch.int32 data type."""
-        return torch.int32
-    
-    @property
-    def bool(self) -> torch.dtype:
-        """The torch.bool data type."""
-        return torch.bool
     
     # -------------------------------------------------------------------------
     # Array Creation / Casting
@@ -921,13 +738,6 @@ class TorchBackend(Backend):
         """
         return torch.ones_like(x, dtype=self.dtype, device=self.device)
     
-    def reshape(self, x: torch.Tensor, shape: tuple[int, ...]) -> torch.Tensor:
-        """
-        Reshape tensor `x` to the specified shape.
-        """
-        self.validate(x)
-        return x.reshape(shape)
-
     def expand(self, x: torch.Tensor, shape: tuple[int, ...]) -> torch.Tensor:
         """
         Expand tensor `x` to the specified shape using broadcasting rules.
@@ -942,13 +752,6 @@ class TorchBackend(Backend):
         arr = torch.arange(start, stop, step, dtype=self.dtype, device=self.device)
         return arr
     
-    def shape(self, x: torch.Tensor) -> tuple[int, ...]:
-        """
-        Return the shape of the input tensor `x`.
-        """
-        self.validate(x)
-        return x.shape
-    
     def linspace(self, start: float, stop: float, num: int) -> torch.Tensor:
         """
         Create a 1D tensor of `num` evenly spaced values between `start` and `stop`.
@@ -956,53 +759,12 @@ class TorchBackend(Backend):
         arr = torch.linspace(start, stop, num, dtype=self.dtype, device=self.device)
         return arr    
     
-    def meshgrid(self, x, y, indexing = 'ij'):
-        '''
-        Create coordinate matrices from coordinate vectors `x` and `y`.
-        '''
-        return torch.meshgrid(x, y, indexing = indexing)
-    
     def clone(self, x: torch.Tensor) -> torch.Tensor:
         """
         Create a copy of the input tensor `x`.
         """
         self.validate(x)
         return x.clone()
-    
-    def where(self, condition: torch.Tensor, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        """
-        Return elements chosen from `x` or `y` depending on `condition`.
-        """
-        # condition must be boolean
-        if not isinstance(condition, torch.Tensor):
-            raise TypeError("condition must be a torch.Tensor")
-
-        if condition.dtype != torch.bool:
-            raise TypeError(f"condition must have dtype torch.bool, got {condition.dtype}")
-        
-        self.validate(x)
-        self.validate(y)
-        return torch.where(condition, x, y)
-    
-    def unique(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Return the unique elements of the input tensor `x`.
-        """
-        self.validate(x)
-        return torch.unique(x)
-    
-    def any(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Return True if any element of `x` is True (non-zero).
-        """
-        # condition must be boolean
-        if not isinstance(x, torch.Tensor):
-            raise TypeError("x must be a torch.Tensor")
-
-        if x.dtype != torch.bool:
-            raise TypeError(f"x must have dtype torch.bool, got {x.dtype}")
-        
-        return torch.any(x)
     
     def clamp(self, x: torch.Tensor, min_value: float, max_value: float) -> torch.Tensor:
         """
@@ -1096,20 +858,6 @@ class TorchBackend(Backend):
         """
         self.validate(x)
         return torch.unsqueeze(x, dim=axis)
-    
-    def repeat(self, x: torch.Tensor, repeats: tuple[int, ...]) -> torch.Tensor:
-        """
-        Repeat the elements of `x` according to `repeats` along each dimension.
-        """
-        self.validate(x)
-        return x.repeat(repeats)
-    
-    def repeat_interleave(self, x: torch.Tensor, repeats: int, dim: int) -> torch.Tensor:
-        """
-        Repeat elements of `x` along dimension `dim` `repeats` times.
-        """
-        self.validate(x)
-        return x.repeat_interleave(repeats, dim=dim)
     
     def stack(self, arrays: list[torch.Tensor], dim: int) -> torch.Tensor:
         """
@@ -1260,90 +1008,6 @@ class TorchBackend(Backend):
     # ---------------------------------------------------------
     # Math function utilities
     # ---------------------------------------------------------
-    def sin(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Compute the element-wise sine of a tensor.
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input tensor.
-
-        Returns
-        -------
-        torch.Tensor
-            Element-wise sine of x.
-
-        Notes
-        -----
-        - Uses torch.sin which is differentiable.
-        """
-        self.validate(x)
-        return torch.sin(x)
-    
-    def cos(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Compute the element-wise cosine of a tensor.
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input tensor.
-
-        Returns
-        -------
-        torch.Tensor
-            Element-wise cosine of x.
-
-        Notes
-        -----
-        - Uses torch.cos which is differentiable.
-        """
-        self.validate(x)
-        return torch.cos(x)
-
-    def exp(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Compute the element-wise exponential of a tensor.
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input tensor.
-
-        Returns
-        -------
-        torch.Tensor
-            Element-wise exponential of x.
-
-        Notes
-        -----
-        - Uses torch.exp which is differentiable.
-        """
-        self.validate(x)
-        return torch.exp(x)
-    
-    def abs(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Compute the element-wise absolute value of a tensor.
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input tensor.
-
-        Returns
-        -------
-        torch.Tensor
-            Element-wise absolute value of x.
-
-        Notes
-        -----
-        - Uses torch.abs which is differentiable.
-        """
-        self.validate(x)
-        return torch.abs(x)
-    
     def mod(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor: 
         """
         Compute the element-wise modulus of `x` by `y`.
@@ -1388,27 +1052,6 @@ class TorchBackend(Backend):
         """
         self.validate(x)
         return torch.sigmoid(x)
-    
-    def sqrt(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Compute the element-wise square root of `x`.
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input tensor.
-
-        Returns
-        -------
-        torch.Tensor
-            Element-wise square root of x.
-
-        Notes
-        -----
-        - Uses torch.sqrt which is differentiable.
-        """
-        self.validate(x)
-        return torch.sqrt(x)
     
     def sum(self, x: torch.Tensor, dim: int | tuple[int, ...] = None, keepdim: bool = False) -> torch.Tensor:
         """
