@@ -1,3 +1,6 @@
+#src/compute.py
+# Main computational routines for RCWA
+
 from typing import Tuple, Any
 from src.backend import Backend
 
@@ -22,7 +25,7 @@ def fft_matfunc(
         Shape: (wvl, 3, 3, Nx, Ny)
 
     M, N : int
-        Number of harmonics along x and y.
+        Truncation orders along x and y. Total numbers are (2M+1) and (2N+1).
 
     Returns
     -------
@@ -117,11 +120,17 @@ def compute_k0xy(
     
     lam_shape = lam.shape
     n_shape   = n_inc.shape
-    # --- Minimal sanity: wavelengths and n_inc must be scalar or 1D ---
+    th_shape  = th.shape
+    ph_shape  = ph.shape
+    # --- Minimal sanity: wavelengths, n_inc, th, phi must be scalar or 1D ---
     if len(lam_shape) > 1:
         raise ValueError(f"wavelengths must be scalar or 1D, got shape={lam_shape}")
     if len(n_shape) > 1:
         raise ValueError(f"n_inc must be scalar or 1D, got shape={n_shape}")
+    if len(th_shape) > 1:
+        raise ValueError(f"theta must be scalar or 1D, got shape={th_shape}")
+    if len(ph_shape) > 1:
+        raise ValueError(f"phi must be scalar or 1D, got shape={ph_shape}")
 
     # If both lam and n_inc are 1D, enforce same length
     if len(lam_shape) == 1 and len(n_shape) == 1 and lam_shape[0] != n_shape[0]:
@@ -132,44 +141,27 @@ def compute_k0xy(
     
     # Force them into [Nw,1,1], [1,Nt,1], [1,1,Np] so that
     # broadcasting gives [Nw,Nt,Np] for everything.
-    if len(lam_shape) in (0, 1):
-        lam = backend.xp.reshape(lam, (-1, 1, 1))   # [Nw,1,1]
-    if len(th.shape) in (0, 1):
-        th = backend.xp.reshape(th, (1, -1, 1))     # [1,Nt,1]
-    if len(ph.shape) in (0, 1):
-        ph = backend.xp.reshape(ph, (1, 1, -1))     # [1,1,Np]
+    lam = backend.xp.reshape(lam, (-1, 1, 1))   # [Nw,1,1]
+    th = backend.xp.reshape(th, (1, -1, 1))     # [1,Nt,1]
+    ph = backend.xp.reshape(ph, (1, 1, -1))     # [1,1,Np]
     
     # Number of wavelengths after reshaping
     Nw = lam.shape[0]
-    
-    # ---- Handle n_inc so it always ends up [Nw,1,1] ----
-    n_shape = n_inc.shape
+
     if len(n_shape) == 0:
-        # Scalar index: use same value for all wavelengths
-        # lam/lam is a [Nw,1,1] array of ones
-        n_inc = n_inc * (lam / lam)             # [Nw,1,1]
+        n_inc = backend.ones_like(lam) * n_inc
     elif len(n_shape) == 1:
-        if n_shape[0] == 1:
-            # Single value → use for all wavelengths
-            n_inc = backend.xp.reshape(n_inc, (1, 1, 1))  # [1,1,1]
-            n_inc = n_inc * (lam / lam)               # [Nw,1,1]
-        elif n_shape[0] == Nw:
-            # Per-wavelength index
-            n_inc = backend.xp.reshape(n_inc, (Nw, 1, 1))  # [Nw,1,1]
-        else:
-            raise ValueError(
-                f"n_inc 1D length must be 1 or Nw={Nw}, got {n_shape[0]}"
-            )
-    else:
-        # already protected by earlier check, but keep for clarity
-        raise ValueError("n_inc must be scalar or 1D.")
+        if n_shape[0] not in (1, Nw):
+            raise ValueError(f"n_inc length must be 1 or {Nw}")
+        n_inc = backend.xp.reshape(n_inc, (-1, 1, 1))
+        n_inc = backend.expand(n_inc, (Nw, 1, 1))
 
     # Direction cosines
     sin_th = backend.xp.sin(th)
     cos_ph = backend.xp.cos(ph)
     sin_ph = backend.xp.sin(ph)
 
-    # These are ALWAYS real-valued physically.
+    # These are ALWAYS real-valued
     kx_dir = n_inc * sin_th * cos_ph
     ky_dir = n_inc * sin_th * sin_ph
 
@@ -177,7 +169,7 @@ def compute_k0xy(
         # reduced wavevectors = direction cosines × refractive index
         return kx_dir, ky_dir
 
-    # Backend-controlled pi & scalar arithmetic
+    # Free-space wavenumber
     k0 = (2.0 * backend.pi) / lam
 
     k0x = k0 * kx_dir
@@ -214,7 +206,7 @@ def compute_Kxy(
         Will be converted to backend real arrays and broadcast if needed.
 
     M, N : int
-        Number of harmonics along x and y. Total orders are (2M+1) and (2N+1).
+        Truncation orders along x and y. Total numbers are (2M+1) and (2N+1).
 
     Returns
     -------
@@ -308,9 +300,11 @@ def diagonal_K_matrices(backend: Backend, Kx: Any, Ky: Any, circular: bool = Tru
     Kx_mat, Ky_mat : Any
         Tensors of shape (B, size, size) where size is (2M+1)*(2N+1).
     """
+    # Ensure Kx, Ky are backend tensors
     Kx = backend.asarray(Kx, complex=False)
     Ky = backend.asarray(Ky, complex=False)
     
+    # Sanity
     if Kx.shape != Ky.shape:
         raise ValueError("Kx and Ky must have the same shape")
     
@@ -338,7 +332,7 @@ def diagonal_K_matrices(backend: Backend, Kx: Any, Ky: Any, circular: bool = Tru
     return Kx_mat, Ky_mat
 
 """ Toeplitz matrix construction """
-def build_index_map(backend, M , N, circular=True):
+def build_index_map(backend: Backend, M: int , N: int, circular: bool = True) -> Tuple[Any, Any]:
     """
     Precompute index lookup for 2D Toeplitz convolution.
     
@@ -361,7 +355,7 @@ def build_index_map(backend, M , N, circular=True):
     mx, ny = build_harmonic_grid(backend, M, N)
     
     if circular:
-        mask = elliptical_truncation_mask(mx=mx, ny=ny, M_cut=M, N_cut=N)
+        mask = elliptical_truncation_mask(mx, ny, M_cut=M, N_cut=N)
         mx = mx[mask]
         ny = ny[mask]
         
@@ -374,13 +368,22 @@ def build_index_map(backend, M , N, circular=True):
     q_col_mat = backend.xp.reshape(ny, (1, Nsize))
     
     # Calculate Differences: The result is N_circ x N_circ
-    dm_map = p_row_mat - p_col_mat + 2*M  # Delta P map
-    dn_map = q_row_mat - q_col_mat + 2*N  # Delta Q map
+    dm_map = p_row_mat - p_col_mat + 2*M  # Delta P map + shift to make indices [0..4M]
+    dn_map = q_row_mat - q_col_mat + 2*N  # Delta Q map + shift to make indices [0..4N]
     
     return backend.astype(dm_map, backend.xp.long), backend.astype(dn_map, backend.xp.long)
 
-def build_harmonic_grid(backend, M, N):
+def build_harmonic_grid(backend: Backend, M: int, N: int) -> Tuple[Any, Any]:
     """
+    Build flatten 2D grid of harmonic indices (m,n) for m ∈ [-M..M], n ∈ [-N..N].
+    
+    Parameters
+    ----------
+    backend : Backend
+        Computational backend.
+    M, N : int
+        Truncation orders along x and y.
+        
     Returns:
         mx_flat, ny_flat : tensors of shape (K,)
         where K = (2M+1)(2N+1)
@@ -392,14 +395,14 @@ def build_harmonic_grid(backend, M, N):
 
     # Flatten to 1D for convenience
     size = (2*M+1)*(2*N+1)
-    mx = backend.xp.reshape(mi, (size,))
-    ny = backend.xp.reshape(nj, (size,))
+    mx_flat = backend.xp.reshape(mi, (size,))
+    ny_flat = backend.xp.reshape(nj, (size,))
 
-    return mx, ny
+    return mx_flat, ny_flat
 
-def elliptical_truncation_mask(mx, ny, M_cut, N_cut):
+def elliptical_truncation_mask(mx_flat: Any, ny_flat: Any, M_cut: int, N_cut: int) -> Any:
     """
-    Build an elliptical (circular) harmonic mask in S4 sense.
+    Build an elliptical (circular) harmonic mask.
     
     Parameters
     ----------
@@ -411,7 +414,7 @@ def elliptical_truncation_mask(mx, ny, M_cut, N_cut):
     mask : boolean tensor of shape (K,)
     """
     # Compute ellipse equation
-    left = (mx / M_cut)**2 + (ny / N_cut)**2
+    left = (mx_flat / M_cut)**2 + (ny_flat / N_cut)**2
 
     # Keep points inside ellipse
     mask = left <= 1.0

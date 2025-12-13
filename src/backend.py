@@ -1,3 +1,6 @@
+#src/backend.py
+# Backend Interface for RCWA/FMM computations
+
 from abc import ABC, abstractmethod
 from typing import Any, Callable
 
@@ -14,7 +17,7 @@ class Backend(ABC):
     - and optionally how functions are JIT-compiled.
 
     This abstraction allows the same high-level RCWA code to run on
-    different numerical engines (e.g. PyTorch, JAX, NumPy) without modification.
+    different numerical engines (e.g. PyTorch, JAX, NumPy, Custom) without modification.
     All concrete backend implementations must satisfy the interface defined below.
 
     **Important guidelines for backend authors**
@@ -23,6 +26,7 @@ class Backend(ABC):
     - Device and dtype must be consistent and controlled by the backend.
     - All operations must be pure (no in-place operations unless guaranteed safe).
     - `jit(fn)` must return a callable that is functionally equivalent to `fn`.
+    - Must have xp attribute pointing to the backend module (e.g. torch, jax.numpy).
     """
     
     # ---------------------------------------------------------
@@ -38,7 +42,7 @@ class Backend(ABC):
     # Array creation / casting
     # ---------------------------------------------------------
     @abstractmethod
-    def asarray(self, x, complex: bool = False) -> Any:
+    def asarray(self, x: Any, complex: bool = False) -> Any:
         """
         Convert input data to a backend-specific array.
 
@@ -143,13 +147,7 @@ class Backend(ABC):
         array : backend-specific array type
             An array of ones with the same shape as `x`, dtype, and device.
         """
-        
-    @abstractmethod
-    def expand(self, x: Any, shape: tuple[int, ...]) -> Any:
-        """
-        Expand the input array `x` to the specified shape using broadcasting rules.
-        """
-        
+          
     @abstractmethod
     def arange(self, start: int, stop: int, step: int = 1) -> Any:
         """
@@ -168,6 +166,9 @@ class Backend(ABC):
         Create a copy of the input array `x`.
         """
         
+    # ---------------------------------------------------------
+    # Array operations
+    # ---------------------------------------------------------
     @abstractmethod
     def clamp(self, x: Any, min_value: float, max_value: float) -> Any:
         """
@@ -180,6 +181,12 @@ class Backend(ABC):
         Concatenate a list of arrays along the specified dimension.
         """
     
+    @abstractmethod
+    def stack(self, arrays: list[Any], dim: int) -> Any:
+        """
+        Stack a sequence of arrays along a new dimension.
+        """
+        
     @abstractmethod
     def roll(self, x: Any, shifts: int, dims: int) -> Any:
         """
@@ -241,6 +248,12 @@ class Backend(ABC):
         """
     
     @abstractmethod
+    def expand(self, x: Any, shape: tuple[int, ...]) -> Any:
+        """
+        Expand the input array `x` to the specified shape using broadcasting rules.
+        """
+    
+    @abstractmethod
     def take_along_axis(self, arr: Any, indices: Any, axis: int) -> Any:
         """
         Take values from `arr` along the specified axis using `indices`.
@@ -250,12 +263,6 @@ class Backend(ABC):
     def unsqueeze(self, x: Any, axis: int) -> Any:
         """
         Add a singleton dimension to `x` at the specified axis.
-        """
-    
-    @abstractmethod
-    def stack(self, arrays: list[Any], dim: int) -> Any:
-        """
-        Stack a sequence of arrays along a new dimension.
         """
     # ---------------------------------------------------------
     # Fourier transforms
@@ -341,6 +348,7 @@ class Backend(ABC):
             Output array of shape (..., N, N) where each slice along the leading
             dimensions is a diagonal matrix with the corresponding elements from `x`.
         """
+    
     # ---------------------------------------------------------
     # Complex utilities
     # ---------------------------------------------------------
@@ -396,6 +404,26 @@ class Backend(ABC):
         -------
         array
             Sum of the array elements over the specified axes.
+
+        Requirements
+        ------------
+        - Must preserve device and dtype.
+        """
+    
+    @abstractmethod
+    def besselj1(self, x: Any) -> Any:
+        """
+        Compute the Bessel function of the first kind of order one, J1(x).
+
+        Parameters
+        ----------
+        x : array-like
+            Input array.
+
+        Returns
+        -------
+        array
+            Element-wise J1 of the input array.
 
         Requirements
         ------------
@@ -508,7 +536,6 @@ class TorchBackend(Backend):
     - array creation and casting,
     - FFT operations via torch.fft,
     - batched matrix multiplication,
-    - complex utilities,
     - optional JIT compilation via torch.compile.
 
     All returned arrays are guaranteed to be torch.Tensor objects.
@@ -738,13 +765,6 @@ class TorchBackend(Backend):
         """
         return torch.ones_like(x, dtype=self.dtype, device=self.device)
     
-    def expand(self, x: torch.Tensor, shape: tuple[int, ...]) -> torch.Tensor:
-        """
-        Expand tensor `x` to the specified shape using broadcasting rules.
-        """
-        self.validate(x)
-        return x.expand(shape)
-
     def arange(self, start: int, stop: int, step: int = 1) -> torch.Tensor:
         """
         Create a 1D tensor of evenly spaced values within [start, stop) with given step.
@@ -766,6 +786,9 @@ class TorchBackend(Backend):
         self.validate(x)
         return x.clone()
     
+    # ---------------------------------------------------------
+    # Array operations
+    # ---------------------------------------------------------
     def clamp(self, x: torch.Tensor, min_value: float, max_value: float) -> torch.Tensor:
         """
         Clamp all elements in `x` to be within the range [min_value, max_value].
@@ -780,6 +803,14 @@ class TorchBackend(Backend):
         for arr in arrays:
             self.validate(arr)
         return torch.cat(arrays, dim=dim)
+    
+    def stack(self, arrays: list[torch.Tensor], dim: int) -> torch.Tensor:
+        """
+        Stack a sequence of tensors along a new dimension.
+        """
+        for arr in arrays:
+            self.validate(arr)
+        return torch.stack(arrays, dim=dim)
     
     def roll(self, x: torch.Tensor, shifts: int, dims: int) -> torch.Tensor:
         """
@@ -845,6 +876,13 @@ class TorchBackend(Backend):
         self.validate(x)
         return torch.nonzero(x, as_tuple=False)
     
+    def expand(self, x: torch.Tensor, shape: tuple[int, ...]) -> torch.Tensor:
+        """
+        Expand tensor `x` to the specified shape using broadcasting rules.
+        """
+        self.validate(x)
+        return x.expand(shape)
+    
     def take_along_axis(self, arr: torch.Tensor, indices: torch.Tensor, axis: int) -> torch.Tensor:
         """
         Take values from `arr` along the specified axis using `indices`.
@@ -859,13 +897,6 @@ class TorchBackend(Backend):
         self.validate(x)
         return torch.unsqueeze(x, dim=axis)
     
-    def stack(self, arrays: list[torch.Tensor], dim: int) -> torch.Tensor:
-        """
-        Stack a sequence of tensors along a new dimension.
-        """
-        for arr in arrays:
-            self.validate(arr)
-        return torch.stack(arrays, dim=dim)
     # -------------------------------------------------------------------------
     # FFT Operations
     # -------------------------------------------------------------------------
@@ -1077,6 +1108,27 @@ class TorchBackend(Backend):
         """
         self.validate(x)
         return torch.sum(x, dim=dim, keepdim=keepdim)
+    
+    def besselj1(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Compute the Bessel function of the first kind of order one, J1(x).
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor.
+
+        Returns
+        -------
+        torch.Tensor
+            Element-wise J1 of the input tensor.
+
+        Notes
+        -----
+        - Uses torch.special.j1 which is differentiable.
+        """
+        self.validate(x)
+        return torch.special.bessel_j1(x)
     # -------------------------------------------------------------------------
     # Optional 
     # -------------------------------------------------------------------------
