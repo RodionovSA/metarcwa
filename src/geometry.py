@@ -32,6 +32,23 @@ class Lattice:
     def grid(self) -> Tuple[int, int]:
         return self._grid
     
+    @property 
+    def delta(self) -> Tuple[float, float]:
+        '''
+        Grid spacing (dx, dy).
+        Returns
+        -------
+        delta : tuple of float
+            (dx, dy) grid spacing. Length units.
+        '''
+        Lx, Ly = self.period
+        Nx, Ny = self.grid
+        
+        dx = Lx / Nx
+        dy = Ly / Ny
+        
+        return (dx, dy)
+    
     @staticmethod
     def _init_validation(period, grid) -> None:
         '''
@@ -663,7 +680,7 @@ class Bitmap:
         return self._canvas.period
     @property
     def grid(self) -> Tuple[int, int]:
-        return self._bitmap.shape
+        return self.lattice.grid
     @property
     def bitmap(self) -> Any:
         return self._bitmap
@@ -809,7 +826,7 @@ def _matdist_real(backend: Backend,
 
     # Get bitmap mask
     mask_c = bitmap          # (Nx, Ny), bool
-    mask_c = backend.xp.reshape(mask_c, (1, 1, 1, Nx, Ny))  # (1, 1, 1, Nx, Ny)
+    mask_c = backend.reshape(mask_c, (1, 1, 1, Nx, Ny))  # (1, 1, 1, Nx, Ny)
     
     # Material values
     if mode == 'epsilon':
@@ -831,8 +848,8 @@ def _matdist_real(backend: Backend,
     
     # Broadcast epsilon and epsilon_bg to (wvl, 3, 3, 1, 1)
     init_shape = mat_tensor.shape      # (wvl, 3, 3)
-    mat = backend.xp.reshape(mat_tensor, init_shape + (1, 1))# (wvl, 3, 3, 1, 1)
-    mat_bg = backend.xp.reshape(mat_bg_tensor, init_shape + (1, 1))# (wvl, 3, 3, 1, 1)
+    mat = backend.reshape(mat_tensor, init_shape + (1, 1))# (wvl, 3, 3, 1, 1)
+    mat_bg = backend.reshape(mat_bg_tensor, init_shape + (1, 1))# (wvl, 3, 3, 1, 1)
     
     # Expand eps_bg to (wvl, 3, 3, Nx, Ny)
     matdist_xy = backend.expand(mat_bg,init_shape + (Nx, Ny))# (wvl, 3, 3, Nx, Ny)
@@ -867,13 +884,13 @@ def sinc(backend: Backend, z):
     """
     Unnormalized sinc: sin(z) / z, with sinc(0) = 1.
     """
-    z_abs = backend.xp.abs(z)
+    z_abs = backend.abs(z)
     one = backend.ones_like(z)
     # Avoid division by zero
-    z_safe = backend.xp.where(z_abs < 1e-14, one, z)
-    s = backend.xp.sin(z) / z_safe
+    z_safe = backend.where(z_abs < 1e-14, one, z)
+    s = backend.sin(z) / z_safe
     # Enforce limit sinc(0) = 1
-    s = backend.xp.where(z_abs < 1e-14, one, s)
+    s = backend.where(z_abs < 1e-14, one, s)
     return s
 
 # Helper: get rotated grid in object's local frame
@@ -907,7 +924,7 @@ def get_rotated_grid(backend: Backend,
     iy = backend.arange(0, Ny)
     x = ix * (Lx / Nx)
     y = iy * (Ly / Ny)
-    X, Y = backend.xp.meshgrid(x, y, indexing='ij')
+    X, Y = backend.meshgrid(x, y, indexing='ij')
     
     cx, cy = center
     
@@ -917,8 +934,8 @@ def get_rotated_grid(backend: Backend,
     
     # angle in radians (scalar → backend tensor)
     theta = backend.asarray(angle, complex=False)
-    cos_t = backend.xp.cos(theta)
-    sin_t = backend.xp.sin(theta)
+    cos_t = backend.cos(theta)
+    sin_t = backend.sin(theta)
 
     # coordinates relative to center
     dx = X - cx    # (Nx, Ny)
@@ -975,13 +992,13 @@ def get_fourier_rotated_grid(backend: Backend,
     Gn = (two_pi / Ly) * n   # (2N+1,)
 
     # 2D grids for Gm, Gn
-    Gm_grid, Gn_grid = backend.xp.meshgrid(Gm, Gn, indexing='ij')  # (2M+1, 2N+1)
+    Gm_grid, Gn_grid = backend.meshgrid(Gm, Gn, indexing='ij')  # (2M+1, 2N+1)
 
     # --- Rotation: project (Gx, Gy) into local rectangle axes (u,v) ---
     # angle in radians
     theta = backend.asarray(angle, complex=False)
-    cos_t = backend.xp.cos(theta)
-    sin_t = backend.xp.sin(theta)
+    cos_t = backend.cos(theta)
+    sin_t = backend.sin(theta)
 
     # k_u, k_v in local frame
     ku = Gm_grid * cos_t + Gn_grid * sin_t          # (2M+1, 2N+1)
@@ -989,7 +1006,7 @@ def get_fourier_rotated_grid(backend: Backend,
     
     # Phase factor exp(-j(Gm x_c + Gn y_c))
     phase_arg = Gm_grid * cx + Gn_grid * cy
-    phase = backend.xp.exp(-1j * phase_arg) # (2M+1, 2N+1)
+    phase = backend.exp(-1j * phase_arg) # (2M+1, 2N+1)
     
     return ku, kv, phase
 
@@ -1023,8 +1040,8 @@ def bitmap_rect(backend: Backend,
                               angle)
 
     # mask in local coordinates
-    ax = backend.xp.abs(xr)
-    ay = backend.xp.abs(yr)
+    ax = backend.abs(xr)
+    ay = backend.abs(yr)
     
     if soft_mask:
         # Smooth mask
@@ -1106,8 +1123,8 @@ def _matdist_fourier_rect(backend: Backend,
         else:
             raise ValueError("Material and background material must have the same number of wavelengths")
         
-    val_b = backend.xp.reshape(matval, (matval.shape[0], 3, 3, 1, 1)) # (B, 3, 3, 1, 1)
-    bg_b  = backend.xp.reshape(matbg,  (matbg.shape[0], 3, 3, 1, 1)) # (B, 3, 3, 1, 1)
+    val_b = backend.reshape(matval, (matval.shape[0], 3, 3, 1, 1)) # (B, 3, 3, 1, 1)
+    bg_b  = backend.reshape(matbg,  (matbg.shape[0], 3, 3, 1, 1)) # (B, 3, 3, 1, 1)
 
     # Material contrast
     delta_mat = val_b - bg_b   # (B, 3, 3, 1, 1)
@@ -1122,9 +1139,9 @@ def _matdist_fourier_rect(backend: Backend,
     Sy = sinc(backend, zy) # (2M+1, 2N+1)
     
     #Broadcast to (B, 3, 3, 2M+1, 2N+1)
-    Sx = backend.xp.reshape(Sx, (1, 1, 1, 2 * M + 1, 2 * N + 1))
-    Sy = backend.xp.reshape(Sy, (1, 1, 1, 2 * M + 1, 2 * N + 1))
-    phase = backend.xp.reshape(phase, (1, 1, 1, 2 * M + 1, 2 * N + 1))
+    Sx = backend.reshape(Sx, (1, 1, 1, 2 * M + 1, 2 * N + 1))
+    Sy = backend.reshape(Sy, (1, 1, 1, 2 * M + 1, 2 * N + 1))
+    phase = backend.reshape(phase, (1, 1, 1, 2 * M + 1, 2 * N + 1))
 
     # Contrast contribution
     area_factor = (w * h) / (Lx * Ly)
@@ -1183,7 +1200,7 @@ def bitmap_ellipse(backend: Backend,
     
     if soft_mask:
         eps = smoothness
-        d = (backend.xp.sqrt(r2) - 1.0) / (eps + 1e-8)  # avoid div by zero
+        d = (backend.sqrt(r2) - 1.0) / (eps + 1e-8)  # avoid div by zero
         mask = backend.sigmoid(-d)    # float mask
     else:
         # Sharp mask
@@ -1251,8 +1268,8 @@ def _matdist_fourier_ellipse(backend: Backend,
         else:
             raise ValueError("Material and background material must have the same number of wavelengths")
         
-    val_b = backend.xp.reshape(matval, (matval.shape[0], 3, 3, 1, 1)) # (B, 3, 3, 1, 1)
-    bg_b  = backend.xp.reshape(matbg,  (matbg.shape[0], 3, 3, 1, 1)) # (B, 3, 3, 1, 1)
+    val_b = backend.reshape(matval, (matval.shape[0], 3, 3, 1, 1)) # (B, 3, 3, 1, 1)
+    bg_b  = backend.reshape(matbg,  (matbg.shape[0], 3, 3, 1, 1)) # (B, 3, 3, 1, 1)
 
     # Material contrast
     delta_mat = val_b - bg_b   # (B, 3, 3, 1, 1)
@@ -1263,19 +1280,19 @@ def _matdist_fourier_ellipse(backend: Backend,
     # Ellipse kernel: J1(rho) / rho
     a = w / 2.0
     b = h / 2.0
-    rho = backend.xp.sqrt((a * ku)**2 + (b * kv)**2)
+    rho = backend.sqrt((a * ku)**2 + (b * kv)**2)
 
     # J1(rho) / rho with safe limit at rho=0
     J1 = backend.besselj1(rho)
 
-    ellipse_kernel = backend.xp.where(rho > 0, 
+    ellipse_kernel = backend.where(rho > 0, 
                                       (2.0*J1) / rho, 
-                                      backend.xp.ones_like(rho))   # lim_{rho→0} J1(rho)/rho = 1/2)
+                                      backend.ones_like(rho))   # lim_{rho→0} J1(rho)/rho = 1/2)
 
     
     #Broadcast to (B, 3, 3, 2M+1, 2N+1)
-    ellipse_kernel = backend.xp.reshape(ellipse_kernel, (1, 1, 1, 2 * M + 1, 2 * N + 1))
-    phase = backend.xp.reshape(phase, (1, 1, 1, 2 * M + 1, 2 * N + 1))
+    ellipse_kernel = backend.reshape(ellipse_kernel, (1, 1, 1, 2 * M + 1, 2 * N + 1))
+    phase = backend.reshape(phase, (1, 1, 1, 2 * M + 1, 2 * N + 1))
 
     # Contrast contribution
     area_factor = (backend.pi * a * b) / (Lx * Ly)

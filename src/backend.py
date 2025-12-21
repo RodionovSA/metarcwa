@@ -254,15 +254,21 @@ class Backend(ABC):
         """
     
     @abstractmethod
-    def take_along_axis(self, arr: Any, indices: Any, axis: int) -> Any:
+    def take_along_axis(self, arr: Any, indices: Any, dim: int) -> Any:
         """
         Take values from `arr` along the specified axis using `indices`.
         """
     
     @abstractmethod
-    def unsqueeze(self, x: Any, axis: int) -> Any:
+    def unsqueeze(self, x: Any, dim: int) -> Any:
         """
         Add a singleton dimension to `x` at the specified axis.
+        """
+    
+    @abstractmethod
+    def squeeze(self, x: Any, dim: int) -> Any:
+        """
+        Remove a singleton dimension from `x` at the specified axis.
         """
     # ---------------------------------------------------------
     # Fourier transforms
@@ -429,6 +435,30 @@ class Backend(ABC):
         ------------
         - Must preserve device and dtype.
         """
+    
+    @abstractmethod
+    def mean(self, x: Any, dim: int | tuple[int, ...] = None, keepdim: bool = False) -> Any:
+        """
+        Compute the mean of array elements over given axes.
+
+        Parameters
+        ----------
+        x : array-like
+            Input array to compute the mean over.
+        dim : int or tuple of int, optional
+            Axis or axes along which to compute the mean. By default, compute over all axes.
+        keepdim : bool, default=False
+            If True, retains reduced dimensions with size 1.
+
+        Returns
+        -------
+        array
+            Mean of the array elements over the specified axes.
+
+        Requirements
+        ------------
+        - Must preserve device and dtype.
+        """
     # ---------------------------------------------------------
     # Optional 
     # ---------------------------------------------------------
@@ -517,6 +547,20 @@ class Backend(ABC):
         - Must preserve differentiability if the backend supports it.
         """
         
+    @abstractmethod
+    def requires_grad(self, x: Any, set: bool) -> bool:
+        """
+        Set or unset the requires_grad flag on tensor `x`.
+
+        Returns
+        -------
+        x : array-like
+            The same array as `x`, but with requires_grad set or unset.
+        
+        Notes
+        -----
+        - For backends without automatic differentiation, this may be a no-op.
+        """
     # ---------------------------------------------------------
     # Constants
     # ---------------------------------------------------------
@@ -526,6 +570,22 @@ class Backend(ABC):
         Return the mathematical constant π in the backend's array type.
         """
         return self.asarray(torch.pi)
+    
+    # ---------------------------------------------------------
+    # Attribute forwarding
+    # ---------------------------------------------------------
+    def __getattr__(self, name):
+        """
+        Called ONLY if attribute not found on Backend.
+        Forward to xp.
+        """
+        try:
+            return getattr(self.xp, name)
+        except AttributeError:
+            raise AttributeError(
+                f"{type(self).__name__} has no attribute '{name}' "
+                f"and xp={type(self.xp).__name__} has no attribute '{name}'"
+            )
         
 class TorchBackend(Backend):
     """
@@ -574,6 +634,8 @@ class TorchBackend(Backend):
         self.use_compile = use_compile
         
         self.xp = torch  # Alias for convenience
+        
+        self.name = "torch"
     
     @property
     def device(self) -> torch.device:
@@ -883,20 +945,26 @@ class TorchBackend(Backend):
         self.validate(x)
         return x.expand(shape)
     
-    def take_along_axis(self, arr: torch.Tensor, indices: torch.Tensor, axis: int) -> torch.Tensor:
+    def take_along_axis(self, arr: torch.Tensor, indices: torch.Tensor, dim: int) -> torch.Tensor:
         """
         Take values from `arr` along the specified axis using `indices`.
         """
         self.validate(arr)
-        return torch.take_along_dim(arr, indices, dim=axis)
+        return torch.take_along_dim(arr, indices, dim=dim)
     
-    def unsqueeze(self, x: torch.Tensor, axis: int) -> torch.Tensor:
+    def unsqueeze(self, x: torch.Tensor, dim: int) -> torch.Tensor:
         """
-        Add a singleton dimension to `x` at the specified axis.
+        Add a singleton dimension to `x` at the specified dim.
         """
         self.validate(x)
-        return torch.unsqueeze(x, dim=axis)
+        return torch.unsqueeze(x, dim=dim)
     
+    def squeeze(self, x: torch.Tensor, dim: int) -> torch.Tensor:
+        """
+        Remove a singleton dimension from `x` at the specified axis.
+        """
+        self.validate(x)
+        return torch.squeeze(x, dim=dim)
     # -------------------------------------------------------------------------
     # FFT Operations
     # -------------------------------------------------------------------------
@@ -1129,6 +1197,31 @@ class TorchBackend(Backend):
         """
         self.validate(x)
         return torch.special.bessel_j1(x)
+    
+    def mean(self, x: torch.Tensor, dim: int | tuple[int, ...] = None, keepdim: bool = False) -> torch.Tensor:
+        """
+        Compute the mean of tensor elements over given axes.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor to compute the mean over.
+        dim : int or tuple of int, optional
+            Axis or axes along which to compute the mean. By default, compute over all axes.
+        keepdim : bool, default=False
+            If True, retains reduced dimensions with size 1.
+
+        Returns
+        -------
+        torch.Tensor
+            Mean of the tensor elements over the specified axes.
+
+        Notes
+        -----
+        - Uses torch.mean which is differentiable.
+        """
+        self.validate(x)
+        return torch.mean(x, dim=dim, keepdim=keepdim)
     # -------------------------------------------------------------------------
     # Optional 
     # -------------------------------------------------------------------------
@@ -1219,6 +1312,30 @@ class TorchBackend(Backend):
         # return torch.compile(fn, mode="max-autotune")
         return torch.compile(fn)
 
+    def requires_grad(self, x: torch.Tensor, set: bool) -> torch.Tensor:
+        """
+        Set or unset the requires_grad flag on tensor `x`.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor.
+        set : bool
+            If True, the returned tensor will require gradients. If False, it will not.
+        Returns
+        -------
+        torch.Tensor
+            A tensor that requires gradients.
+
+        Notes
+        -----
+        - Uses x.requires_grad_(set) to enable or disable gradient tracking.
+        """
+        self.validate(x)
+        if set not in (True, False):
+            raise ValueError("set must be a boolean value")
+        return x.requires_grad_(set)
+    
 class JaxBackend(Backend):
     # Concrete implementation for JAX would go here
     pass

@@ -13,13 +13,11 @@ class EigenConfig:
     Parameters
     ----------
     M, N : int
-        Number of Fourier harmonics along x and y directions.
+        Truncation order along x and y directions.
     closed_form : bool
         Whether to use analytic Fourier coefficients for simple shapes.
-    Factorization : bool
-        Apply Li's factorization rules (True/False).
-    fourier_rule : {'TF', 'EF', 'NONE'}
-        Type of Fourier factorization for Li's rule (Total/Even/None).
+    factorization : {Jones, Pol, Normal, Jones_direct, None}
+        Type of Li's factorization method to use.
     subpixel : bool
         Use anisotropic subpixel smoothing for material interfaces.
     solver : {'eigh', 'eig', 'svd', 'custom'}
@@ -38,11 +36,8 @@ class EigenConfig:
 
     # ==== Fourier coefficients ====
     closed_form: bool = True
-    Factorization: bool = False
-    fourier_rule: Literal['TF', 'EF', 'NONE'] = 'TF'
-        # TF  = Total Factorization (Li)
-        # EF  = Even Factorization
-        # NONE = no factorization
+    factorization: Literal['Jones', 'Pol', 'Normal', 'Jones_direct', 'None'] = 'Jones'
+        # Jones, Pol, Normal, Jones_direct, None
         
     subpixel: bool = False
         # Use anisotropic subpixel smoothing for material interfaces

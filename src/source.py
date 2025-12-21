@@ -105,23 +105,23 @@ class Source:
         wvl_shape = wavelength.shape
         if len(wvl_shape) != 0 and len(wvl_shape) != 1:
             raise ValueError("wavelength must be a scalar or 1D array")
-        if backend.xp.any(wavelength <= 0):
+        if backend.any(wavelength <= 0):
             raise ValueError("wavelength values must be positive")
         if len(wvl_shape) == 0:
-            wavelength = backend.xp.reshape(wavelength, (-1,))  # ensure 1D
+            wavelength = backend.reshape(wavelength, (-1,))  # ensure 1D
             
         theta = backend.asarray(theta, complex=False)
         theta_shape = theta.shape
         if len(theta_shape) != 0 and len(theta_shape) != 1:
             raise ValueError("theta must be a scalar or 1D array")
         if len(theta_shape) == 0:
-            theta = backend.xp.reshape(theta, (-1,))  # ensure 1D
+            theta = backend.reshape(theta, (-1,))  # ensure 1D
             
         phi = backend.asarray(phi, complex=False)
         phi_shape = phi.shape
         if len(phi_shape) != 0 and len(phi_shape) != 1:
             raise ValueError("phi must be a scalar or 1D array")
         if len(phi_shape) == 0:
-            phi = backend.xp.reshape(phi, (-1,))  # ensure 1D
+            phi = backend.reshape(phi, (-1,))  # ensure 1D
         
         return wavelength, theta, phi
