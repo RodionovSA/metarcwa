@@ -328,9 +328,9 @@ def diagonal_K_matrices(backend: Backend, Kx: Any, Ky: Any, circular: bool = Tru
     Kx_mat, Ky_mat : Any
         Tensors of shape (B, size, size) where size is (2M+1)*(2N+1).
     """
-    # Ensure Kx, Ky are backend tensors
-    Kx = backend.asarray(Kx, complex=False)
-    Ky = backend.asarray(Ky, complex=False)
+    # Ensure Kx, Ky are backend tensors and make complex dtype
+    Kx = backend.asarray(Kx, complex=True)
+    Ky = backend.asarray(Ky, complex=True)
     
     # Sanity
     if Kx.shape != Ky.shape:

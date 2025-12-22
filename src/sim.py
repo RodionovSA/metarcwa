@@ -18,6 +18,10 @@ class LayerSolver:
                 index_map: Any = None):
         
         n_inc = layer.backend.asarray(n_inc, complex=False)
+        # promote scalar → 1D array
+        if len(n_inc.shape) == 0:
+            n_inc = layer.backend.reshape(n_inc, (1,))
+            
         cls._init_validation(layer, source, cfg, n_inc, index_map)
 
         solver_cls = _select_solver_class(layer, cfg)
@@ -50,9 +54,15 @@ class LayerSolver:
         self._source = source
         self._cfg = cfg
         
-        self._n_inc = layer.backend.asarray(n_inc, complex=False)
-        if self._n_inc.shape[0] == 1:
-            self._n_inc = self.layer.backend.expand(self._n_inc, (len(source.wavelength),))
+        n_inc = layer.backend.asarray(n_inc, complex=False)
+        # promote scalar → 1D array
+        if len(n_inc.shape) == 0:
+            n_inc = layer.backend.reshape(n_inc, (1,))
+        # broadcast to wavelength if needed
+        if n_inc.shape[0] == 1:
+            n_inc = self.layer.backend.expand(n_inc, (len(source.wavelength),))
+        
+        self._n_inc = n_inc
         
         self._index_map = index_map if index_map is not None else build_index_map(
             layer.backend, cfg.M, cfg.N, circular=cfg.circ_truncation
@@ -174,14 +184,20 @@ class _BaseLayerSolver(LayerSolver, ABC):
         """
         Build the Kx and Ky diagonal matrices for the layer.
         """
-        Kx, Ky = self.source.Kxy(self.n_inc, 2*self.cfg.M, 2*self.cfg.N, self.lattice)  # shape: (wvl, theta, phi, 4M+1, 4N+1)
-        Kx_t, Ky_t = diagonal_K_matrices(self.backend, Kx, Ky, self._index_map[0], self._index_map[1]) # shape: (wvl, theta, phi, Nh, Nh)
+        Kx, Ky = self.source.Kxy(self.n_inc, self.cfg.M, self.cfg.N, self.lattice)  # shape: (wvl, theta, phi, 2M+1, 2N+1)
+        Kx_t, Ky_t = diagonal_K_matrices(self.backend, Kx, Ky, self.cfg.circ_truncation) # shape: (wvl, theta, phi, Nh, Nh)
         
         return Kx_t, Ky_t
     
     def Omega2(self) -> Any:
         """
         Construct the Omega^2 matrix for the layer.
+        Omega^2 = P @ Q
+        
+        Omega2_xx = P_xx * Q_xx + P_xy * Q_yx
+        Omega2_xy = P_xx * Q_xy + P_xy * Q_yy   
+        Omega2_yx = P_yx * Q_xx + P_yy * Q_yx
+        Omega2_yy = P_yx * Q_xy + P_yy * Q_yy
         
         Returns
         -------
@@ -193,10 +209,10 @@ class _BaseLayerSolver(LayerSolver, ABC):
         Q_xx, Q_yy, Q_xy, Q_yx = self.Qmatrix()  # shape: (wvl, theta, phi, Nh, Nh)
         
         # Build Omega^2 matrix
-        Omega2_xx = self.backend.matmul(P_xy, Q_yx) - self.backend.matmul(P_xx, Q_xx)  # shape: (wvl, theta, phi, Nh, Nh)
-        Omega2_xy = self.backend.matmul(P_xy, Q_yy) - self.backend.matmul(P_xx, Q_xy)  # shape: (wvl, theta, phi, Nh, Nh)
-        Omega2_yx = self.backend.matmul(P_yx, Q_yx) - self.backend.matmul(P_yy, Q_xx)  # shape: (wvl, theta, phi, Nh, Nh)
-        Omega2_yy = self.backend.matmul(P_yx, Q_yy) - self.backend.matmul(P_yy, Q_xy)  # shape: (wvl, theta, phi, Nh, Nh)
+        Omega2_xx = self.backend.matmul(P_xx, Q_xx) + self.backend.matmul(P_xy, Q_yx)  # shape: (wvl, theta, phi, Nh, Nh)
+        Omega2_xy = self.backend.matmul(P_xx, Q_xy) + self.backend.matmul(P_xy, Q_yy)  # shape: (wvl, theta, phi, Nh, Nh)
+        Omega2_yx = self.backend.matmul(P_yx, Q_xx) + self.backend.matmul(P_yy, Q_yx)  # shape: (wvl, theta, phi, Nh, Nh)
+        Omega2_yy = self.backend.matmul(P_yx, Q_xy) + self.backend.matmul(P_yy, Q_yy)  # shape: (wvl, theta, phi, Nh, Nh)
         
         return Omega2_xx, Omega2_yy, Omega2_xy, Omega2_yx
 
@@ -208,6 +224,10 @@ class LayerSolverIsotropic(_BaseLayerSolver):
     def _prepare_tvf(self) -> Tuple[Any, Any, Any, Any]:
         """
         Prepare the Tangent Vector Fields (TVF) for the layer.
+        Pxx = |ty|^2 / (|tx|^2 + |ty|^2)
+        Pyy = |tx|^2 / (|tx|^2 + |ty|^2)
+        Pxy = (conj(tx) * ty) / (|tx|^2 + |ty|^2)
+        Pyx = conj(Pxy)
         
         Returns
         -------
@@ -240,9 +260,9 @@ class LayerSolverIsotropic(_BaseLayerSolver):
         ty2 = self.backend.abs(ty)**2                      # |ty|^2
         den = tx2 + ty2 + 1e-15                            # |tx|^2 + |ty|^2
 
-        Pxx = tx2 / den                                    # projector components
-        Pyy = ty2 / den
-        Pxy = (tx * self.backend.conj(ty)) / den
+        Pxx = ty2 / den                                    # projector components
+        Pyy = tx2 / den
+        Pxy = (self.backend.conj(tx) * ty) / den
         Pyx = self.backend.conj(Pxy)                       # enforce Hermitian
         
         # Do fft
@@ -257,11 +277,13 @@ class LayerSolverIsotropic(_BaseLayerSolver):
         """
         Compute the Li's Factorization correction term for the isotropic layer.
         Notation is from S4 paper by Liu et al. (2012).
-        
+        Delta = Epsilon - inv(Epsilon)^{-1}
+        Delta_P = Delta * (Pxx, Pyy, Pxy, Pyx)
+    
         Returns
         -------
         Delta_Pxx, Delta_Pyy, Delta_Pxy, Delta_Pyx : Any
-            Correction terms for the projector components.
+            Correction terms for the projector components. Shape: (wvl, Nh, Nh), Nh=(2M+1)*(2N+1)
         """
         # Get Fourier coefficients for epsilon_xy
         epsilon_mn = self.layer.epsilon_mn(
@@ -305,10 +327,15 @@ class LayerSolverIsotropic(_BaseLayerSolver):
         ** Important Note **: In the S4 paper, there is a typo in equations (48) - (51), where x and y
         components are swapped for the diagonal terms. The implementation here follows the correct formulation.
         
+        Epsilon2_xx = Epsilon_t - Delta_Pxx
+        Epsilon2_yy = Epsilon_t - Delta_Pyy
+        Epsilon2_xy = Delta_Pxy
+        Epsilon2_yx = Delta_Pyx
+        
         Returns
         -------
         Epsilon2_xx, Epsilon2_yy, Epsilon2_xy, Epsilon2_yx : Any
-            Components of the permittivity tensor Epsilon2.
+            Components of the permittivity tensor Epsilon2. Shape: (wvl, Nh, Nh), Nh=(2M+1)*(2N+1)
         """
         # Get Fourier coefficients for epsilon_xy
         epsilon_mn = self.layer.epsilon_mn(
@@ -323,14 +350,19 @@ class LayerSolverIsotropic(_BaseLayerSolver):
         
         Epsilon2_xx = Epsilon_t - Delta_Pxx  # shape: (wvl, Nh, Nh) (Note the swap due to typo in original paper)
         Epsilon2_yy = Epsilon_t - Delta_Pyy  # shape: (wvl, Nh, Nh) (Note the swap due to typo in original paper)
-        Epsilon2_xy = - Delta_Pxy            # shape: (wvl, Nh, Nh)
-        Epsilon2_yx = - Delta_Pyx            # shape: (wvl, Nh, Nh)
+        Epsilon2_xy = Delta_Pxy            # shape: (wvl, Nh, Nh)
+        Epsilon2_yx = Delta_Pyx            # shape: (wvl, Nh, Nh)
         
         return Epsilon2_xx, Epsilon2_yy, Epsilon2_xy, Epsilon2_yx
     
     def Pmatrix(self):
         """
         Construct the P matrix components.
+        
+        Pxx = -Kx * inv(Epsilon) * Ky
+        Pxy = -I + Kx * inv(Epsilon) * Kx
+        Pyx = I - Ky * inv(Epsilon) * Ky
+        Pyy = Ky * inv(Epsilon) * Kx
         
         Returns
         -------
@@ -362,7 +394,7 @@ class LayerSolverIsotropic(_BaseLayerSolver):
         
         # Build identity matrix
         Nh = Epsilon_t.shape[-1]
-        I = self.backend.eye(Nh, Nh)
+        I = self.backend.eye(Nh)
         I = self.backend.reshape(I, (1, 1, 1, Nh, Nh))  # shape: (1, 1, 1, Nh, Nh)
         I = self.backend.expand(I, (wvl, theta, phi, Nh, Nh))  # shape: (wvl, theta, phi, Nh, Nh)
         
@@ -377,6 +409,11 @@ class LayerSolverIsotropic(_BaseLayerSolver):
     def Qmatrix(self):
         """
         Construct the Q matrix components.
+        
+        Qxx = -Kx * Ky - Epsilon2_yx
+        Qxy = Kx * Kx - Epsilon2_yy
+        Qyx = Epsilon2_xx - Ky * Ky
+        Qyy = Ky * Kx + Epsilon2_xy
         
         Returns
         -------
