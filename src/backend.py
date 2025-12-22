@@ -355,6 +355,73 @@ class Backend(ABC):
             dimensions is a diagonal matrix with the corresponding elements from `x`.
         """
     
+    @abstractmethod
+    def solve(self, A: Any, B: Any) -> Any:
+        """
+        Solve the linear system A * X = B for X.
+
+        Parameters
+        ----------
+        A : array-like
+            Coefficient matrix of shape (..., M, M).
+        B : array-like
+            Ordinate or right-hand side matrix of shape (..., M, K).
+
+        Returns
+        -------
+        array
+            Solution matrix X of shape (..., M, K).
+
+        Implementation Notes
+        ---------------------
+        - Must support batched solving when the backend does.
+        - Must propagate dtypes and devices correctly.
+        - Must not modify inputs in place.
+        """
+    
+    @abstractmethod
+    def inv(self, A: Any) -> Any:
+        """
+        Compute the inverse of square matrix A.
+
+        Parameters
+        ----------
+        A : array-like
+            Input square matrix of shape (..., M, M).
+
+        Returns
+        -------
+        array
+            Inverse of A, shape (..., M, M).
+
+        Implementation Notes
+        ---------------------
+        - Must support batched inversion when the backend does.
+        - Must propagate dtypes and devices correctly.
+        - Must not modify inputs in place.
+        """
+    
+    @abstractmethod
+    def pinv(self, A: Any) -> Any:
+        """
+        Compute the Moore-Penrose pseudo-inverse of matrix A.
+
+        Parameters
+        ----------
+        A : array-like
+            Input matrix of shape (..., M, N).
+
+        Returns
+        -------
+        array
+            Pseudo-inverse of A, shape (..., N, M).
+
+        Implementation Notes
+        ---------------------
+        - Must support batched pseudo-inversion when the backend does.
+        - Must propagate dtypes and devices correctly.
+        - Must not modify inputs in place.
+        """
     # ---------------------------------------------------------
     # Complex utilities
     # ---------------------------------------------------------
@@ -1080,6 +1147,60 @@ class TorchBackend(Backend):
         """
         self.validate(x)
         return torch.diag_embed(x, dim1=dim1, dim2=dim2)
+    
+    def solve(self, A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
+        """
+        Solve the linear system A * X = B for X using torch.linalg.solve.
+
+        Parameters
+        ----------
+        A : torch.Tensor
+            Coefficient matrix of shape (..., M, M).
+        B : torch.Tensor
+            Ordinate or right-hand side matrix of shape (..., M, K).
+
+        Returns
+        -------
+        torch.Tensor
+            Solution matrix X of shape (..., M, K).
+        """
+        self.validate(A)
+        self.validate(B)
+        return torch.linalg.solve(A, B)
+    
+    def inv(self, A: torch.Tensor) -> torch.Tensor:
+        """
+        Compute the inverse of square matrix A using torch.linalg.inv.
+
+        Parameters
+        ----------
+        A : torch.Tensor
+            Input square matrix of shape (..., M, M).
+
+        Returns
+        -------
+        torch.Tensor
+            Inverse of A, shape (..., M, M).
+        """
+        self.validate(A)
+        return torch.linalg.inv(A)
+    
+    def pinv(self, A: torch.Tensor) -> torch.Tensor:
+        """
+        Compute the Moore-Penrose pseudo-inverse of matrix A using torch.linalg.pinv.
+
+        Parameters
+        ----------
+        A : torch.Tensor
+            Input matrix of shape (..., M, N).
+
+        Returns
+        -------
+        torch.Tensor
+            Pseudo-inverse of A, shape (..., N, M).
+        """
+        self.validate(A)
+        return torch.linalg.pinv(A)
     # -------------------------------------------------------------------------
     # Complex Utilities
     # -------------------------------------------------------------------------

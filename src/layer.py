@@ -28,6 +28,19 @@ class Layer:
         self._objects = objects
         self._thickness = thickness
         self._material_bg = material_bg
+        
+    """ Type properties """
+    @property
+    def type(self) -> str:
+        if self.material.type == "isotropic" and self.material_bg.type == "isotropic":
+            return "isotropic"
+        raise NotImplementedError("Only isotropic layers are currently supported.")
+    
+    @property
+    def is_magnetic(self) -> bool:
+        if self.material.is_magnetic or self.material_bg.is_magnetic:
+            return True
+        return False
     
     """ Simulation properties """
     @property

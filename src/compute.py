@@ -5,6 +5,55 @@ from typing import Tuple, Any
 from src.backend import Backend
 
 """ Fourier transform"""
+def custom_fft(backend: Backend,
+               field: Any,
+               M: int,
+               N: int) -> Any:
+    """
+    Custom function for FFT calculation
+    
+    Parameters
+    ----------
+    backend : Backend
+        Computational backend.
+    field : Any
+        Field to be transformed. Shape: (..., Nx, Ny)
+    M, N : int
+        Truncation orders along x and y.
+        
+    Returns
+    -------
+    field_mn : Any
+        Fourier coefficients of the field. Shape: (..., 2M+1, 2N+1)
+    """
+    field = backend.asarray(field, complex=True)
+
+    shape = field.shape
+    # Sanity: need enough points to support requested harmonics
+    Nx, Ny = shape[-2], shape[-1]
+    if (2 * M + 1) > Nx or (2 * N + 1) > Ny:
+        raise ValueError(
+            f"Grid too small for requested harmonics: "
+            f"(2M+1, 2N+1)=({2*M+1}, {2*N+1}) vs (Nx,Ny)=({Nx}, {Ny})"
+        )
+
+    # FFT over x,y
+    matfunc_fft = backend.fft2(field, dim=(-2, -1))         # (..., Nx, Ny), complex
+    matfunc_fft_shifted = backend.fftshift(matfunc_fft, dim=(-2, -1))  # center zero frequency   
+    cx = Nx // 2
+    cy = Ny // 2
+    m_lo = cx - M
+    m_hi = cx + M + 1
+    n_lo = cy - N
+    n_hi = cy + N + 1
+
+    matfunc_crop = matfunc_fft_shifted[..., m_lo:m_hi, n_lo:n_hi]  # (..., 2M+1, 2N+1)
+
+    norm = Nx * Ny
+    matfunc_mn = matfunc_crop / norm
+
+    return matfunc_mn
+
 def fft_matfunc(
     backend: Backend,
     matfunc_xy,
@@ -41,28 +90,7 @@ def fft_matfunc(
     if shape[1] != 3 or shape[2] != 3:
         raise ValueError("matfunc_xy must have shape (wvl, 3, 3, Nx, Ny)")
     
-    # Sanity: need enough points to support requested harmonics
-    Nx, Ny = shape[-2], shape[-1]
-    if (2 * M + 1) > Nx or (2 * N + 1) > Ny:
-        raise ValueError(
-            f"Grid too small for requested harmonics: "
-            f"(2M+1, 2N+1)=({2*M+1}, {2*N+1}) vs (Nx,Ny)=({Nx}, {Ny})"
-        )
-
-    # FFT over x,y
-    matfunc_fft = backend.fft2(matfunc_xy, dim=(-2, -1))         # (wvl, 3, 3, Nx, Ny), complex
-    matfunc_fft_shifted = backend.fftshift(matfunc_fft, dim=(-2, -1))  # center zero frequency   
-    cx = Nx // 2
-    cy = Ny // 2
-    m_lo = cx - M
-    m_hi = cx + M + 1
-    n_lo = cy - N
-    n_hi = cy + N + 1
-
-    matfunc_crop = matfunc_fft_shifted[:, :, :, m_lo:m_hi, n_lo:n_hi]  # (B, 3, 3, 2M+1, 2N+1)
-
-    norm = Nx * Ny
-    matfunc_mn = matfunc_crop / norm
+    matfunc_mn = custom_fft(backend, matfunc_xy, M, N)  # (wvl, 3, 3, 2M+1, 2N+1)
 
     return matfunc_mn
 

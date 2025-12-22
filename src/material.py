@@ -33,6 +33,14 @@ class Material(BaseMaterial):
         self._backend = backend
         
     @property
+    def type(self) -> str:
+        return "isotropic"
+    
+    @property
+    def is_magnetic(self) -> bool:
+        return False
+    
+    @property
     def epsilon(self) -> Any:
         return self._epsilon
     

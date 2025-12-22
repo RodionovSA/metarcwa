@@ -6,9 +6,9 @@ from dataclasses import dataclass, field
 from typing import Literal, Optional, Tuple
 
 @dataclass
-class EigenConfig:
+class LayerConfig:
     """
-    Configuration parameters for the RCWA eigensolver.
+    Configuration parameters for the RCWA LayerSolver.
     
     Parameters
     ----------
@@ -18,16 +18,8 @@ class EigenConfig:
         Whether to use analytic Fourier coefficients for simple shapes.
     factorization : {Jones, Pol, Normal, Jones_direct, None}
         Type of Li's factorization method to use.
-    subpixel : bool
-        Use anisotropic subpixel smoothing for material interfaces.
-    solver : {'eigh', 'eig', 'svd', 'custom'}
-        Eigenvalue solver backend.
-    stabilization : bool
-        Use eigenvalue stabilization (e.g., Kato shift).
-    kato_shift : float
-        Shift size for stabilization.
-    verbosity : int
-        0 = silent, 1 = some logs, 2 = debug.
+    tvf_optimizer : {'LBFGS'}, optional
+        Optimizer to use for Tangent Vector Fields (TVF) computation.
     """
 
     # ==== Harmonics ====
@@ -36,25 +28,22 @@ class EigenConfig:
 
     # ==== Fourier coefficients ====
     closed_form: bool = True
+    circ_truncation: bool = False  # Circular truncation if True, else rectangular
+    inverse_regularization: float = 1e-8  # Regularization for inverse Fourier coefficients
+    
+    # === Matrix Inversion ====
+    inverse_matrix_method: Literal['solve', 'inv', 'pinv'] = 'solve'
+    
+    # ==== Factorization ====
     factorization: Literal['Jones', 'Pol', 'Normal', 'Jones_direct', 'None'] = 'Jones'
         # Jones, Pol, Normal, Jones_direct, None
         
-    subpixel: bool = False
-        # Use anisotropic subpixel smoothing for material interfaces
-
-    # ==== Solver options ====
-    solver: Literal['eigh', 'eig', 'svd', 'custom'] = 'eigh'
-        # eigh  – Hermitian solver (preferred, fastest, most stable)
-        # eig   – generic solver (if matrix is not Hermitian)
-        # svd   – use SVD-based mode extraction (rare)
-        # custom – user-supplied backend
-
-    # ==== Stabilization tricks ====
-    stabilization: bool = False
-    kato_shift: float = 1e-6
-
-    # ==== Debug & logging ====
-    verbosity: int = 0
+    # ==== TVF optimizer ====
+    tvf_optimizer: Optional[Literal['LBFGS']] = 'LBFGS'
+    tvf_alpha: float = 1.0
+    tvf_beta: float = 1.0e-6
+    tvf_gamma: float = 0.0
+    tvf_steps: int = 1
 
     # Derived fields
     @property

@@ -198,7 +198,7 @@ class TVF:
                 Tangent vector field y-component. Shape: [B, Nx, Ny].
             
         """
-        optimized_field = self._optimize(field, alpha, beta, gamma, steps)
+        optimized_field = normalize_max_global(self.backend, self._optimize(field, alpha, beta, gamma, steps))
         
         if self.method == "Jones":
             # Transform to Jones field
@@ -206,11 +206,11 @@ class TVF:
         
         elif self.method == "Pol":
             # Global normalization
-            optimized_field = self.backend.real(normalize_max_global(self.backend, optimized_field))
+            optimized_field = normalize_max_global(self.backend, self.backend.real(optimized_field))
             
         elif self.method == "Normal":
             # Elementwise normalization
-            optimized_field = self.backend.real(normalize_elementwise(self.backend, optimized_field))
+            optimized_field = normalize_elementwise(self.backend, self.backend.real(optimized_field))
             
         elif self.method == "Jones_direct":
             # Already Jones-normalized
@@ -615,7 +615,7 @@ class TorchLBFGS(TVFOptimizer):
                  max_iter=20, 
                  tolerance_grad=1e-8, 
                  tolerance_change=1e-8, 
-                 line_search_fn="strong_wolfe"):
+                 line_search_fn=None):
         """
         Parameters:
             lr: float
