@@ -44,6 +44,9 @@ class LayerConfig:
     tvf_beta: float = 1.0e-6
     tvf_gamma: float = 0.0
     tvf_steps: int = 1
+    
+    # ==== Modes solver ====
+    modes_solver: Literal['eig', 'eigh', 'svd', 'qr'] = 'eig'
 
     # Derived fields
     @property

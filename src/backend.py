@@ -422,6 +422,99 @@ class Backend(ABC):
         - Must propagate dtypes and devices correctly.
         - Must not modify inputs in place.
         """
+    
+    @abstractmethod
+    def eig(self, A: Any) -> tuple[Any, Any]:
+        """
+        Compute the eigenvalues and right eigenvectors of square matrix A.
+
+        Parameters
+        ----------
+        A : array-like
+            Input square matrix of shape (..., M, M).
+
+        Returns
+        -------
+        tuple of arrays
+            - eigenvalues: array of shape (..., M)
+            - eigenvectors: array of shape (..., M, M)
+
+        Implementation Notes
+        ---------------------
+        - Must support batched eigen decomposition when the backend does.
+        - Must propagate dtypes and devices correctly.
+        - Must not modify inputs in place.
+        """
+    
+    @abstractmethod
+    def eigh(self, A: Any) -> tuple[Any, Any]:
+        """
+        Compute the eigenvalues and eigenvectors of a Hermitian matrix A.
+
+        Parameters
+        ----------
+        A : array-like
+            Input Hermitian matrix of shape (..., M, M).
+
+        Returns
+        -------
+        tuple of arrays
+            - eigenvalues: array of shape (..., M)
+            - eigenvectors: array of shape (..., M, M)
+
+        Implementation Notes
+        ---------------------
+        - Must support batched eigen decomposition when the backend does.
+        - Must propagate dtypes and devices correctly.
+        - Must not modify inputs in place.
+        """
+    
+    @abstractmethod
+    def svd(self, A: Any) -> tuple[Any, Any, Any]:
+        """
+        Compute the singular value decomposition (SVD) of matrix A.
+
+        Parameters
+        ----------
+        A : array-like
+            Input matrix of shape (..., M, N).
+
+        Returns
+        -------
+        tuple of arrays
+            - U: left singular vectors, shape (..., M, M)
+            - S: singular values, shape (..., min(M, N))
+            - Vh: right singular vectors (conjugate transpose), shape (..., N, N)
+
+        Implementation Notes
+        ---------------------
+        - Must support batched SVD when the backend does.
+        - Must propagate dtypes and devices correctly.
+        - Must not modify inputs in place.
+        """
+    
+    @abstractmethod
+    def qr(self, A: Any) -> tuple[Any, Any]:
+        """
+        Compute the QR decomposition of matrix A.
+
+        Parameters
+        ----------
+        A : array-like
+            Input matrix of shape (..., M, N).
+
+        Returns
+        -------
+        tuple of arrays
+            - Q: orthogonal matrix, shape (..., M, M)
+            - R: upper triangular matrix, shape (..., M, N)
+
+        Implementation Notes
+        ---------------------
+        - Must support batched QR decomposition when the backend does.
+        - Must propagate dtypes and devices correctly.
+        - Must not modify inputs in place.
+        """
     # ---------------------------------------------------------
     # Complex utilities
     # ---------------------------------------------------------
@@ -1201,6 +1294,79 @@ class TorchBackend(Backend):
         """
         self.validate(A)
         return torch.linalg.pinv(A)
+    
+    def eig(self, A: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Compute the eigenvalues and right eigenvectors of square matrix A using torch.linalg.eig.
+
+        Parameters
+        ----------
+        A : torch.Tensor
+            Input square matrix of shape (..., M, M).
+
+        Returns
+        -------
+        tuple of torch.Tensor
+            - eigenvalues: tensor of shape (..., M)
+            - eigenvectors: tensor of shape (..., M, M)
+        """
+        self.validate(A)
+        return torch.linalg.eig(A)
+    
+    def eigh(self, A: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Compute the eigenvalues and eigenvectors of a Hermitian matrix A using torch.linalg.eigh.
+
+        Parameters
+        ----------
+        A : torch.Tensor
+            Input Hermitian matrix of shape (..., M, M).
+
+        Returns
+        -------
+        tuple of torch.Tensor
+            - eigenvalues: tensor of shape (..., M)
+            - eigenvectors: tensor of shape (..., M, M)
+        """
+        self.validate(A)
+        return torch.linalg.eigh(A)
+    
+    def svd(self, A: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Compute the singular value decomposition (SVD) of matrix A using torch.linalg.svd.
+
+        Parameters
+        ----------
+        A : torch.Tensor
+            Input matrix of shape (..., M, N).
+
+        Returns
+        -------
+        tuple of torch.Tensor
+            - U: left singular vectors, shape (..., M, M)
+            - S: singular values, shape (..., min(M, N))
+            - Vh: right singular vectors (conjugate transpose), shape (..., N, N)
+        """
+        self.validate(A)
+        return torch.linalg.svd(A, full_matrices=True)
+    
+    def qr(self, A: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Compute the QR decomposition of matrix A using torch.linalg.qr.
+
+        Parameters
+        ----------
+        A : torch.Tensor
+            Input matrix of shape (..., M, N).
+
+        Returns
+        -------
+        tuple of torch.Tensor
+            - Q: orthogonal matrix, shape (..., M, M)
+            - R: upper triangular matrix, shape (..., M, N)
+        """
+        self.validate(A)
+        return torch.linalg.qr(A, mode='complete')
     # -------------------------------------------------------------------------
     # Complex Utilities
     # -------------------------------------------------------------------------

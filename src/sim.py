@@ -146,14 +146,22 @@ class _BaseLayerSolver(LayerSolver, ABC):
         pass
     
     @abstractmethod
-    def correction_term(self):
+    def _correction_term(self):
         pass
     
     @abstractmethod
-    def Epsilon2(self):
+    def _Epsilon2(self):
         pass
     
-    def apply_inverse(self, matrix_A: Any, matrix_B: Any) -> Any:
+    @abstractmethod
+    def _Pmatrix(self):
+        pass
+    
+    @abstractmethod
+    def _Qmatrix(self):
+        pass
+    
+    def _apply_inverse(self, matrix_A: Any, matrix_B: Any) -> Any:
         """
         Apply the inverse of matrix_A to matrix_B using the configured method.
 
@@ -189,7 +197,7 @@ class _BaseLayerSolver(LayerSolver, ABC):
         
         return Kx_t, Ky_t
     
-    def Omega2(self) -> Any:
+    def _Omega2(self) -> Any:
         """
         Construct the Omega^2 matrix for the layer.
         Omega^2 = P @ Q
@@ -205,8 +213,8 @@ class _BaseLayerSolver(LayerSolver, ABC):
             Components of the Omega^2 matrix.
         """
         # Get P and Q matrices
-        P_xx, P_yy, P_xy, P_yx = self.Pmatrix()  # shape: (wvl, theta, phi, Nh, Nh)
-        Q_xx, Q_yy, Q_xy, Q_yx = self.Qmatrix()  # shape: (wvl, theta, phi, Nh, Nh)
+        P_xx, P_yy, P_xy, P_yx = self._Pmatrix()  # shape: (wvl, theta, phi, Nh, Nh)
+        Q_xx, Q_yy, Q_xy, Q_yx = self._Qmatrix()  # shape: (wvl, theta, phi, Nh, Nh)
         
         # Build Omega^2 matrix
         Omega2_xx = self.backend.matmul(P_xx, Q_xx) + self.backend.matmul(P_xy, Q_yx)  # shape: (wvl, theta, phi, Nh, Nh)
@@ -215,7 +223,43 @@ class _BaseLayerSolver(LayerSolver, ABC):
         Omega2_yy = self.backend.matmul(P_yx, Q_xy) + self.backend.matmul(P_yy, Q_yy)  # shape: (wvl, theta, phi, Nh, Nh)
         
         return Omega2_xx, Omega2_yy, Omega2_xy, Omega2_yx
-
+    
+    def _mode_solver(self, A: Any) -> Any:
+        """
+        Select and return the appropriate mode solver function based on configuration.
+        """
+        if self.cfg.modes_solver == 'eig':
+            return self.backend.eig(A)
+        elif self.cfg.modes_solver == 'eigh':
+            return self.backend.eigh(A)
+        elif self.cfg.modes_solver == 'svd':
+            raise NotImplementedError("SVD mode solver not implemented yet.")
+        elif self.cfg.modes_solver == 'qr':
+            raise NotImplementedError("QR mode solver not implemented yet.")
+        else:
+            raise ValueError(f"Unknown modes solver: {self.cfg.modes_solver}")
+    
+    def _eigensolver(self):
+        """
+        Find eigenvalues and eigenvectors of the layer.
+        
+        Returns
+        -------
+        eigvals : Any
+            Eigenvalues of the layer.
+        eigvecs : Any
+            Eigenvectors of the layer.
+        """
+        Omega2_xx, Omega2_yy, Omega2_xy, Omega2_yx = self._Omega2()  # shape: (wvl, theta, phi, Nh, Nh)
+        
+        # Create a block matrix for Omega^2
+        top = self.backend.cat([Omega2_xx, Omega2_xy], dim=-1)   # columns
+        bot = self.backend.cat([Omega2_yx, Omega2_yy], dim=-1)   # columns
+        Omega2 = self.backend.cat([top, bot], dim=-2)  # rows
+        
+        eigvals, eigvecs = self._mode_solver(Omega2)  # shape: (wvl, theta, phi, 2Nh), (wvl, theta, phi, 2Nh, 2Nh)
+        
+        return eigvals, eigvecs
 
 
 class LayerSolverIsotropic(_BaseLayerSolver):
@@ -273,7 +317,7 @@ class LayerSolverIsotropic(_BaseLayerSolver):
         
         return Pxx_fft, Pyy_fft, Pxy_fft, Pyx_fft
     
-    def correction_term(self) -> Tuple[Any, Any, Any, Any]:
+    def _correction_term(self) -> Tuple[Any, Any, Any, Any]:
         """
         Compute the Li's Factorization correction term for the isotropic layer.
         Notation is from S4 paper by Liu et al. (2012).
@@ -307,10 +351,10 @@ class LayerSolverIsotropic(_BaseLayerSolver):
         Pyx_t = toeplitz_2d(self.backend, Pyx_fft, self._index_map[0], self._index_map[1])  # shape: (1, Nh, Nh)
         
         # Invert Epsilon_inv
-        Epsilon_inv_t_inv_Pxx = self.apply_inverse(Epsilon_inv_t, Pxx_t)  # shape: (wvl, Nh, Nh)
-        Epsilon_inv_t_inv_Pyy = self.apply_inverse(Epsilon_inv_t, Pyy_t)  # shape: (wvl, Nh, Nh)
-        Epsilon_inv_t_inv_Pxy = self.apply_inverse(Epsilon_inv_t, Pxy_t)  # shape: (wvl, Nh, Nh)
-        Epsilon_inv_t_inv_Pyx = self.apply_inverse(Epsilon_inv_t, Pyx_t)  # shape: (wvl, Nh, Nh)
+        Epsilon_inv_t_inv_Pxx = self._apply_inverse(Epsilon_inv_t, Pxx_t)  # shape: (wvl, Nh, Nh)
+        Epsilon_inv_t_inv_Pyy = self._apply_inverse(Epsilon_inv_t, Pyy_t)  # shape: (wvl, Nh, Nh)
+        Epsilon_inv_t_inv_Pxy = self._apply_inverse(Epsilon_inv_t, Pxy_t)  # shape: (wvl, Nh, Nh)
+        Epsilon_inv_t_inv_Pyx = self._apply_inverse(Epsilon_inv_t, Pyx_t)  # shape: (wvl, Nh, Nh)
         
         # Compute correction term
         Delta_Pxx = self.backend.matmul(Epsilon_t, Pxx_t) - Epsilon_inv_t_inv_Pxx # shape: (wvl, Nh, Nh)
@@ -320,7 +364,7 @@ class LayerSolverIsotropic(_BaseLayerSolver):
         
         return Delta_Pxx, Delta_Pyy, Delta_Pxy, Delta_Pyx
     
-    def Epsilon2(self) -> Any:
+    def _Epsilon2(self) -> Any:
         """
         Construct the permittivity tensor Epsilon2 for the isotropic layer ([D]=Epsilon2[E]).
         Notation is from S4 paper by Liu et al. (2012).
@@ -346,7 +390,13 @@ class LayerSolverIsotropic(_BaseLayerSolver):
         Epsilon_t = toeplitz_2d(self.backend, epsilon_mn, self._index_map[0], self._index_map[1])  # shape: (wvl, Nh, Nh)
         
         # Get Li's correction terms
-        Delta_Pxx, Delta_Pyy, Delta_Pxy, Delta_Pyx = self.correction_term()  # shape: (wvl, Nh, Nh)
+        if self.cfg.factorization not in ('None', None):
+            Delta_Pxx, Delta_Pyy, Delta_Pxy, Delta_Pyx = self._correction_term()  # shape: (wvl, Nh, Nh)
+        else:
+            Delta_Pxx = self.backend.zeros_like(Epsilon_t)
+            Delta_Pyy = self.backend.zeros_like(Epsilon_t)
+            Delta_Pxy = self.backend.zeros_like(Epsilon_t)
+            Delta_Pyx = self.backend.zeros_like(Epsilon_t)
         
         Epsilon2_xx = Epsilon_t - Delta_Pxx  # shape: (wvl, Nh, Nh) (Note the swap due to typo in original paper)
         Epsilon2_yy = Epsilon_t - Delta_Pyy  # shape: (wvl, Nh, Nh) (Note the swap due to typo in original paper)
@@ -355,7 +405,7 @@ class LayerSolverIsotropic(_BaseLayerSolver):
         
         return Epsilon2_xx, Epsilon2_yy, Epsilon2_xy, Epsilon2_yx
     
-    def Pmatrix(self):
+    def _Pmatrix(self):
         """
         Construct the P matrix components.
         
@@ -389,8 +439,8 @@ class LayerSolverIsotropic(_BaseLayerSolver):
         Epsilon_t = self.backend.expand(Epsilon_t, (wvl, theta, phi, Nh, Nh))
         
         # Build inverse components
-        Epsilon_t_inv_Kx = self.apply_inverse(Epsilon_t, Kx_t)  # shape: (wvl, theta, phi, Nh, Nh)
-        Epsilon_t_inv_Ky = self.apply_inverse(Epsilon_t, Ky_t)  # shape: (wvl, theta, phi, Nh, Nh)
+        Epsilon_t_inv_Kx = self._apply_inverse(Epsilon_t, Kx_t)  # shape: (wvl, theta, phi, Nh, Nh)
+        Epsilon_t_inv_Ky = self._apply_inverse(Epsilon_t, Ky_t)  # shape: (wvl, theta, phi, Nh, Nh)
         
         # Build identity matrix
         Nh = Epsilon_t.shape[-1]
@@ -406,7 +456,7 @@ class LayerSolverIsotropic(_BaseLayerSolver):
         
         return Pmatrix_xx, Pmatrix_yy, Pmatrix_xy, Pmatrix_yx
     
-    def Qmatrix(self):
+    def _Qmatrix(self):
         """
         Construct the Q matrix components.
         
@@ -424,7 +474,7 @@ class LayerSolverIsotropic(_BaseLayerSolver):
         Kx_t, Ky_t = self._build_k_matrices() # shape: (wvl, theta, phi, Nh, Nh)
         
         # Get Epsilon2 components
-        Epsilon2_xx, Epsilon2_yy, Epsilon2_xy, Epsilon2_yx = self.Epsilon2()  # shape: (wvl, Nh, Nh)
+        Epsilon2_xx, Epsilon2_yy, Epsilon2_xy, Epsilon2_yx = self._Epsilon2()  # shape: (wvl, Nh, Nh)
         
         Nh = Epsilon2_xx.shape[-1]
         wvl = Epsilon2_xx.shape[0]
