@@ -29,6 +29,43 @@ class Backend(ABC):
     - Must have xp attribute pointing to the backend module (e.g. torch, jax.numpy).
     """
     
+    @property
+    @abstractmethod
+    def xp(self):
+        """
+        Numerical backend module.
+
+        This module provides the array/tensor API used throughout the codebase,
+        enabling backend-agnostic implementations (e.g., NumPy, PyTorch, JAX).
+
+        The backend module **must** expose, at minimum, the following functions:
+            cos, sin, exp, sqrt, abs, sign, where,
+            shape, reshape, meshgrid, real, imag
+
+        It must also define standard numerical dtypes such as:
+            bool, float, long (or equivalent integer type)
+
+        Returns
+        -------
+        module
+            The numerical backend module (e.g., numpy, torch, jax.numpy).
+        """
+        pass
+
+
+    @property
+    @abstractmethod
+    def name(self):
+        """
+        Backend name identifier.
+
+        Returns
+        -------
+        str
+            Canonical backend name (e.g., "numpy", "torch", "jax").
+        """
+        pass
+    
     # ---------------------------------------------------------
     # Input validation / configuration
     # ---------------------------------------------------------
@@ -792,10 +829,6 @@ class TorchBackend(Backend):
         self.dtype_ = dtype
         
         self.use_compile = use_compile
-        
-        self.xp = torch  # Alias for convenience
-        
-        self.name = "torch"
     
     @property
     def device(self) -> torch.device:
@@ -807,6 +840,15 @@ class TorchBackend(Backend):
         """The dtype used by this backend."""
         return self.dtype_
     
+    @property
+    def xp(self):
+        """Numerical backend module."""
+        return torch
+    
+    @property
+    def name(self):
+        """Backend name identifier."""
+        return "torch"
     # ---------------------------------------------------------
     # Input validation / configuration
     # ---------------------------------------------------------

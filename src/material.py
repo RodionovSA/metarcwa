@@ -7,6 +7,17 @@ class BaseMaterial(ABC):
     
     @property
     @abstractmethod
+    def type(self) -> str:
+        """ Anisotropy type"""
+        pass
+    
+    @property
+    @abstractmethod
+    def is_magnetic(self) -> bool:
+        pass
+    
+    @property
+    @abstractmethod
     def epsilon_tensor(self) -> Any:
         """Return wvlx3×3 permittivity tensor."""
         pass

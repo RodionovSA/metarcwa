@@ -5,7 +5,7 @@ from src.layer import Layer
 from src.source import Source
 from src.config import LayerConfig
 from src.tvf import TVF
-from src.compute import custom_fft, build_index_map, toeplitz_2d, diagonal_K_matrices
+from src.compute import custom_fft, build_index_map, toeplitz_2d, diagonal_K_matrices, kz_sign
 
 class LayerSolver:
     """ Public interface for RCWA layer solvers."""
@@ -67,6 +67,28 @@ class LayerSolver:
         self._index_map = index_map if index_map is not None else build_index_map(
             layer.backend, cfg.M, cfg.N, circular=cfg.circ_truncation
         )
+        
+        # Dummy init
+        self._W = None
+        self._kz = None
+        self._V = None
+        
+    def solve(self):
+        #Calculate P and Q
+        P = self._Pmatrix()
+        Q = self._Qmatrix()
+        
+        # Calculate Omega^2
+        Omega2 = self._Omega2(P, Q)
+        
+        # Solve eigenproblem and find lambda^2 and W
+        lam2, self._W = self._eigensolver(Omega2)
+        
+        # Derive kz
+        self._kz = kz_sign(self.backend, lam2)
+        
+        # Derive V=-jQW/kz
+        self._V = self._compute_V(Q, self._W, self._kz)
         
     @property
     def layer(self):
@@ -197,7 +219,7 @@ class _BaseLayerSolver(LayerSolver, ABC):
         
         return Kx_t, Ky_t
     
-    def _Omega2(self) -> Any:
+    def _Omega2(self, P: Tuple[Any, Any, Any, Any], Q: Tuple[Any, Any, Any, Any]) -> Any:
         """
         Construct the Omega^2 matrix for the layer.
         Omega^2 = P @ Q
@@ -207,14 +229,19 @@ class _BaseLayerSolver(LayerSolver, ABC):
         Omega2_yx = P_yx * Q_xx + P_yy * Q_yx
         Omega2_yy = P_yx * Q_xy + P_yy * Q_yy
         
+        Parameters:
+            P: Pxx, Pyy, Pxy, Pyx
+            Q: Qxx, Qyy, Qxy, Qyx
+            Each of shape [wvl, theta, phi, Nh, Nh]
+        
         Returns
         -------
         Omega2_xx, Omega2_yy, Omega2_xy, Omega2_yx : Any
             Components of the Omega^2 matrix.
         """
         # Get P and Q matrices
-        P_xx, P_yy, P_xy, P_yx = self._Pmatrix()  # shape: (wvl, theta, phi, Nh, Nh)
-        Q_xx, Q_yy, Q_xy, Q_yx = self._Qmatrix()  # shape: (wvl, theta, phi, Nh, Nh)
+        P_xx, P_yy, P_xy, P_yx = P  # shape: (wvl, theta, phi, Nh, Nh)
+        Q_xx, Q_yy, Q_xy, Q_yx = Q  # shape: (wvl, theta, phi, Nh, Nh)
         
         # Build Omega^2 matrix
         Omega2_xx = self.backend.matmul(P_xx, Q_xx) + self.backend.matmul(P_xy, Q_yx)  # shape: (wvl, theta, phi, Nh, Nh)
@@ -239,18 +266,24 @@ class _BaseLayerSolver(LayerSolver, ABC):
         else:
             raise ValueError(f"Unknown modes solver: {self.cfg.modes_solver}")
     
-    def _eigensolver(self):
+    def _eigensolver(self, Omega2: Tuple[Any, Any, Any, Any]):
         """
         Find eigenvalues and eigenvectors of the layer.
         
+        Parameters:
+            Omega2: Omega2_xx, Omega2_yy, Omega2_xy, Omega2_yx
+            Each of shape: (wvl, theta, phi, Nh, Nh)
+
         Returns
         -------
         eigvals : Any
             Eigenvalues of the layer.
+            Shape: (wvl, theta, phi, 2*Nh)
         eigvecs : Any
             Eigenvectors of the layer.
+            Shape: (wvl, theta, phi, 2*Nh, 2*Nh)
         """
-        Omega2_xx, Omega2_yy, Omega2_xy, Omega2_yx = self._Omega2()  # shape: (wvl, theta, phi, Nh, Nh)
+        Omega2_xx, Omega2_yy, Omega2_xy, Omega2_yx = Omega2  # shape: (wvl, theta, phi, Nh, Nh)
         
         # Create a block matrix for Omega^2
         top = self.backend.cat([Omega2_xx, Omega2_xy], dim=-1)   # columns
@@ -261,6 +294,41 @@ class _BaseLayerSolver(LayerSolver, ABC):
         
         return eigvals, eigvecs
 
+    def _compute_V(self, Q: Tuple[Any, Any, Any, Any], W: Any, kz: Any):
+        """
+        Derive eigenvectors for magnetic field tangential components: V = -jQW/kz.
+        
+        Parameters:
+            Q: Qxx, Qyy, Qxy, Qyx
+            Each with shape (wvl, theta, phi, Nh, Nh)
+            
+            W: eigenvectors for electric field tangential components. 
+            Shape (wvl, theta, phi, 2*Nh, 2*Nh)
+            
+            W: eigenvalues 
+            Shape (wvl, theta, phi, 2*Nh)
+            
+        Return:
+            V: eigenvectors for magnetic field tangential components. 
+            Shape (wvl, theta, phi, 2*Nh, 2*Nh)
+        """
+        Qxx, Qyy, Qxy, Qyx = Q
+        
+        # Q blocks: [B, Nh, Nh]
+        Q_top = self.backend.cat([Qxx, Qxy], dim=-1)   # [B, Nh, 2Nh]
+        Q_bot = self.backend.cat([Qyx, Qyy], dim=-1)   # [B, Nh, 2Nh]
+
+        Q_block = self.backend.cat([Q_top, Q_bot], dim=-2)   # [B, 2Nh, 2Nh]
+        
+        # Compute QW
+        QW = self.backend.matmul(Q_block, W)
+        
+        # Compute inv_kz
+        inv_kz = 1.0 / (kz + 1e-12)
+        
+        V = -1j*self.backend.einsum('...ij,...j->...ij', QW, inv_kz) #[B, 2Nh, 2Nh]
+        
+        return V
 
 class LayerSolverIsotropic(_BaseLayerSolver):
     """ Layer solver for isotropic, non-magnetic layers. """

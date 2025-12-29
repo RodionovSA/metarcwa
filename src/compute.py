@@ -359,6 +359,45 @@ def diagonal_K_matrices(backend: Backend, Kx: Any, Ky: Any, circular: bool = Tru
     
     return Kx_mat, Ky_mat
 
+def kz_sign(backend: Backend, eigvals: Any, mode: str = "positive"):
+    """
+    Select kz branch from RCWA eigenvalues (lambda^2).
+
+    Forward  modes: Im(kz) > 0  (or Re(kz) > 0 if Im=0)
+    Backward modes: Im(kz) < 0  (or Re(kz) < 0 if Im=0)
+
+    eigvals shape: (..., N)
+    For eigvals the folowing relation is implied: lambda^2 = (jk_z/k_0)^2
+    """
+
+    # Safe sqrt
+    lam2 = backend.asarray(eigvals, complex=True)
+    lam = backend.sqrt(lam2)
+    kz = -1j*lam
+
+    imag = backend.imag(kz)
+    real = backend.real(kz)
+
+    if mode == "positive":
+        sign = backend.where(
+            imag != 0,
+            backend.sign(imag),
+            backend.sign(real),
+        )
+    elif mode == "negative":
+        sign = backend.where(
+            imag != 0,
+            -backend.sign(imag),
+            -backend.sign(real),
+        )
+    else:
+        raise ValueError("modes must be 'positive' or 'negative'")
+
+    # Avoid zero sign
+    sign = backend.where(sign == 0, 1.0, sign)
+
+    return kz * sign
+
 """ Toeplitz matrix construction """
 def build_index_map(backend: Backend, M: int , N: int, circular: bool = True) -> Tuple[Any, Any]:
     """
