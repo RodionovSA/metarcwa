@@ -40,6 +40,10 @@ class Source:
     def phi(self):
         return self._phi
     
+    @property
+    def k0(self):
+        return (2.0 * self.backend.pi) / self.wavelength
+    
     ''' Methods to compute k0x, k0y, Kx, Ky'''
     def k0xy(self, n_inc: Any, reduced: bool = False):
         """

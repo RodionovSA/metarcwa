@@ -295,7 +295,7 @@ def compute_Kxy(
 def flatten_Kxy(backend: Backend, Kx: Any, Ky: Any) -> Tuple[Any, Any, int]:
     """
     Flattens the harmonic dimensions (2M+1, 2N+1) into a single 1D vector (N_rect).
-    Result shape is (B, N_rect), where B = Nw*Nt*Np.
+    Result shape is (B, N_rect), where B = Nw,Nt,Np.
     """
     
     # 1. Save Batch Shape
@@ -359,7 +359,7 @@ def diagonal_K_matrices(backend: Backend, Kx: Any, Ky: Any, circular: bool = Tru
     
     return Kx_mat, Ky_mat
 
-def kz_sign(backend: Backend, eigvals: Any, mode: str = "positive"):
+def kz_sign(backend: Backend, eigvals: Any, mode: str = "positive", tol: float = 1e-12):
     """
     Select kz branch from RCWA eigenvalues (lambda^2).
 
@@ -377,16 +377,18 @@ def kz_sign(backend: Backend, eigvals: Any, mode: str = "positive"):
 
     imag = backend.imag(kz)
     real = backend.real(kz)
+    
+    is_evan = backend.abs(imag) > tol
 
     if mode == "positive":
         sign = backend.where(
-            imag != 0,
+            is_evan,
             backend.sign(imag),
             backend.sign(real),
         )
     elif mode == "negative":
         sign = backend.where(
-            imag != 0,
+            is_evan,
             -backend.sign(imag),
             -backend.sign(real),
         )
@@ -518,5 +520,39 @@ def toeplitz_2d(backend: Backend, eps: Any, dm_map: Any, dn_map: Any) -> Any:
     
     return eps[:, dm_map, dn_map]  # (B, size, size)
 
+""" S matrices """
+def build_block(backend: Backend, A: Any, B: Any, C: Any, D: Any) -> Any:
+    """ 
+    Build 2x2 block from A, B, C, and D matrices.
+    block = (A B; C D)
+    
+    """
+    top = backend.cat([A, B], dim=-1)   # [B, Nh, 2Nh]
+    bot = backend.cat([C, D], dim=-1)   # [B, Nh, 2Nh]
+    block   = backend.cat([top, bot], dim=-2)     # [B, 2Nh, 2Nh]
+    
+    return block
+    
+def split_block(S: Any) -> Tuple[Any, Any, Any, Any]:
+    """
+    Split a 2x2 block matrix:
+        S = [ A  B ]
+            [ C  D ]
 
+    Returns A, B, C, D with the same batch dims.
+    """
 
+    if S.shape[-1] % 2 != 0 or S.shape[-2] % 2 != 0:
+        raise ValueError(
+            f"Last two dims must be even, got {S.shape[-2:]}"
+        )
+
+    Nh_row = S.shape[-2] // 2
+    Nh_col = S.shape[-1] // 2
+
+    A = S[..., :Nh_row, :Nh_col]
+    B = S[..., :Nh_row, Nh_col:]
+    C = S[..., Nh_row:, :Nh_col]
+    D = S[..., Nh_row:, Nh_col:]
+
+    return A, B, C, D

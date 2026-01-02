@@ -1,7 +1,8 @@
 from typing import Union, Any
-from src.geometry import VectorObject, Bitmap, VectorGroup
+from src.geometry import VectorObject, Bitmap, VectorGroup, Rectangle
 from src.compute import fft_matfunc
 from src.material import BaseMaterial
+from src.backend import Backend
 
     
 class Layer:
@@ -25,9 +26,10 @@ class Layer:
         self._init_validation(objects, 
                               thickness, 
                               material_bg)
-        self._objects = objects
+        
         self._thickness = thickness
         self._material_bg = material_bg
+        self._objects = objects 
         
     """ Type properties """
     @property
@@ -35,13 +37,21 @@ class Layer:
         if self.material.type == "isotropic" and self.material_bg.type == "isotropic":
             return "isotropic"
         raise NotImplementedError("Only isotropic layers are currently supported.")
-    
     @property
     def is_magnetic(self) -> bool:
         if self.material.is_magnetic or self.material_bg.is_magnetic:
             return True
         return False
-    
+    @property
+    def is_homogeneous(self) -> bool:
+        epsilon_xy = self.backend.detach(self.epsilon_xy())
+        mu_xy = self.backend.detach(self.mu_xy())
+        
+        epsilon_check = self.homogeneous_check(self.backend, epsilon_xy)
+        mu_check = self.homogeneous_check(self.backend, mu_xy)
+        
+        return epsilon_check and mu_check
+          
     """ Simulation properties """
     @property
     def backend(self):
@@ -189,4 +199,21 @@ class Layer:
         
         if not isinstance(material_bg, BaseMaterial):
             raise TypeError("material_bg must be a BaseMaterial instance")
+        
+    @staticmethod
+    def homogeneous_check(backend: Backend, tensor: Any) -> bool:
+        tensor_ref = tensor[...,0,0]
+        
+        # Broadcast
+        tensor_ref_broadcast = backend.reshape(tensor_ref, [*tensor_ref.shape, 1, 1])
+        tensor_ref_broadcast = backend.expand(tensor_ref_broadcast, tensor.shape)
+        
+        #Difference
+        diff = backend.abs(tensor_ref_broadcast - tensor)
+        
+        #Error
+        err = backend.max(diff, dim=-1).values
+        err = backend.max(err,  dim=-1).values
+        
+        return backend.all(err < 1e-12)
         

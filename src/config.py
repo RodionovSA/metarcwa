@@ -47,12 +47,15 @@ class LayerConfig:
     
     # ==== Modes solver ====
     modes_solver: Literal['eig', 'eigh', 'svd', 'qr'] = 'eig'
+    
+    # ==== Homogeneous layer ====
+    hsimplify: bool = True
 
     # Derived fields
     @property
     def Nh(self) -> int:
         """Total number of harmonics (M*N)."""
-        return self.M * self.N
+        return (2*self.M+1) * (2*self.N+1)
 
 
 @dataclass

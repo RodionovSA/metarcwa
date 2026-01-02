@@ -5,7 +5,8 @@ from src.layer import Layer
 from src.source import Source
 from src.config import LayerConfig
 from src.tvf import TVF
-from src.compute import custom_fft, build_index_map, toeplitz_2d, diagonal_K_matrices, kz_sign
+from src.compute import custom_fft, build_index_map, toeplitz_2d, diagonal_K_matrices, kz_sign, flatten_Kxy
+from src.compute import build_harmonic_grid, elliptical_truncation_mask, build_block, split_block
 
 class LayerSolver:
     """ Public interface for RCWA layer solvers."""
@@ -90,6 +91,59 @@ class LayerSolver:
         # Derive V=-jQW/kz
         self._V = self._compute_V(Q, self._W, self._kz)
         
+    def Sm_int_right(self, W_ext: Any, V_ext: Any) -> Any:
+        """ 
+        Calculates S-matrix for an interface, where W_ext and V_ext for a medium on the left,
+        and the layer on the right. 
+        
+        """
+        WL, VL = W_ext, V_ext
+        WR, VR = self._W, self._V
+        
+        return self._Sm_int(WL, VL, WR, VR)
+    
+    def Sm_int_left(self, W_ext: Any, V_ext: Any) -> Any:
+        """ 
+        Calculates S-matrix for an interface, where W_ext and V_ext for a medium on the right,
+        and the layer on the left. 
+        
+        """
+        WR, VR = W_ext, V_ext
+        WL, VL = self._W, self._V
+        
+        return self._Sm_int(WL, VL, WR, VR)
+    
+    def Sm_prop(self):
+        """Calculates S-matrix for a propagation inside the layer"""
+        
+        # Define z prime (k0*L)
+        zp = self.source.k0 * self.layer.thickness # [wvl]
+        zp = self.backend.reshape(zp, [zp.shape[0], 1, 1, 1]) # [wvl, 1, 1, 1]
+        
+        # Calculate propagation exponent
+        exp = self.backend.exp(1j*self._kz*zp) # [wvl, theta, phi, 2Nh]
+        
+        # Diagonal propagation matrix
+        Dexp = self.backend.diag_embed(exp)    # [wvl, theta, phi, 2Nh, 2Nh]
+        
+        # Zero matrices
+        zero = self.backend.zeros_like(Dexp)
+        
+        # Build Smatrix
+        Sm = build_block(self.backend, zero, Dexp, Dexp, zero)
+        
+        return Sm
+        
+    def Sm_layer(self, W_ext: Any, V_ext: Any) -> Any:
+        """Calculates S-matrix for the layer surrounded by external medium symmetrically"""
+        Sm_left = self.Sm_int_right(W_ext, V_ext)
+        Sm_right = self.Sm_int_left(W_ext, V_ext)
+        Sm_p = self.Sm_prop()
+        
+        Sm_layer = self._redheffer_star(Sm_right, self._redheffer_star(Sm_p, Sm_left))
+        
+        return Sm_layer
+        
     @property
     def layer(self):
         return self._layer
@@ -111,6 +165,82 @@ class LayerSolver:
     @property
     def n_inc(self):
         return self._n_inc
+    
+    def _redheffer_star(self, S2: Any, S1: Any) -> Any:
+        """
+        Calculates Redheffer star product between S1 and S2.
+        S1 = (A B; C D), S2 = (E F; G H)
+        
+        S11 = A + B(I - ED)^{-1}EC 
+        S12 = B(I - ED)^{-1}F
+        S21 = G(I - DE)^{-1}C 
+        S22 = H + G(I - DE)^{-1}DF    
+        
+        """
+        A, B, C, D = split_block(S1)
+        E, F, G, H = split_block(S2)
+        
+        # Calculates identity matrix
+        batch_ndim = len(A.shape) - 2
+        I = self.backend.eye(A.shape[-1])
+        I = self.backend.reshape(I, [1]*batch_ndim + [A.shape[-1], A.shape[-1]])
+        
+        # Calculates I - ED and I - DE
+        IED = I - self.backend.matmul(E, D)
+        IDE = I - self.backend.matmul(D, E)
+        
+        # Calculate inverse
+        inv_IED_EC = self._apply_inverse(IED, self.backend.matmul(E, C))
+        inv_IED_F = self._apply_inverse(IED, F)
+        inv_IDE_C = self._apply_inverse(IDE, C)
+        inv_IDE_DF = self._apply_inverse(IDE, self.backend.matmul(D, F))
+
+        # Calculate Smatrix components
+        S11 = A + self.backend.matmul(B, inv_IED_EC)
+        S12 = self.backend.matmul(B, inv_IED_F)
+        S21 = self.backend.matmul(G, inv_IDE_C)
+        S22 = H + self.backend.matmul(G, inv_IDE_DF)
+        
+        # Build block
+        S = build_block(self.backend, S11, S12, S21, S22)
+
+        return S
+
+    def _Sm_int(self, WL: Any, VL: Any, WR: Any, VR: Any) -> Any:
+        """Calculates S-matrix for an interface between Left and Right media"""
+        block1 = build_block(self.backend, -WL, WR, -VL, -VR)
+        block2 = build_block(self.backend, WL, -WR, -VL, -VR)
+        
+        Sm = self._apply_inverse(block1, block2)
+        
+        return Sm
+        
+    def _apply_inverse(self, matrix_A: Any, matrix_B: Any) -> Any:
+        """
+        Apply the inverse of matrix_A to matrix_B using the configured method.
+
+        Parameters
+        ----------
+        matrix_A : Any
+            The matrix to be inverted.
+        matrix_B : Any
+            An auxiliary matrix.
+
+        Returns
+        -------
+        matrix_A_inv_B : Any
+            Product of the inverse of matrix_A and matrix_B.
+        """
+        if self.cfg.inverse_matrix_method == 'solve':
+            matrix_A_inv_B = self.backend.solve(matrix_A, matrix_B)
+        elif self.cfg.inverse_matrix_method == 'inv':
+            matrix_A_inv_B = self.backend.matmul(self.backend.inv(matrix_A), matrix_B)
+        elif self.cfg.inverse_matrix_method == 'pinv':
+            matrix_A_inv_B = self.backend.matmul(self.backend.pinv(matrix_A), matrix_B)
+        else:
+            raise ValueError(f"Unknown inverse matrix method: {self.cfg.inverse_matrix_method}")
+        
+        return matrix_A_inv_B
     
     @staticmethod
     def _init_validation(layer: Layer, 
@@ -152,11 +282,15 @@ def _select_solver_class(layer: Layer, cfg: LayerConfig):
     """
 
     if layer.type == "isotropic" and not layer.is_magnetic:
+        if layer.is_homogeneous and cfg.hsimplify:
+            return LayerSolverHomogeneous
         return LayerSolverIsotropic
 
     raise NotImplementedError(
         f"No solver implemented for layer type: {layer}"
     )
+
+"""Layer solver classes"""
 
 class _BaseLayerSolver(LayerSolver, ABC):
     """
@@ -183,33 +317,6 @@ class _BaseLayerSolver(LayerSolver, ABC):
     def _Qmatrix(self):
         pass
     
-    def _apply_inverse(self, matrix_A: Any, matrix_B: Any) -> Any:
-        """
-        Apply the inverse of matrix_A to matrix_B using the configured method.
-
-        Parameters
-        ----------
-        matrix_A : Any
-            The matrix to be inverted.
-        matrix_B : Any
-            An auxiliary matrix.
-
-        Returns
-        -------
-        matrix_A_inv_B : Any
-            Product of the inverse of matrix_A and matrix_B.
-        """
-        if self.cfg.inverse_matrix_method == 'solve':
-            matrix_A_inv_B = self.backend.solve(matrix_A, matrix_B)
-        elif self.cfg.inverse_matrix_method == 'inv':
-            matrix_A_inv_B = self.backend.matmul(self.backend.inv(matrix_A), matrix_B)
-        elif self.cfg.inverse_matrix_method == 'pinv':
-            matrix_A_inv_B = self.backend.matmul(self.backend.pinv(matrix_A), matrix_B)
-        else:
-            raise ValueError(f"Unknown inverse matrix method: {self.cfg.inverse_matrix_method}")
-        
-        return matrix_A_inv_B
-
     def _build_k_matrices(self):
         """
         Build the Kx and Ky diagonal matrices for the layer.
@@ -286,9 +393,7 @@ class _BaseLayerSolver(LayerSolver, ABC):
         Omega2_xx, Omega2_yy, Omega2_xy, Omega2_yx = Omega2  # shape: (wvl, theta, phi, Nh, Nh)
         
         # Create a block matrix for Omega^2
-        top = self.backend.cat([Omega2_xx, Omega2_xy], dim=-1)   # columns
-        bot = self.backend.cat([Omega2_yx, Omega2_yy], dim=-1)   # columns
-        Omega2 = self.backend.cat([top, bot], dim=-2)  # rows
+        Omega2 = build_block(self.backend, Omega2_xx, Omega2_xy, Omega2_yx, Omega2_yy)
         
         eigvals, eigvecs = self._mode_solver(Omega2)  # shape: (wvl, theta, phi, 2Nh), (wvl, theta, phi, 2Nh, 2Nh)
         
@@ -315,10 +420,7 @@ class _BaseLayerSolver(LayerSolver, ABC):
         Qxx, Qyy, Qxy, Qyx = Q
         
         # Q blocks: [B, Nh, Nh]
-        Q_top = self.backend.cat([Qxx, Qxy], dim=-1)   # [B, Nh, 2Nh]
-        Q_bot = self.backend.cat([Qyx, Qyy], dim=-1)   # [B, Nh, 2Nh]
-
-        Q_block = self.backend.cat([Q_top, Q_bot], dim=-2)   # [B, 2Nh, 2Nh]
+        Q_block = build_block(self.backend, Qxx, Qxy, Qyx, Qyy)   # [B, 2Nh, 2Nh]
         
         # Compute QW
         QW = self.backend.matmul(Q_block, W)
@@ -567,9 +669,121 @@ class LayerSolverIsotropic(_BaseLayerSolver):
         
         return Qmatrix_xx, Qmatrix_yy, Qmatrix_xy, Qmatrix_yx
         
+class LayerSolverHomogeneous(LayerSolver):
+    """ Layer solver for homogeneous, isotropic, non-magnetic layers. """
     
-    
+    def _prepare_kxy(self) -> Tuple[Any, Any]:
+        """ 
+        Compute kx and ky for all harmonics.
         
+        Returns:
+            kx, ky
+            Each with shape (wvl, theta, phi, Nh)
+        
+        """
+        Kx, Ky = self.source.Kxy(self.n_inc, self.cfg.M, self.cfg.N, self.lattice)
+        kx, ky, _ = flatten_Kxy(self.backend, Kx, Ky) # [wvl, theta, phi, 
+        if self.cfg.circ_truncation:
+            mx, ny = build_harmonic_grid(self.backend, self.cfg.M, self.cfg.N)
+            mask = elliptical_truncation_mask(mx, ny, self.cfg.M, self.cfg.N)
+        else:
+            mask = self.backend.astype(self.backend.ones((2*self.cfg.M+1)*(2*self.cfg.N+1)), self.backend.bool)
+            
+        kx = kx[...,mask]
+        ky = ky[...,mask]
+        
+        return kx, ky
+    
+    def _compute_kz(self, kx: Any, ky: Any) -> Any:
+        """ Compute kz analytically """
+        
+        # Compute initial quantities
+        epsilon = self.layer.epsilon[:,0,0]
+        
+        # Broadcasr epsilon and compute (jkz)^2
+        epsilon_b = self.backend.reshape(epsilon, [epsilon.shape[0], 1, 1, 1])
+        epsilon_b = self.backend.expand(epsilon_b, kx.shape)
+        kz2 = kx**2 + ky**2 - epsilon_b
+        
+        # Expand to eigvals size (match 2 polarizations)
+        kz2 = self.backend.cat([kz2, kz2], dim=-1) # [wvl, theta, phi, 2*Nh]
+        
+        # Choose branch
+        self._kz = kz_sign(self.backend, kz2)
+        
+        return self._kz
+        
+    def _compute_unit_vectors(self, kx: Any, ky: Any, kz: Any, tol: float = 1e-12) -> Tuple[Any, Any, Any, Any]:
+        """Compute s- and p-polarization unit vectors"""
+        
+        # Compute initial quantities
+        kt2 = kx*kx + ky*ky # [wvl, theta, phi, Nh]
+        kt = self.backend.where(kt2 == 0, self.backend.zeros_like(kt2), self.backend.sqrt(kt2))  
+        k2 = kt2 + self.backend.abs(kz)**2
+        k = self.backend.where(k2 == 0, self.backend.zeros_like(k2), self.backend.sqrt(k2))  
+        
+        # Safe inverse
+        inv_kt = 1.0 / self.backend.where(kt > tol, kt, self.backend.ones_like(kt))  # [wvl, theta, phi, Nh]
+        inv_k = 1.0 / self.backend.where(k > tol, k, self.backend.ones_like(k))  # [wvl, theta, phi, Nh]
+        
+        # Unit vectors for s- and p-pol
+        sx = -ky * inv_kt        # [wvl, theta, phi, Nh]                     
+        sy =  kx * inv_kt                             
+        px =  sy * kz * inv_k                             
+        py =  -sx * kz * inv_k                                     
+
+        # fix kt ~ 0 orders
+        sx = self.backend.where(kt > tol, sx, self.backend.ones_like(sx))       # TE = (1,0)
+        sy = self.backend.where(kt > tol, sy, self.backend.zeros_like(sy))      # [wvl, theta, phi, Nh]
+
+        px = self.backend.where(kt > tol, px, self.backend.zeros_like(px))      # TM = (0,1)
+        py = self.backend.where(kt > tol, py, self.backend.ones_like(py))       # [wvl, theta, phi, Nh]
+        
+        # Make Complex
+        sx = self.backend.asarray(sx, complex=True)
+        sy = self.backend.asarray(sy, complex=True)
+        px = self.backend.asarray(px, complex=True)
+        py = self.backend.asarray(py, complex=True)
+        
+        return sx, sy, px, py
+    
+    def _compute_W(self, sx: Any, sy: Any, px: Any, py: Any) -> Any:
+        """Compute W analytically"""
+        W_xx = self.backend.diag_embed(sx)   # [B, Nh, Nh]
+        W_xy = self.backend.diag_embed(px)   # [B, Nh, Nh]
+        W_yx = self.backend.diag_embed(sy)   # [B, Nh, Nh]
+        W_yy = self.backend.diag_embed(py)   # [B, Nh, Nh]
+
+        self._W   = build_block(self.backend, W_xx, W_xy, W_yx, W_yy)     # [B, 2Nh, 2Nh]
+        
+        return self._W
+    
+    def _compute_V(self, sx: Any, sy: Any, px: Any, py: Any, k: Any) -> Any:
+        """Compute V analytically"""
+        V_xx = 1j*self.backend.diag_embed(k*px)   # [B, Nh, Nh]
+        V_xy = -1j*self.backend.diag_embed(k*sx)   # [B, Nh, Nh]
+        V_yx = 1j*self.backend.diag_embed(k*py)   # [B, Nh, Nh]
+        V_yy = -1j*self.backend.diag_embed(k*sy)   # [B, Nh, Nh]
+
+        self._V   = build_block(self.backend, V_xx, V_xy, V_yx, V_yy)     # [B, 2Nh, 2Nh]
+        
+        return self._V
+        
+    def solve(self):
+        #Calculate kx, ky, kz
+        kx, ky = self._prepare_kxy()
+        kz = self._compute_kz(kx, ky)[...,:kx.shape[-1]]
+        k2 = kx**2 + ky**2 + self.backend.abs(kz)**2
+        k = self.backend.where(k2 == 0, self.backend.zeros_like(k2), self.backend.sqrt(k2))  
+        
+        # Compute s and p
+        sx, sy, px, py = self._compute_unit_vectors(kx, ky, kz)
+        
+        # Compute W
+        self._compute_W(sx, sy, px, py)
+        
+        # Compute V
+        self._compute_V(sx, sy, px, py, k)
         
         
 
