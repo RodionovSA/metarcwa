@@ -1,12 +1,13 @@
 from abc import ABC, abstractmethod
 from typing import Any, Tuple
 
-from src.layer import Layer
-from src.source import Source
+from src.model.layer import Layer
+from src.model.source import Source
 from src.config import LayerConfig
 from src.tvf import TVF
-from src.compute import custom_fft, build_index_map, toeplitz_2d, diagonal_K_matrices, kz_sign, flatten_Kxy
+from src.compute import build_index_map, toeplitz_2d, diagonal_K_matrices, kz_sign, flatten_Kxy
 from src.compute import build_harmonic_grid, elliptical_truncation_mask, build_block, split_block
+from src.model.geometry.geometry import custom_fft
 
 class LayerSolver:
     """ Public interface for RCWA layer solvers."""

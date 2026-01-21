@@ -1,7 +1,9 @@
+# src/model/layer.py
+# Layer objects that stores information about material properties and thickness
+
 from typing import Union, Any
-from src.geometry import VectorObject, Bitmap, VectorGroup, Rectangle
-from src.compute import fft_matfunc
-from src.material import BaseMaterial
+from src.model.geometry.geometry import BaseObject, VectorObject, VectorGroup, fft_matfunc
+from src.model.material import BaseMaterial
 from src.backend import Backend
 
     
@@ -10,7 +12,7 @@ class Layer:
     Layer in RCWA structure.
     """
     def __init__(self, 
-                 objects: Union[VectorObject, Bitmap, VectorGroup],
+                 objects: BaseObject,
                  thickness: Any,
                  material_bg: BaseMaterial):
         '''
@@ -19,7 +21,7 @@ class Layer:
         objects : Union[VectorObject, Bitmap, VectorGroup]
             Geometric object(s) defining the material distribution in the layer.
         thickness : Any
-            Thickness of the layer.
+            Thickness of the layer. 
         material_bg : BaseMaterial
             Background material of the layer.
         '''
@@ -51,7 +53,10 @@ class Layer:
         mu_check = self.homogeneous_check(self.backend, mu_xy)
         
         return epsilon_check and mu_check
-          
+    @property
+    def is_semi_infinite(self) -> bool:
+        return self.thickness is None      
+    
     """ Simulation properties """
     @property
     def backend(self):
@@ -109,7 +114,7 @@ class Layer:
         """
         return self._objects.mu_xy(self.material_bg)
     
-    def epsilon_mn(self, M: int, N: int, use_closed_form: bool = True,
+    def epsilon_mn(self, use_closed_form: bool = True,
                    inverse: bool = False, regularized: bool = False,
                    regularization: float = 1e-8):
         """
@@ -117,8 +122,6 @@ class Layer:
 
         Parameters
         ----------
-        M, N : int
-            Harmonics orders along x and y.
         use_closed_form : bool, optional
             Whether to use closed-form expressions for Fourier coefficients. Default is True.
             Works only if objects is VectorObject or VectorGroup.
@@ -136,7 +139,7 @@ class Layer:
         """
         if use_closed_form and isinstance(self._objects, (VectorObject, VectorGroup)):
             epsilon_mn = self._objects.epsilon_mn(
-                M, N, self.material_bg, inverse=inverse, 
+                self.material_bg, inverse=inverse, 
                 regularized=regularized, regularization=regularization
             )
         else:
@@ -146,10 +149,10 @@ class Layer:
                     epsilon_xy = 1.0 / (epsilon_xy + regularization)
                 else:
                     epsilon_xy = 1.0 / epsilon_xy
-            epsilon_mn = fft_matfunc(self.backend, epsilon_xy, M, N)
+            epsilon_mn = fft_matfunc(self.backend, epsilon_xy, self.lattice.M, self.lattice.N)
         return epsilon_mn
     
-    def mu_mn(self, M: int, N: int, use_closed_form: bool = True,
+    def mu_mn(self, use_closed_form: bool = True,
                inverse: bool = False, regularized: bool = False,
                regularization: float = 1e-8):
         """
@@ -157,8 +160,6 @@ class Layer:
 
         Parameters
         ----------
-        M, N : int
-            Harmonics orders along x and y.
         use_closed_form : bool, optional
             Whether to use closed-form expressions for Fourier coefficients. Default is True.
             Works only if objects is VectorObject or VectorGroup.
@@ -176,7 +177,7 @@ class Layer:
         """
         if use_closed_form and isinstance(self._objects, (VectorObject, VectorGroup)):
             mu_mn = self._objects.mu_mn(
-                M, N, self.material_bg, inverse=inverse, 
+                self.material_bg, inverse=inverse, 
                 regularized=regularized, regularization=regularization
             )
         else:
@@ -186,15 +187,15 @@ class Layer:
                     mu_xy = 1.0 / (mu_xy + regularization)
                 else:
                     mu_xy = 1.0 / mu_xy
-            mu_mn = fft_matfunc(self.backend, mu_xy, M, N)
+            mu_mn = fft_matfunc(self.backend, mu_xy, self.lattice.M, self.lattice.N)
         return mu_mn
     
     """ Static helper methods """
     @staticmethod
     def _init_validation(objects, thickness, material_bg):
-        if not isinstance(objects, (VectorObject, Bitmap, VectorGroup)):
+        if not isinstance(objects, BaseObject):
             raise ValueError(f"objects must be VectorObject, Bitmap, or VectorGroup, got {type(objects)}")
-        if thickness <= 0:
+        if thickness is not None and thickness <= 0:
             raise ValueError(f"thickness must be positive, got {thickness}")
         
         if not isinstance(material_bg, BaseMaterial):

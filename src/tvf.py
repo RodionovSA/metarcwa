@@ -1,5 +1,5 @@
 from src.backend import Backend
-from src.geometry import Lattice
+from src.model.geometry.geometry import Lattice
 
 from typing import Any, Callable, Tuple
 from abc import ABC, abstractmethod

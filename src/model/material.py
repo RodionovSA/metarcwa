@@ -1,9 +1,16 @@
+# src/model/material.py
+# Material objects for different type of materials 
+
 from abc import ABC, abstractmethod
 from typing import Any
 from src.backend import Backend
 
 class BaseMaterial(ABC):
     """Abstract base class for all material types."""
+    
+    @property
+    def backend(self):
+        return self._backend
     
     @property
     @abstractmethod
@@ -58,10 +65,6 @@ class Material(BaseMaterial):
     @property
     def mu(self) -> Any:
         return self.backend.ones_like(self._epsilon)
-    
-    @property
-    def backend(self) -> Backend:
-        return self._backend
 
     @property
     def epsilon_tensor(self) -> Any:

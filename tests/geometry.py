@@ -1,6 +1,6 @@
 import torch
 from src.backend import TorchBackend
-from src.geometry import Rectangle, Lattice
+from src.model.geometry.geometry import Rectangle, Lattice
 
 ''' Test Rectangle geometry object:
     - real-space epsilon(x,y) and mu(x,y)

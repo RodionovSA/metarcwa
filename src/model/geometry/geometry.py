@@ -1,79 +1,31 @@
+# src/model/geometry.py
+# Lattice and Geometry objects that define material distribution 
+
 from typing import Tuple, Any
+from abc import ABC, abstractmethod
 
 from src.backend import Backend
-from src.material import BaseMaterial
+from src.model.material import BaseMaterial
 
 
 """ Main classes"""
-class Lattice:
-    """
-    Lattice base class for geometric objects.
-    """
-    def __init__(self, period: Tuple[float, float],
-                 grid: Tuple[int, int]):
-        '''
-        Parameters
-        ----------
-        period : tuple of float
-            (Lx, Ly) period of the lattice. Length units.
-        grid : tuple of int
-            (Nx, Ny) grid size for sampling the material functions.
-        '''
-        Lattice._init_validation(period, grid)
-        
-        self._period = period
-        self._grid = grid
-        
-    @property
-    def period(self) -> Tuple[float, float]:
-        return self._period
 
-    @property
-    def grid(self) -> Tuple[int, int]:
-        return self._grid
-    
-    @property 
-    def delta(self) -> Tuple[float, float]:
-        '''
-        Grid spacing (dx, dy).
-        Returns
-        -------
-        delta : tuple of float
-            (dx, dy) grid spacing. Length units.
-        '''
-        Lx, Ly = self.period
-        Nx, Ny = self.grid
-        
-        dx = Lx / Nx
-        dy = Ly / Ny
-        
-        return (dx, dy)
-    
-    @staticmethod
-    def _init_validation(period, grid) -> None:
-        '''
-        Validate period and grid.
-        Parameters
-        ----------
-        period : tuple of float
-            (Lx, Ly) period of the unit cell. Length units.
-        grid : tuple of int
-            (Nx, Ny) grid size for sampling the material functions.
-        '''
-        if len(period) != 2:
-            raise ValueError(f"period must be tuple of 2 floats, got {period}")
-        if len(grid) != 2:
-            raise ValueError(f"grid must be tuple of 2 ints, got {grid}")
-        if not all(isinstance(x, int) for x in grid):
-            raise ValueError(f"grid values must be integers, got {grid}")
-        if not all(isinstance(x, float) or isinstance(x, int) for x in period):
-            raise ValueError(f"period values must be floats, got {period}")
-        if any(x <= 0 for x in period):
-            raise ValueError(f"period values must be positive, got {period}")
-        if any(x <= 0 for x in grid):
-            raise ValueError(f"grid values must be positive, got {grid}")
 
-class VectorObject:
+
+""" Objects """
+class BaseObject(ABC):
+    """
+    Base class for all geometry objects.
+    """
+    @property
+    def backend(self):
+        return self._backend
+    
+    @property
+    def lattice(self):
+        return self._lattice
+
+class VectorObject(BaseObject):
     """
     Geometric vector object base class for defining material distributions.
     """
@@ -121,22 +73,13 @@ class VectorObject:
         
         self._center = _wrap_center(backend,
                                     center[0], center[1], 
-                                    self.lattice.period[0], 
-                                    self.lattice.period[1])
-        self._angle = self.backend.asarray(angle, complex=False)
+                                    lattice.period[0], 
+                                    lattice.period[1])
+        self._angle = backend.asarray(angle, complex=False)
 
         # Differentiability settings
         self._soft_mask = soft_mask
         self._smoothness = smoothness
-
-    """ Simulation properties """
-    @property
-    def backend(self) -> Backend:
-        return self._backend
-
-    @property
-    def lattice(self) -> Lattice:
-        return self._lattice
 
     """ Autograd properties """
     @property
@@ -227,8 +170,6 @@ class VectorObject:
                              mode='mu')
     
     def epsilon_mn(self,
-                   M: int,
-                   N: int,
                    mat_bg: BaseMaterial,
                    inverse: bool = False,
                    regularized: bool = False,
@@ -237,8 +178,6 @@ class VectorObject:
         Compute the Fourier coefficients of the permittivity distribution in the closed form.
         Parameters
         ----------
-        M, N : int
-            Number of harmonics along x and y.
         material_bg : BaseMaterial
             Background material.
         inverse : bool
@@ -263,15 +202,11 @@ class VectorObject:
             else:
                 epsilon_eff = 1.0 / epsilon_tensor
                 epsilon_eff_bg = 1.0 / epsilonbg_tensor
-            return self._matdist_fourier(M, N, 
-                                         epsilon_eff, epsilon_eff_bg)
+            return self._matdist_fourier(epsilon_eff, epsilon_eff_bg)
         
-        return self._matdist_fourier(M, N, 
-                                     epsilon_tensor, epsilonbg_tensor)
+        return self._matdist_fourier(epsilon_tensor, epsilonbg_tensor)
     
     def mu_mn(self,
-               M: int,
-               N: int,
                mat_bg: BaseMaterial,
                inverse: bool = False,
                regularized: bool = False,
@@ -280,8 +215,6 @@ class VectorObject:
         Compute the Fourier coefficients of the permeability distribution in the closed form.
         Parameters
         ----------
-        M, N : int
-            Number of harmonics along x and y.
         mat_bg : BaseMaterial
             Background material.
         inverse : bool
@@ -306,11 +239,9 @@ class VectorObject:
             else:
                 mu_eff = 1.0 / mu_tensor
                 mu_eff_bg = 1.0 / mubg_tensor
-            return self._matdist_fourier(M, N, 
-                                         mu_eff, mu_eff_bg)
+            return self._matdist_fourier(mu_eff, mu_eff_bg)
         
-        return self._matdist_fourier(M, N, 
-                                     mu_tensor, mubg_tensor)
+        return self._matdist_fourier(mu_tensor, mubg_tensor)
         
     """ Static helper methods """
     @staticmethod
@@ -449,8 +380,6 @@ class Rectangle(VectorObject):
         return self.backend.asarray(fill_fraction, complex=False)
     
     def _matdist_fourier(self,
-                        M: int,
-                        N: int,
                         matval: complex,
                         matbg: complex):
         """
@@ -466,8 +395,6 @@ class Rectangle(VectorObject):
 
         Parameters
         ----------
-        M, N : int
-            Number of harmonics along x and y.
         matval : complex
             Material value tensor inside the rectangle (B, 3, 3).
         matbg : complex
@@ -484,7 +411,8 @@ class Rectangle(VectorObject):
                                        self.size,
                                        self.angle,
                                        self.lattice.period,
-                                       M, N,
+                                       self.lattice.M,
+                                       self.lattice.N,
                                        matval, matbg)
 
         return mat_mn
@@ -598,8 +526,6 @@ class Ellipse(VectorObject):
         return self.backend.asarray(fill_fraction, complex=False)
     
     def _matdist_fourier(self,
-                        M: int,
-                        N: int,
                         matval: complex,
                         matbg: complex):
         """
@@ -615,8 +541,6 @@ class Ellipse(VectorObject):
 
         Parameters
         ----------
-        M, N : int
-            Truncation order along x and y.
         matval : complex
             Material value tensor inside the ellipse (B, 3, 3).
         matbg : complex
@@ -633,11 +557,12 @@ class Ellipse(VectorObject):
                                           self.size,
                                           self.angle,
                                           self.lattice.period,
-                                          M, N,
+                                          self.lattice.M,
+                                          self.lattice.N,
                                           matval, matbg)
         return mat_mn
 
-class Bitmap:
+class Bitmap(BaseObject):
     """Material distribution defined from 2D bitmap masks for a given material."""
     def __init__(self,
                   backend: Backend,
@@ -666,21 +591,7 @@ class Bitmap:
         self._material = material
         self._lattice = lattice
     
-    """ Simulation properties """
-    @property
-    def backend(self) -> Backend:
-        return self._backend
-    @property
-    def lattice(self) -> Lattice:
-        return self._lattice
-    
     """ Geometric properties """
-    @property    
-    def period(self) -> Tuple[float, float]:
-        return self._canvas.period
-    @property
-    def grid(self) -> Tuple[int, int]:
-        return self.lattice.grid
     @property
     def bitmap(self) -> Any:
         return self._bitmap
@@ -791,7 +702,7 @@ class Bitmap:
         
         return bm_bin
     
-class VectorGroup:
+class VectorGroup(BaseObject):
     """
     Group of vector objects.
     **TODO**: to be implemented.
@@ -801,6 +712,96 @@ class VectorGroup:
         
 
 """ Helper functions"""
+# Fourier transform
+def custom_fft(backend: Backend,
+               field: Any,
+               M: int,
+               N: int) -> Any:
+    """
+    Custom function for FFT calculation
+    
+    Parameters
+    ----------
+    backend : Backend
+        Computational backend.
+    field : Any
+        Field to be transformed. Shape: (..., Nx, Ny)
+    M, N : int
+        Truncation orders along x and y.
+        
+    Returns
+    -------
+    field_mn : Any
+        Fourier coefficients of the field. Shape: (..., 2M+1, 2N+1)
+    """
+    field = backend.asarray(field, complex=True)
+
+    shape = field.shape
+    # Sanity: need enough points to support requested harmonics
+    Nx, Ny = shape[-2], shape[-1]
+    if (2 * M + 1) > Nx or (2 * N + 1) > Ny:
+        raise ValueError(
+            f"Grid too small for requested harmonics: "
+            f"(2M+1, 2N+1)=({2*M+1}, {2*N+1}) vs (Nx,Ny)=({Nx}, {Ny})"
+        )
+
+    # FFT over x,y
+    matfunc_fft = backend.fft2(field, dim=(-2, -1))         # (..., Nx, Ny), complex
+    matfunc_fft_shifted = backend.fftshift(matfunc_fft, dim=(-2, -1))  # center zero frequency   
+    cx = Nx // 2
+    cy = Ny // 2
+    m_lo = cx - M
+    m_hi = cx + M + 1
+    n_lo = cy - N
+    n_hi = cy + N + 1
+
+    matfunc_crop = matfunc_fft_shifted[..., m_lo:m_hi, n_lo:n_hi]  # (..., 2M+1, 2N+1)
+
+    norm = Nx * Ny
+    matfunc_mn = matfunc_crop / norm
+
+    return matfunc_mn
+
+def fft_matfunc(
+    backend: Backend,
+    matfunc_xy,
+    M: int,
+    N: int,
+):
+    """
+    Compute FFT for matfunc_{m,n} from real-space matfunc(x,y).
+    matfunc_xy can be epsilon, mu, or any other material function.
+
+    Parameters
+    ----------
+    backend : Backend
+        Computational backend.
+
+    matfunc_xy : array-like or backend tensor
+        Material function map in real space. Can be real or complex.
+        Shape: (wvl, 3, 3, Nx, Ny)
+
+    M, N : int
+        Truncation orders along x and y. Total numbers are (2M+1) and (2N+1).
+
+    Returns
+    -------
+    matfunc_mn : backend tensor
+        Fourier coefficients matfunc_{m,n}, shape (wvl, 3, 3, 2M+1, 2N+1),
+        complex-valued.
+    """
+    matfunc_xy = backend.asarray(matfunc_xy, complex=True)
+
+    shape = matfunc_xy.shape
+    if len(shape) != 5:
+        raise ValueError("matfunc_xy must have shape (wvl, 3, 3, Nx, Ny)")
+    if shape[1] != 3 or shape[2] != 3:
+        raise ValueError("matfunc_xy must have shape (wvl, 3, 3, Nx, Ny)")
+    
+    matfunc_mn = custom_fft(backend, matfunc_xy, M, N)  # (wvl, 3, 3, 2M+1, 2N+1)
+
+    return matfunc_mn
+
 # Real-space material distribution from bitmap
 def _matdist_real(backend: Backend, 
                   lattice: Lattice, 
