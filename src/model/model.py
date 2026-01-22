@@ -37,9 +37,20 @@ class Model:
     @property
     def n_inc(self) -> Any:
         """Return refractive index of incident medium."""
-        epsilon_inc = self.layers[0].material.epsilon_tensor(self.backend, self.lattice)[:,0,0]
+        epsilon_inc = self.layers[0].material.epsilon_tensor(self.backend)[:,0,0]
         eps = self.backend.asarray(1e-9, complex=False)  
         return self.backend.sqrt(self.backend.real(epsilon_inc) + eps)
+    
+    @property
+    def Kxy(self) -> Any:
+        """ Return Kx and Ky matrices. """
+        Kx, Ky = self.source.Kxy(self.backend, self.lattice, self.n_inc)
+        return Kx, Ky
+    
+    @property
+    def k0(self) -> Any:
+        """ Return free space wavenumber array. """
+        return self.source.k0(self.backend)
     
     @property
     def layers_properties(self) -> List[dict]:
@@ -54,6 +65,8 @@ class Model:
             }
             props.append(prop)
         return props
+    
+    
     
     """ Static helper methods """
     @staticmethod
@@ -88,19 +101,19 @@ class Model:
         inc = layers[0]
         if not inc.is_homogeneous(backend, lattice):
             raise ValueError("Incident layer must be homogeneous")
-        if not inc.is_semi_infinite():
+        if not inc.is_semi_infinite:
             raise ValueError("Incident layer must be semi-infinite (thickness=None)")
 
         # --- substrate ---
         sub = layers[-1]
         if not sub.is_homogeneous(backend, lattice):
             raise ValueError("Substrate layer must be homogeneous")
-        if not sub.is_semi_infinite():
+        if not sub.is_semi_infinite:
             raise ValueError("Substrate layer must be semi-infinite (thickness=None)")
 
         # --- internal layers ---
         for i, layer in enumerate(layers[1:-1], start=1):
-            if layer.is_semi_infinite():
+            if layer.is_semi_infinite:
                 raise ValueError(
                     f"Internal layer {i} cannot be semi-infinite"
                 )
@@ -111,7 +124,12 @@ class Model:
             raise ValueError(
                 "All layers must have the same wavelength dimension in their material properties"
             )
-
+            
+         # --- wvl dim compatible for layers and source ---
+        if source.k0(backend).shape[0] != wvl_sizes[0]:
+            raise ValueError(
+                "Source wavelength dimension must match layers' material properties"
+            )
         
             
         

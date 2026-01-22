@@ -304,21 +304,19 @@ class Uniform(Rectangle):
     Uniform vector object that fills the entire unit cell.
     Inherits from Rectangle with size equal to lattice period.
     """
-    def __init__(self,
-                 material: "BaseMaterial"):
+    def __init__(self, material: "BaseMaterial"):
         """
         Parameters
         ----------
         material : BaseMaterial
             Material of the uniform object.
         """
-        # Center at (0,0), size will be set during bitmap generation
         super().__init__(center=(0.0, 0.0),
                          size=(0.0, 0.0),  
                          material=material,
                          angle=0.0,
                          soft_mask=False,
-                         smoothness=0.0)
+                         smoothness=0.01)
     
     def bitmap(self, backend: "Backend", lattice: "Lattice") -> Any:
         '''
@@ -338,4 +336,4 @@ class Uniform(Rectangle):
             Bitmap representation of the uniform object, shape (Nx, Ny), dtype bool.
         '''
         Nx, Ny = lattice.grid
-        return backend.ones((Nx, Ny), dtype=backend.bool)
+        return backend.ones((Nx, Ny))
