@@ -1,38 +1,77 @@
 # src/model/model.py
 # Class for storing the simulation model
-from typing import List, Sequence
+from typing import List, Sequence, Any
 
 from src.model.layer import Layer
 from src.model.source import Source
+from src.model.geometry.lattice import Lattice
+from src.backend import Backend
 
 class Model:
     """ RCWA model """
-    def __init__(self, layers: List["Layer"], source: "Source"):
-        self._init_validation(layers, source)
+    def __init__(self, 
+                 backend: "Backend",
+                 lattice: "Lattice",
+                 layers: List["Layer"], 
+                 source: "Source"):
+        """
+        Parameters
+        ----------
+        backend : Backend
+            Computational backend
+        lattice : Lattice
+            Lattice object defining the periodicity
+        layers : List[Layer]
+            List of layers in the model (from incident to substrate)
+        source : Source
+            Source object defining the incident field
+        """
+        self._init_validation(backend, lattice, layers, source)
         
-        self._layers = layers
-        self._source = source
+        self.backend = backend 
+        self.lattice = lattice
+        self.layers = layers
+        self.source = source
         
     """ Simulation properties """
     @property
-    def backend(self):
-        return self.source.backend
+    def n_inc(self) -> Any:
+        """Return refractive index of incident medium."""
+        epsilon_inc = self.layers[0].material.epsilon_tensor(self.backend, self.lattice)[:,0,0]
+        eps = self.backend.asarray(1e-9, complex=False)  
+        return self.backend.sqrt(self.backend.real(epsilon_inc) + eps)
+    
     @property
-    def lattice(self):
-        return self.layers[0].lattice
-    @property
-    def layers(self):
-        return self._layers
-    @property
-    def source(self):
-        return self._source
-    @property
-    def n_inc(self):
-        return self.backend.asarray(self.layers[0].epsilon, complex=False)
+    def layers_properties(self) -> List[dict]:
+        """Return list of dictionaries with layer properties."""
+        props = []
+        for layer in self.layers:
+            prop = {
+                "thickness": layer.thickness,
+                "material_type": layer.material.type,
+                "is_homogeneous": layer.is_homogeneous(self.backend, self.lattice),
+                "is_magnetic": layer.material.is_magnetic
+            }
+            props.append(prop)
+        return props
     
     """ Static helper methods """
     @staticmethod
-    def _init_validation(layers, source):
+    def _init_validation(backend, lattice, layers, source):
+        # --- backend consistency ---
+        if not isinstance(backend, Backend):
+            raise TypeError("backend must be Backend instance") 
+        
+        # --- lattice consistency ---
+        if not isinstance(lattice, Lattice):
+            raise TypeError("lattice must be Lattice instance")
+        
+        # --- source compatibility ---
+        if not isinstance(source, Source):
+            raise ValueError(
+                "source must be Source instance"
+            )
+        
         # --- layers container ---
         if not isinstance(layers, Sequence):
             raise TypeError("layers must be a sequence of Layer objects")
@@ -47,14 +86,14 @@ class Model:
 
         # --- incident medium ---
         inc = layers[0]
-        if not inc.is_homogeneous():
+        if not inc.is_homogeneous(backend, lattice):
             raise ValueError("Incident layer must be homogeneous")
         if not inc.is_semi_infinite():
             raise ValueError("Incident layer must be semi-infinite (thickness=None)")
 
         # --- substrate ---
         sub = layers[-1]
-        if not sub.is_homogeneous():
+        if not sub.is_homogeneous(backend, lattice):
             raise ValueError("Substrate layer must be homogeneous")
         if not sub.is_semi_infinite():
             raise ValueError("Substrate layer must be semi-infinite (thickness=None)")
@@ -65,32 +104,14 @@ class Model:
                 raise ValueError(
                     f"Internal layer {i} cannot be semi-infinite"
                 )
+                
+        # --- wvl dim compatible across layers ---
+        wvl_sizes = [layer.epsilon_xy(backend, lattice).shape[0] for layer in layers]
+        if len(set(wvl_sizes)) != 1:
+            raise ValueError(
+                "All layers must have the same wavelength dimension in their material properties"
+            )
 
-        # --- source compatibility ---
-        if not isinstance(source, Source):
-            raise ValueError(
-                "source must be Source instance"
-            )
-            
-        # --- backend consistency ---
-        backends = {layer.backend for layer in layers}
-
-        if len(backends) != 1:
-            raise ValueError(
-                "All layers must use the same backend. "
-                f"Got backends: {backends}"
-            )
-            
-        if source.backend not in backends:
-            raise ValueError(
-                "Source backend must match layer backend. "
-                f"Source backend: {source.backend}, "
-                f"Layer backend(s): {backends}"
-            )
         
-        # --- lattice consistency ---
-        ref = layers[0].lattice
-
-        for layer in layers:
-            if layer.lattice is not ref:
-                raise ValueError("Lattice object mismatch")
+            
+        

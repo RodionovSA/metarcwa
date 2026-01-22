@@ -1,4 +1,5 @@
 # src/model/geometry/sampling.py
+# Functions for sampling geometric shapes onto a grid
 
 from typing import Any, Tuple
 

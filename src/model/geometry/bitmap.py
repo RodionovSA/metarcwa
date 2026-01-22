@@ -1,68 +1,65 @@
-# src/model/geometry/vector.py
-# Vector object base class for defining material distributions.
+# src/model/geometry/bitmap.py
+# Bitmap-based geometry objects.
 
-from typing import Tuple
+from typing import Any
 from src.model.geometry.base import BaseObject
 from src.model.geometry.lattice import Lattice
 from src.model.material import BaseMaterial
 from src.backend import Backend
 from src.model.geometry.sampling import matmap
+from src.model.geometry.fourier import fft_matmap
 
-
-class VectorObject(BaseObject):
-    """
-    Geometric vector object base class for defining material distributions.
-    """
-    def __init__(self,
-                 center: Tuple[float, float], 
-                 material: "BaseMaterial",
-                 angle: float = 0.0,
-                 soft_mask: bool = False,
-                 smoothness: float = 0.05):
-        '''
+class Bitmap(BaseObject):
+    
+    """Material distribution defined from 2D bitmap masks for a given material."""
+    
+    def __init__(self, bitmap: Any, material: "BaseMaterial"):
+        """
         Parameters
         ----------
-        center : tuple of float
-            (x,y) coordinates of the object's center in length units. (0, 0) is the center.
-        material : BaseMaterial
-            Material object defining the electromagnetic properties.
-        angle : float
-            Rotation angle in radians.
-        soft_mask : bool
-            Whether the object should use a soft mask for differentiable operations. Default is False.
-            If True the bitmap representation will use smooth sigmoid approximation.
-            *Important*: Fourier coefficients will still be computed analytically for sharp boundaries,
-            so soft_mask only affects real-space distributions.
-        smoothness : float
-            Smoothness parameter for sigmoid. Default is 0.05.
-        '''
-        VectorObject._init_validation(center, 
-                                    angle, 
-                                    material,
-                                    soft_mask,
-                                    smoothness)
-        
-        
-        self.material = material
-        self.center = center
-        self.angle = angle
+        bitmap : array-like or backend tensor
+            2D array representing the material distribution.
+            Values must lie in the range [0, 1].
 
-        # Differentiability settings
-        self.soft_mask = soft_mask
-        self.smoothness = smoothness
+            - bitmap == 0 corresponds to the background material
+            (epsilon_bg, mu_bg).
+            - bitmap == 1 corresponds to the foreground material
+            (epsilon, mu).
+            - 0 < bitmap < 1 represents a continuous mixture of
+            background and foreground materials, interpreted
+            via linear interpolation.
+            
+            **Important**: If bitmap grid does not match the lattice grid,
+            it will be automatically resampled to fit during simulation.
+            
+        material : BaseMaterial
+            Material object defining epsilon and mu inside pixels where bitmap == 1.
+        """
+        Bitmap._init_validation(bitmap, material)
+        
+        self._bitmap = bitmap  # (Nx, Ny), real, values ∈ {0,1}
+        self.material = material
     
-    def bitmap(self, 
-               backend: "Backend", 
-               lattice: "Lattice"):
-        pass
-    
-    def matmap_fourier(self, 
-                       backend: "Backend", 
-                       lattice: "Lattice",
-                       matval: complex,
-                       matbg: complex,
-                       closed_form: bool):
-        pass
+    def bitmap(self, backend: "Backend", lattice: "Lattice") -> Any:
+        '''
+        Align the provided bitmap with the specified backend and lattice.
+        
+        Parameters
+        ----------
+        backend : Backend
+            Computational backend.
+        lattice : Lattice
+            Lattice object defining the simulation domain.
+            
+        Returns
+        -------
+        bitmap : backend tensor
+            Aligned bitmap tensor of shape (Nx, Ny), real dtype.
+        '''
+        bitmap = backend.asarray(self._bitmap, complex=False)
+        bitmap_new = backend.resample(bitmap, lattice.grid)
+        
+        return bitmap_new
     
     def epsilon_xy(self, 
                    backend: "Backend", 
@@ -212,34 +209,63 @@ class VectorObject(BaseObject):
                                    mubg_tensor,
                                    closed_form)
         
-   
-    @staticmethod
-    def _init_validation(center: Tuple[float, float],
-                        angle: float,
-                        material: BaseMaterial,
-                        soft_mask: bool,
-                        smoothness: float) -> None:
+    def matmap_fourier(self, 
+                       backend: "Backend", 
+                       lattice: "Lattice",
+                       matval: complex,
+                       matbg: complex,
+                       closed_form: bool):
+        """
+        Computes Fourier material map from the real-space distribution
+
+        Parameters
+        ----------
+        backend : Backend
+            Computational backend.
+        lattice : Lattice
+            Lattice object defining the simulation domain.
+        matval : complex
+            Material value tensor inside the rectangle (B, 3, 3).
+        matbg : complex
+            Background material value tensor (B, 3, 3).
+        closed_form : bool
+            Does not affect bitmap geometries, included for compatibility.
+
+        Returns
+        -------
+        mat_mn : backend tensor
+            Fourier coefficients mat_{m,n}, shape (B, 3, 3, 2M+1, 2N+1), complex.
+            Indices correspond to m ∈ [-M..M], n ∈ [-N..N].
+        """
         
-        if len(center) != 2:
-            raise ValueError(f"center must be tuple of 2 floats, got {center}")
-        if not isinstance(soft_mask, bool):
-            raise TypeError(f"soft_mask must be bool, got {type(soft_mask)}")
-        if not isinstance(smoothness, float) and not isinstance(smoothness, int):
-            raise TypeError(f"smoothness must be float, got {type(smoothness)}")
-        if smoothness <= 0:
-            raise ValueError(f"smoothness must be positive, got {smoothness}")
+        mat_xy = matmap(backend, 
+                        self.bitmap(backend, lattice),
+                        matval,
+                        matbg)
+        
+        mat_mn = fft_matmap(backend,
+                            mat_xy,
+                            lattice.M,
+                            lattice.N)
+
+        return mat_mn
+        
+    """ Static helper methods """
+    @staticmethod
+    def _init_validation(bitmap: Any, material: "BaseMaterial") -> None:
+        
         if not isinstance(material, BaseMaterial):
             raise TypeError("material must be a BaseMaterial instance")
         
-        # Python scalar → OK
-        if isinstance(angle, (int, float)):
-            pass
+        if not hasattr(bitmap, "shape"):
+            raise TypeError("bitmap must be an array/tensor")
 
-        # array / tensor scalar (0D) → OK
-        elif hasattr(angle, "shape"):
-            if len(angle.shape) != 0:
-                raise ValueError("angle must be a scalar (0D), not an array")
+        if len(bitmap.shape) != 2:
+            raise ValueError("bitmap must be a 2D array/tensor")
+            
+        # values must lie in [0, 1]
+        vmin = bitmap.min()
+        vmax = bitmap.max()
 
-        # everything else → invalid
-        else:
-            raise ValueError("angle must be a scalar")
+        if vmin < 0 or vmax > 1:
+            raise ValueError("bitmap values must be in [0, 1]")

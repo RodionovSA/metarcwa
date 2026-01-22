@@ -207,6 +207,24 @@ class Backend(ABC):
     # Array operations
     # ---------------------------------------------------------
     @abstractmethod
+    def resample(self, x: Any, new_shape: tuple[int, int]) -> Any:
+        """
+        Resample 2D array `x` to the specified `new_shape` using interpolation.
+
+        Parameters
+        ----------
+        x : array-like
+            Input 2D array to be resampled.
+        new_shape : tuple of int
+            Desired output shape (new_Nx, new_Ny).
+
+        Returns
+        -------
+        array : backend-specific array type
+            Resampled array with shape `new_shape`.
+        """
+    
+    @abstractmethod
     def clamp(self, x: Any, min_value: float, max_value: float) -> Any:
         """
         Clamp all elements in `x` to be within the range [min_value, max_value].
@@ -1053,6 +1071,40 @@ class TorchBackend(Backend):
     # ---------------------------------------------------------
     # Array operations
     # ---------------------------------------------------------
+    def resample(self, x: torch.Tensor, shape: tuple[int, int]) -> torch.Tensor:
+        """
+        Resample a 2D field.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input tensor of shape (W, H).
+        shape : tuple[int, int]
+            Target spatial shape (W_new, H_new).
+
+        Returns
+        -------
+        torch.Tensor
+            Resampled tensor of shape (W_new, H_new).
+        """
+        self.validate(x)
+
+        if x.ndim != 2:
+            raise ValueError("x must have shape (W, H)")
+
+        # add batch and channel dimension → (1, 1, W, H)
+        x_ = x.unsqueeze(0).unsqueeze(0)
+
+        y = torch.nn.functional.interpolate(
+            x_,
+            size=shape,
+            mode="bilinear",
+            align_corners=False
+        )
+
+        # remove channel dimension → (W_new, H_new)
+        return y.squeeze(0).squeeze(0)
+        
     def clamp(self, x: torch.Tensor, min_value: float, max_value: float) -> torch.Tensor:
         """
         Clamp all elements in `x` to be within the range [min_value, max_value].

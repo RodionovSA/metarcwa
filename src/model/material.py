@@ -2,15 +2,11 @@
 # Material objects for different type of materials 
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Sequence
 from src.backend import Backend
 
 class BaseMaterial(ABC):
     """Abstract base class for all material types."""
-    
-    @property
-    def backend(self):
-        return self._backend
     
     @property
     @abstractmethod
@@ -23,32 +19,27 @@ class BaseMaterial(ABC):
     def is_magnetic(self) -> bool:
         pass
     
-    @property
     @abstractmethod
-    def epsilon_tensor(self) -> Any:
+    def epsilon_tensor(self, backend: "Backend") -> Any:
         """Return wvlx3×3 permittivity tensor."""
         pass
 
-    @property
     @abstractmethod
-    def mu_tensor(self) -> Any:
+    def mu_tensor(self, backend: "Backend") -> Any:
         """Return wvlx3×3 permeability tensor."""
         pass
     
 class Material(BaseMaterial):
     """Isotropic and non-magnetic material."""
 
-    def __init__(self, backend: Backend, epsilon: Any):
+    def __init__(self, epsilon: Any):
         '''
         Parameters
         ----------
-        backend : Backend
-            Computational backend.
         epsilon : Any
             Electric permittivity.
         '''
-        self._epsilon = Material._init_validation(backend, epsilon)
-        self._backend = backend
+        self.epsilon = Material._init_validation(epsilon)
         
     @property
     def type(self) -> str:
@@ -59,39 +50,42 @@ class Material(BaseMaterial):
         return False
     
     @property
-    def epsilon(self) -> Any:
-        return self._epsilon
-    
-    @property
     def mu(self) -> Any:
-        return self.backend.ones_like(self._epsilon)
+        return 1.0
 
-    @property
-    def epsilon_tensor(self) -> Any:
+    def epsilon_tensor(self, backend: "Backend") -> Any:
         """Return wvlx3×3 permittivity tensor."""
-        return self.backend.reshape(self._epsilon, (len(self._epsilon), 1, 1))*self.backend.eye(3)
+        epsilon = backend.asarray(self.epsilon, complex=True)
+        if len(epsilon.shape) == 0:
+            # Scalar case
+            epsilon = backend.reshape(epsilon, (1,))
+        return backend.reshape(epsilon, (len(epsilon), 1, 1))*backend.eye(3)
     
-    @property
-    def mu_tensor(self) -> Any:
+    def mu_tensor(self, backend: "Backend") -> Any:
         """Return wvlx3×3 permeability tensor."""
-        return self.backend.reshape(self.backend.ones_like(self._epsilon), (len(self._epsilon), 1, 1))*self.backend.eye(3)
+        mu = backend.ones_like(self.epsilon_tensor(backend))
+        return backend.asarray(mu, complex=True)
     
     @staticmethod
-    def _init_validation(backend: Backend, 
-                        epsilon: Any) -> None:
-        
-        if not isinstance(backend, Backend):
-            raise TypeError("backend must be a Backend instance")
-        
-        # Convert to backend tensor
-        eps_t = backend.asarray(epsilon, complex=True)
-        
-        if len(eps_t.shape) > 1:
-            raise ValueError("epsilon must be a scalar or 1D tensor")
-        if eps_t.shape == ():
-            eps_t = backend.reshape(eps_t, (1,))
-        
-        return eps_t
+    def _init_validation(epsilon):
+        # Python scalar → make 1D later in backend
+        if isinstance(epsilon, (int, float)):
+            return epsilon
+
+        # Tensor / array-like
+        if hasattr(epsilon, "shape"):
+            if len(epsilon.shape) == 0:
+                # 0-D tensor → scalar, OK
+                return epsilon
+            if len(epsilon.shape) == 1:
+                if len(epsilon) == 0:
+                    raise ValueError("epsilon must have non-zero length")
+                return epsilon
+            raise ValueError("epsilon must be scalar or 1D")
+
+        raise TypeError(
+            "epsilon must be int, float, or array/tensor"
+        )
     
 class MagneticMaterial(BaseMaterial):
     """Isotropic and magnetic material.

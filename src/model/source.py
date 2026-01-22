@@ -2,18 +2,15 @@
 # Source object that defines illumination conditions
 
 from src.backend import Backend
-from src.model.geometry.geometry import Lattice
+from src.model.geometry.lattice import Lattice
 from typing import Any, Tuple
 
 class Source:
-    def __init__(self, backend: Backend, wavelength: Any,
-                 theta: Any, phi: Any):
+    def __init__(self, wavelength: Any, theta: Any, phi: Any):
         """
         Initialize the Source object with given parameters.
         Parameters
         ----------
-        backend : Backend
-            Computational backend to use.
         wavelength : Any
             Wavelength(s) of the source. Length units.
         theta : Any
@@ -21,22 +18,23 @@ class Source:
         phi : Any
             Incident angle phi in radians.
         """
-        self.wavelength, self.theta, self.phi = self._init_validation(backend, 
-                                                                         wavelength, 
-                                                                         theta, phi)
-        self.backend = backend
+        self.wavelength = self._init_validation_wvl(wavelength)
+        self.theta = self._init_validation_angle(theta)
+        self.phi = self._init_validation_angle(phi)
     
-    @property
-    def k0(self):
-        return (2.0 * self.backend.pi) / self.wavelength
+    def k0(self, backend: "Backend") -> Any:
+        wavelength = backend.asarray(self.wavelength, complex=False)
+        return (2.0 * backend.pi) / wavelength
     
     ''' Methods to compute k0x, k0y, Kx, Ky'''
-    def k0xy(self, n_inc: Any, reduced: bool = False):
+    def k0xy(self, backend: "Backend", n_inc: Any, reduced: bool = False) -> Tuple[Any, Any]:
         """
         Compute k0x, k0y for the source parameters.
         
         Parameters
         ----------
+        backend : Backend
+            Computational backend.
         n_inc : Any
             Refractive index of the incident medium (real). 
             Scalar or array-like broadcastable to wavelength.
@@ -49,19 +47,23 @@ class Source:
             Tensors of k0x and k0y values. 
             Shape (Nw, Nt, Np) where Nw is number of wavelengths, Nt number of thetas, Np number of phis.
         """
-        return compute_k0xy(self._backend,
-                            self._wavelength,
-                            self._theta,
-                            self._phi,
+        return compute_k0xy(backend,
+                            self.wavelength,
+                            self.theta,
+                            self.phi,
                             n_inc,
                             reduced)
     
-    def Kxy(self, n_inc: Any, M: int, N: int, lattice: Lattice):
+    def Kxy(self, backend: "Backend", lattice: Lattice, n_inc: Any) -> Tuple[Any, Any]:
         """
         Compute Kx, Ky matrices for the source parameters.
         
         Parameters
         ----------
+        backend : Backend
+            Computational backend.
+        lattice : Lattice
+            Lattice object defining the periodicity.
         n_inc : Any
             Refractive index of the incident medium (real). 
             Scalar or array-like broadcastable to wavelength.
@@ -75,50 +77,61 @@ class Source:
         Kx, Ky : torch.Tensor
             Tensors of shape (Nw, Nt, Np, 2M+1, 2N+1) where Nw is number of wavelengths.
         """
-        k0x, k0y = self.k0xy(n_inc, reduced=True)
+        k0x, k0y = self.k0xy(backend, n_inc, reduced=True)
         Lx, Ly = lattice.period
         
-        Kx, Ky = compute_Kxy(self._backend, k0x, k0y, Lx, Ly, M, N)
+        Kx, Ky = compute_Kxy(backend, k0x, k0y, Lx, Ly, lattice.M, lattice.N)
         return Kx, Ky
     
     ''' Static helper methods '''
     @staticmethod
-    def _init_validation(backend: Backend, wavelength: Any,
-                         theta: float, phi: float) -> None:
+    def _init_validation_wvl(wavelength: Any) -> Any:
         '''
         Validate and initialize source parameters.
         '''
-        if not isinstance(backend, Backend):
-            raise TypeError("backend must be an instance of Backend")
+        # Python scalar
+        if isinstance(wavelength, (int, float)):
+            if wavelength <= 0:
+                raise ValueError("wavelength must be positive")
+            return wavelength
+
+        # Array / tensor
+        if hasattr(wavelength, "shape"):
+            if len(wavelength.shape) > 1:
+                raise ValueError("wavelength must be scalar or 1D")
+
+            # value check 
+            if (wavelength <= 0).any():
+                raise ValueError("wavelength values must be positive")
+
+            return wavelength
+
+        raise TypeError(
+            "wavelength must be int, float, or array/tensor"
+        )
         
-        wavelength = backend.asarray(wavelength, complex=False)
-        wvl_shape = wavelength.shape
-        if len(wvl_shape) != 0 and len(wvl_shape) != 1:
-            raise ValueError("wavelength must be a scalar or 1D array")
-        if backend.any(wavelength <= 0):
-            raise ValueError("wavelength values must be positive")
-        if len(wvl_shape) == 0:
-            wavelength = backend.reshape(wavelength, (-1,))  # ensure 1D
-            
-        theta = backend.asarray(theta, complex=False)
-        theta_shape = theta.shape
-        if len(theta_shape) != 0 and len(theta_shape) != 1:
-            raise ValueError("theta must be a scalar or 1D array")
-        if len(theta_shape) == 0:
-            theta = backend.reshape(theta, (-1,))  # ensure 1D
-            
-        phi = backend.asarray(phi, complex=False)
-        phi_shape = phi.shape
-        if len(phi_shape) != 0 and len(phi_shape) != 1:
-            raise ValueError("phi must be a scalar or 1D array")
-        if len(phi_shape) == 0:
-            phi = backend.reshape(phi, (-1,))  # ensure 1D
-        
-        return wavelength, theta, phi
+    @staticmethod
+    def _init_validation_angle(angle: Any) -> Any:
+        '''
+        Validate and initialize source parameters.
+        '''
+        # Python scalar
+        if isinstance(angle, (int, float)):
+            return angle
+
+        # Array / tensor
+        if hasattr(angle, "shape"):
+            if len(angle.shape) > 1:
+                raise ValueError("angle must be scalar or 1D")
+            return angle
+
+        raise TypeError(
+            "angle must be int, float, or array/tensor"
+        )
 
 """ Helper functions""" 
 def compute_k0xy(
-    backend: Backend,          
+    backend: "Backend",          
     wavelengths,      
     theta,            
     phi,

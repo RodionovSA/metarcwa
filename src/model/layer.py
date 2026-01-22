@@ -2,7 +2,8 @@
 # Layer objects that stores information about material properties and thickness
 
 from typing import Union, Any
-from src.model.geometry.geometry import BaseObject, VectorObject, VectorGroup, fft_matfunc
+from src.model.geometry.base import BaseObject
+from src.model.geometry.lattice import Lattice
 from src.model.material import BaseMaterial
 from src.backend import Backend
 
@@ -21,7 +22,7 @@ class Layer:
         objects : Union[VectorObject, Bitmap, VectorGroup]
             Geometric object(s) defining the material distribution in the layer.
         thickness : Any
-            Thickness of the layer. 
+            Thickness of the layer. if None, the layer is considered semi-infinite.
         material_bg : BaseMaterial
             Background material of the layer.
         '''
@@ -29,92 +30,59 @@ class Layer:
                               thickness, 
                               material_bg)
         
-        self._thickness = thickness
-        self._material_bg = material_bg
-        self._objects = objects 
+        self.thickness = thickness
+        self.material_bg = material_bg
+        self.objects = objects 
         
-    """ Type properties """
     @property
     def type(self) -> str:
         if self.material.type == "isotropic" and self.material_bg.type == "isotropic":
             return "isotropic"
         raise NotImplementedError("Only isotropic layers are currently supported.")
+    
     @property
     def is_magnetic(self) -> bool:
         if self.material.is_magnetic or self.material_bg.is_magnetic:
             return True
         return False
-    @property
-    def is_homogeneous(self) -> bool:
-        epsilon_xy = self.backend.detach(self.epsilon_xy())
-        mu_xy = self.backend.detach(self.mu_xy())
+    
+    def is_homogeneous(self, backend: "Backend", lattice: "Lattice") -> bool:
+        epsilon_xy = backend.detach(self.epsilon_xy(backend, lattice))
+        mu_xy = backend.detach(self.mu_xy(backend, lattice))
         
-        epsilon_check = self.homogeneous_check(self.backend, epsilon_xy)
-        mu_check = self.homogeneous_check(self.backend, mu_xy)
+        epsilon_check = self.homogeneous_check(backend, epsilon_xy)
+        mu_check = self.homogeneous_check(backend, mu_xy)
         
-        return epsilon_check and mu_check
+        return bool(epsilon_check) and bool(mu_check)
+    
     @property
     def is_semi_infinite(self) -> bool:
-        return self.thickness is None      
+        return self.thickness is None     
     
-    """ Simulation properties """
-    @property
-    def backend(self):
-        return self._objects.backend
-    @property
-    def lattice(self):
-        return self._objects.lattice
-    @property
-    def grid(self):
-        return self._objects.lattice.grid
-    @property
-    def period(self):
-        return self._objects.lattice.period
-        
-    """ Geometric properties """
-    @property
-    def objects(self):
-        return self._objects
-    @property
-    def thickness(self):
-        return self._thickness
-    @property
-    def bitmap(self):
-        return self._objects.bitmap
-    """ Material properties """
     @property
     def material(self):
-        return self._objects.material
-    @property
-    def material_bg(self):
-        return self._material_bg
-    @property
-    def epsilon(self):
-        return self.material.epsilon_tensor
-    @property
-    def mu(self):
-        return self.material.mu_tensor
-    @property
-    def epsilon_bg(self):
-        return self.material_bg.epsilon_tensor
-    @property
-    def mu_bg(self):
-        return self.material_bg.mu_tensor
+        return self.objects.material 
     
-    """ Get material distributions """
-    def epsilon_xy(self):
+    def bitmap(self, backend: "Backend", lattice: "Lattice") -> Any:
+        """
+        Get bitmap representation of the layer.
+        """
+        return self.objects.bitmap(backend, lattice)
+    
+    def epsilon_xy(self, backend: "Backend", lattice: "Lattice") -> Any:
         """
         Get permittivity distribution epsilon(x,y) in the layer.
         """
-        return self._objects.epsilon_xy(self.material_bg)
+        return self.objects.epsilon_xy(backend, lattice, self.material_bg)
     
-    def mu_xy(self):
+    def mu_xy(self, backend: "Backend", lattice: "Lattice") -> Any:
         """
         Get permeability distribution mu(x,y) in the layer.
         """
-        return self._objects.mu_xy(self.material_bg)
+        return self.objects.mu_xy(backend, lattice, self.material_bg)
     
-    def epsilon_mn(self, use_closed_form: bool = True,
+    def epsilon_mn(self, backend: "Backend", lattice: "Lattice",
+                   closed_form: bool = True,
                    inverse: bool = False, regularized: bool = False,
                    regularization: float = 1e-8):
         """
@@ -122,9 +90,13 @@ class Layer:
 
         Parameters
         ----------
-        use_closed_form : bool, optional
+        backend : Backend
+            Backend to use for computations.
+        lattice : Lattice
+            Lattice defining the periodicity and Fourier orders.
+        closed_form : bool, optional
             Whether to use closed-form expressions for Fourier coefficients. Default is True.
-            Works only if objects is VectorObject or VectorGroup.
+            Works only if objects is Vector.
             Not compatible with subpixel averaging techniques. 
         inverse : bool, optional
             Whether to compute Fourier coefficients for the inverse permittivity. Default is False.
@@ -137,22 +109,14 @@ class Layer:
         epsilon_mn : backend tensor
             Fourier coefficients epsilon_{m,n}, shape (wvl, 3, 3, 2M+1, 2N+1), complex.
         """
-        if use_closed_form and isinstance(self._objects, (VectorObject, VectorGroup)):
-            epsilon_mn = self._objects.epsilon_mn(
-                self.material_bg, inverse=inverse, 
-                regularized=regularized, regularization=regularization
-            )
-        else:
-            epsilon_xy = self.epsilon_xy()
-            if inverse:
-                if regularized:
-                    epsilon_xy = 1.0 / (epsilon_xy + regularization)
-                else:
-                    epsilon_xy = 1.0 / epsilon_xy
-            epsilon_mn = fft_matfunc(self.backend, epsilon_xy, self.lattice.M, self.lattice.N)
+        epsilon_mn = self.objects.epsilon_mn(
+            backend, lattice, self.material_bg, closed_form=closed_form,
+            inverse=inverse, regularized=regularized, regularization=regularization
+        )
         return epsilon_mn
     
-    def mu_mn(self, use_closed_form: bool = True,
+    def mu_mn(self, backend: "Backend", lattice: "Lattice",
+               closed_form: bool = True,
                inverse: bool = False, regularized: bool = False,
                regularization: float = 1e-8):
         """
@@ -160,7 +124,11 @@ class Layer:
 
         Parameters
         ----------
-        use_closed_form : bool, optional
+        backend : Backend
+            Backend to use for computations.
+        lattice : Lattice
+            Lattice defining the periodicity and Fourier orders.
+        closed_form : bool, optional
             Whether to use closed-form expressions for Fourier coefficients. Default is True.
             Works only if objects is VectorObject or VectorGroup.
             Not compatible with subpixel averaging techniques. 
@@ -175,31 +143,23 @@ class Layer:
         mu_mn : backend tensor
             Fourier coefficients mu_{m,n}, shape (wvl, 3, 3, 2M+1, 2N+1), complex.
         """
-        if use_closed_form and isinstance(self._objects, (VectorObject, VectorGroup)):
-            mu_mn = self._objects.mu_mn(
-                self.material_bg, inverse=inverse, 
-                regularized=regularized, regularization=regularization
-            )
-        else:
-            mu_xy = self.mu_xy()
-            if inverse:
-                if regularized:
-                    mu_xy = 1.0 / (mu_xy + regularization)
-                else:
-                    mu_xy = 1.0 / mu_xy
-            mu_mn = fft_matfunc(self.backend, mu_xy, self.lattice.M, self.lattice.N)
+        mu_mn = self.objects.mu_mn(
+            backend, lattice, self.material_bg, closed_form=closed_form,
+            inverse=inverse, regularized=regularized, regularization=regularization
+        )
         return mu_mn
     
     """ Static helper methods """
     @staticmethod
     def _init_validation(objects, thickness, material_bg):
         if not isinstance(objects, BaseObject):
-            raise ValueError(f"objects must be VectorObject, Bitmap, or VectorGroup, got {type(objects)}")
+            raise ValueError(f"objects must be BaseObject instance, got {type(objects)}")
         if thickness is not None and thickness <= 0:
             raise ValueError(f"thickness must be positive, got {thickness}")
         
         if not isinstance(material_bg, BaseMaterial):
             raise TypeError("material_bg must be a BaseMaterial instance")
+        
         
     @staticmethod
     def homogeneous_check(backend: Backend, tensor: Any) -> bool:

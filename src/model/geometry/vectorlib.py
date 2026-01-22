@@ -1,4 +1,5 @@
 # src/model/geometry/vectorlib.py
+# Vector geometry library
 
 from typing import Tuple, Any
 
@@ -19,7 +20,7 @@ class Rectangle(VectorObject):
                  material: "BaseMaterial",
                  angle: float = 0.0,
                  soft_mask: bool = False,
-                 smoothness: float = 0.05):
+                 smoothness: float = 0.02):
         """
         Parameters
         ----------
@@ -37,7 +38,7 @@ class Rectangle(VectorObject):
             *Important*: Fourier coefficients will still be computed analytically for sharp boundaries,
             so soft_mask only affects real-space distributions.
         smoothness : float
-            Smoothness parameter for sigmoid. Default is 0.05.
+            Smoothness parameter for sigmoid. Default is 0.02.
         
         """
         
@@ -49,7 +50,7 @@ class Rectangle(VectorObject):
         
         if len(size) != 2:
             raise ValueError(f"size must be tuple of 2 floats, got {size}")
-        if any(s <= 0 for s in size):
+        if any(s < 0 for s in size):
             raise ValueError(f"size values must be positive, got {size}")
         
         self.size = size
@@ -163,7 +164,7 @@ class Ellipse(VectorObject):
                  material: BaseMaterial,
                  angle: float = 0.0,
                  soft_mask: bool = False,
-                 smoothness: float = 0.05):
+                 smoothness: float = 0.02):
         """
         Parameters
         ----------
@@ -181,7 +182,7 @@ class Ellipse(VectorObject):
             *Important*: Fourier coefficients will still be computed analytically for sharp boundaries,
             so soft_mask only affects real-space distributions.
         smoothness : float
-            Smoothness parameter for sigmoid. Default is 0.05.
+            Smoothness parameter for sigmoid. Default is 0.02.
         
         """
         
@@ -193,7 +194,7 @@ class Ellipse(VectorObject):
         
         if len(size) != 2:
             raise ValueError(f"size must be tuple of 2 floats, got {size}")
-        if any(s <= 0 for s in size):
+        if any(s < 0 for s in size):
             raise ValueError(f"size values must be positive, got {size}")
         
         self.size = size
@@ -297,3 +298,44 @@ class Ellipse(VectorObject):
                                 lattice.N)
 
         return mat_mn
+
+class Uniform(Rectangle):
+    """
+    Uniform vector object that fills the entire unit cell.
+    Inherits from Rectangle with size equal to lattice period.
+    """
+    def __init__(self,
+                 material: "BaseMaterial"):
+        """
+        Parameters
+        ----------
+        material : BaseMaterial
+            Material of the uniform object.
+        """
+        # Center at (0,0), size will be set during bitmap generation
+        super().__init__(center=(0.0, 0.0),
+                         size=(0.0, 0.0),  
+                         material=material,
+                         angle=0.0,
+                         soft_mask=False,
+                         smoothness=0.0)
+    
+    def bitmap(self, backend: "Backend", lattice: "Lattice") -> Any:
+        '''
+        Convert the uniform object to a bitmap representation on the specified grid.
+        This will be a full True bitmap.
+
+        Parameters
+        ----------
+        backend : Backend
+            Computational backend.
+        lattice : Lattice
+            Lattice object defining the simulation domain.
+
+        Returns
+        -------
+        bitmap : backend tensor
+            Bitmap representation of the uniform object, shape (Nx, Ny), dtype bool.
+        '''
+        Nx, Ny = lattice.grid
+        return backend.ones((Nx, Ny), dtype=backend.bool)

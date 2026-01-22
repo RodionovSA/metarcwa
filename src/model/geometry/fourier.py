@@ -1,4 +1,5 @@
 # src/model/geometry/fourier.py
+# Fourier utilities for RCWA
 
 from typing import Any, Tuple
 
@@ -354,16 +355,17 @@ def matmap_fourier_ellipse(backend: "Backend",
     # Ellipse kernel: J1(rho) / rho
     a = w / 2.0
     b = h / 2.0
-    rho = backend.sqrt((a * ku)**2 + (b * kv)**2)
+    rho2 = (a * ku)**2 + (b * kv)**2
+    
+    eps = backend.asarray(1e-9, complex=False)  
+    rho = backend.sqrt(rho2 + eps)
 
     # J1(rho) / rho with safe limit at rho=0
     J1 = backend.besselj1(rho)
 
-    ellipse_kernel = backend.where(rho > 0, 
-                                      (2.0*J1) / rho, 
-                                      backend.ones_like(rho))   # lim_{rho→0} J1(rho)/rho = 1/2)
+    ellipse_kernel = (2.0 * J1) / rho
+    ellipse_kernel = backend.where(rho2 > eps, ellipse_kernel, backend.ones_like(rho2)) # lim_{rho→0} J1(rho)/rho = 1/2)
 
-    
     #Broadcast to (B, 3, 3, 2M+1, 2N+1)
     ellipse_kernel = backend.reshape(ellipse_kernel, (1, 1, 1, 2 * M + 1, 2 * N + 1))
     phase = backend.reshape(phase, (1, 1, 1, 2 * M + 1, 2 * N + 1))

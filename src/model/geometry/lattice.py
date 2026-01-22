@@ -1,4 +1,5 @@
 #src/model/geometry/lattice.py
+# Lattice base class for geometric objects.
 
 from typing import Tuple
 

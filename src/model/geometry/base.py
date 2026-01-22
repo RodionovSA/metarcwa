@@ -1,4 +1,5 @@
 # src/model/geometry/base.py
+# Base class for all geometry objects.
 
 from typing import Tuple, Any
 from abc import ABC, abstractmethod
@@ -17,7 +18,6 @@ class BaseObject(ABC):
         '''
         Compute bitmap representation of the object.
         '''
-        pass
     
     @abstractmethod
     def matmap_fourier(self, 
@@ -29,7 +29,6 @@ class BaseObject(ABC):
         '''
         Computes Fourier material map.
         '''
-        pass
     
     @abstractmethod
     def epsilon_xy(self, 
@@ -38,7 +37,6 @@ class BaseObject(ABC):
         '''
         Compute the real-space permittivity distribution.
         '''
-        pass
     
     @abstractmethod
     def mu_xy(self, 
@@ -47,7 +45,6 @@ class BaseObject(ABC):
         '''
         Compute the real-space permeability distribution.
         '''
-        pass
     
     @abstractmethod
     def epsilon_mn(self,
@@ -75,11 +72,5 @@ class BaseObject(ABC):
         Compute the Fourier coefficients of the permeability distribution.
         '''
     
-    @property
-    def epsilon(self) -> Any:
-        return self.material.epsilon_tensor
     
-    @property
-    def mu(self) -> Any:
-        return self.material.mu_tensor
     
