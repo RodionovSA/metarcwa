@@ -3,6 +3,7 @@
 
 from src.backend import Backend
 from src.model.geometry.lattice import Lattice
+from src.compute import build_harmonic_grid, elliptical_truncation_mask, flatten_Kxy
 from typing import Any, Tuple
 
 class Source:
@@ -21,7 +22,112 @@ class Source:
         self.wavelength = self._init_validation_wvl(wavelength)
         self.theta = self._init_validation_angle(theta)
         self.phi = self._init_validation_angle(phi)
+        
+    def plane_wave_field(self, 
+                         backend: "Backend",
+                         lattice: "Lattice",
+                         n_inc: Any,
+                         mn: Tuple[int, int],
+                         s: complex,
+                         p: complex) -> Tuple[Any, Any, Any, Any]:
+        '''
+        Output Fourier coefficients of the incident plane wave field.
+        
+        Parameters
+        ----------
+        backend : Backend
+            Computational backend.
+        lattice : Lattice
+            Lattice object defining the periodicity.
+        mn : Tuple[int, int]
+            Incident wave order (m, n). If normal incidence, (0, 0).
+        n_inc : Any
+            Refractive index of the incident medium (real).
+        s : complex
+            S-polarized amplitude.
+        p : complex
+            P-polarized amplitude.
+        Returns
+        -------
+        Ex, Ey, Hx, Hy: Any
+            Fourier maps of the incident plane wave fields.
+        '''
+        k0x, k0y = self.k0xy(backend, n_inc, reduced=True)
+        Kx, Ky = self.Kxy(backend, lattice, n_inc)  
+        
+        Ex, Ey, Hx, Hy = compute_pw_fields(backend,
+                                           n_inc,
+                                           k0x,k0y,
+                                           s,p)
     
+        Ex_map, Ey_map, Hx_map, Hy_map = compute_pw_field_maps(backend,
+                                                               mn,
+                                                               Ex,Ey,Hx,Hy,
+                                                               Kx,Ky)
+        return Ex_map, Ey_map, Hx_map, Hy_map
+    
+    def psi_vector_inc(self, backend: "Backend",
+                        lattice: "Lattice",
+                        n_inc: Any,
+                        mn: Tuple[int, int],
+                        s: complex,
+                        p: complex,
+                        circ_truncation: bool = False) -> Any:
+        '''
+        Compute the incident field state vector Psi_inc for RCWA.
+        
+        Parameters
+        ----------
+        backend : Backend
+            Computational backend.
+        lattice : Lattice
+            Lattice object defining the periodicity.
+        mn : Tuple[int, int]
+            Incident wave order (m, n). If normal incidence, (0, 0).
+        n_inc : Any
+            Refractive index of the incident medium (real).
+        s : complex
+            S-polarized amplitude.
+        p : complex
+            P-polarized amplitude.
+        circ_truncation : bool, optional
+            Whether to use circular truncation of harmonics. Default is False.
+        
+        Returns
+        -------
+        psi_inc : Any
+            Incident field state vector.
+        '''
+        # Generate maps
+        Ex_map, Ey_map, Hx_map, Hy_map = self.plane_wave_field(backend,
+                                                               lattice,
+                                                               n_inc,
+                                                               mn,
+                                                               s,p)
+        
+        # Flatten the maps
+        Ex_map_f, Ey_map_f, _ = flatten_Kxy(backend, Ex_map, Ey_map)
+        Hx_map_f, Hy_map_f, _ = flatten_Kxy(backend, Hx_map, Hy_map)
+        
+        # Apply circular truncation if needed
+        M = lattice.M
+        N = lattice.N
+        if circ_truncation:
+            mx, ny = build_harmonic_grid(backend, M, N)
+            mask = elliptical_truncation_mask(mx, ny, M, N)
+        else:
+            mask = backend.astype(backend.ones((2*M+1)*(2*N+1)), backend.bool)
+            
+        # Apply truncation mask
+        Ex_map_t = Ex_map_f[..., mask]
+        Ey_map_t = Ey_map_f[..., mask]
+        Hx_map_t = Hx_map_f[..., mask]
+        Hy_map_t = Hy_map_f[..., mask]
+        
+        # Construct Psi_inc vector
+        psi_inc = backend.cat([Ex_map_t, Ey_map_t, Hx_map_t, Hy_map_t], dim=-1)
+        return psi_inc
+        
     def k0(self, backend: "Backend") -> Any:
         wavelength = backend.asarray(self.wavelength, complex=False)
         return (2.0 * backend.pi) / wavelength
@@ -326,3 +432,166 @@ def compute_Kxy(
     Ky = backend.expand(Ky_line, full_shape)
 
     return Kx, Ky
+
+def compute_pw_fields(backend: "Backend",
+                      n_inc: Any,
+                      k0x: Any,
+                      k0y: Any,
+                      s: complex,
+                      p: complex) -> Tuple[Any, Any, Any, Any]:
+    '''
+    Compute plane wave field components for given k0x, k0y, s, p.
+
+    Parameters
+    ----------
+    backend : Backend
+        Computational backend.
+    n_inc : Any
+        Refractive index of the incident medium (real). Shape [wvl].
+    k0x : Any
+        x-component of the incident wavevector. Divided by k0. Shape [wvl, theta, phi].
+    k0y : Any
+        y-component of the incident wavevector. Divided by k0. SHape [wvl, theta, phi].
+    s : complex
+        S-polarized amplitude.
+    p : complex
+        P-polarized amplitude.
+    Returns
+    -------
+    Ex, Ey, Hx, Hy : Any
+        Field components of the incident plane wave. Shape [wvl, theta, phi].
+    '''
+    s = backend.asarray(s, complex=True)
+    p = backend.asarray(p, complex=True)
+    n_inc = backend.asarray(n_inc, complex=False)
+    
+    # Reshape n_inc to [wvl,1,1] 
+    n_shape = n_inc.shape
+    if len(n_shape) > 1:
+        raise ValueError(f"n_inc must be scalar or 1D, got shape={n_shape}")
+    
+    if n_shape == ():
+        n_inc = backend.reshape(n_inc, (1,))
+        
+    n_inc = backend.reshape(n_inc, (-1, 1, 1))  # [wvl,1,1]
+    n_shape = n_inc.shape # updated shape after reshape
+    
+    # Validation
+    s_shape = s.shape  
+    p_shape = p.shape  
+    k0x_shape = k0x.shape  
+    k0y_shape = k0y.shape
+    if len(s_shape) > 1:
+        raise ValueError(f"s must be scalar or 1D, got shape={s_shape}")
+    if len(p_shape) > 1:
+        raise ValueError(f"p must be scalar or 1D, got shape={p_shape}")
+    if len(k0x_shape) != 3:
+        raise ValueError(f"k0x must be 3D, got shape={k0x_shape}")
+    if len(k0y_shape) != 3:
+        raise ValueError(f"k0y must be 3D, got shape={k0y_shape}")
+    if k0x_shape[0] != n_shape[0]:
+        raise ValueError(f"First dimension of k0x must match length of n_inc, got {k0x_shape[0]} and {n_shape[0]}")
+    if k0y_shape[0] != n_shape[0]:
+        raise ValueError(f"First dimension of k0y must match length of n_inc, got {k0y_shape[0]} and {n_shape[0]}")
+    
+    # Calculate unit vectors for s and p polarizations
+    kt2 = k0x**2 + k0y**2
+    kt  = backend.sqrt(kt2)
+    
+    kz2 = n_inc**2 - kt2
+    kz = backend.sqrt(kz2) # longitudinal wavevector component
+    
+    normal = kt2 < backend.asarray(1e-9, complex=False)
+    
+    # s
+    sx = -k0y / kt
+    sy =  k0x / kt
+    
+    # p
+    px = k0x * kz / (n_inc * kt)
+    py = k0y * kz / (n_inc * kt)
+    
+    # Normal-incidence convention: s->y, p->x 
+    ones  = backend.ones_like(k0x)
+    zeros = backend.zeros_like(k0x)
+    sx_ni, sy_ni = zeros, ones
+    px_ni, py_ni = ones, zeros
+    
+    # Select correct basis
+    sx = backend.where(normal, sx_ni, sx)
+    sy = backend.where(normal, sy_ni, sy)
+
+    px = backend.where(normal, px_ni, px)
+    py = backend.where(normal, py_ni, py)
+    
+    # Field components
+    Ex = s * sx + p * px # Projection from s,p to x,y
+    Ey = s * sy + p * py
+    Ez = -(p*kt / n_inc)
+    
+    Hx = -1j*(k0y*Ez - kz*Ey)
+    Hy = -1j*(kz*Ex - k0x*Ez)
+    
+    return Ex, Ey, Hx, Hy
+
+def compute_pw_field_maps(backend: "Backend",
+                          mn: Tuple[int, int],
+                          Ex: Any, Ey: Any, Hx: Any, Hy: Any,
+                          Kx: Any, Ky: Any):
+    '''
+    Compute fourier maps of the plane wave fields over the harmonic grid.
+    
+    Parameters
+    ----------
+    backend : Backend
+        Computational backend.
+    mn : Tuple[int, int]
+        Incident wave order (m, n). If normal incidence, (0, 0).
+    Ex, Ey, Hx, Hy : Any
+        Field components. Shape [wvl, theta, phi].
+    Kx, Ky : Any
+        Kx and Ky harmonic grids. Shape [wvl, theta, phi, 2M+1, 2N+1].
+        
+    Returns
+    -------
+    Ex_map, Ey_map, Hx_map, Hy_map : Any
+        Fourier maps of the plane wave fields. Shape [wvl, theta, phi, 2M+1, 2N+1].
+    '''
+    m_inc, n_inc = mn
+    M = (Kx.shape[-2] - 1) // 2
+    N = (Kx.shape[-1] - 1) // 2
+    
+    if not (-M <= m_inc <= M):
+        raise ValueError(f"m_inc={m_inc} out of bounds for M={M}")
+    if not (-N <= n_inc <= N):
+        raise ValueError(f"n_inc={n_inc} out of bounds for N={N}")
+    if Kx.shape != Ky.shape:
+        raise ValueError(f"Kx and Ky must have the same shape, got {Kx.shape} and {Ky.shape}")
+    if Kx.shape[:-2] != Ex.shape:
+        raise ValueError(f"Leading shape of Kx {Kx.shape[:-2]} must match shape of Ex {Ex.shape}")
+    if Kx.shape[:-2] != Ey.shape:
+        raise ValueError(f"Leading shape of Kx {Kx.shape[:-2]} must match shape of Ey {Ey.shape}")
+    if Kx.shape[:-2] != Hx.shape:
+        raise ValueError(f"Leading shape of Kx {Kx.shape[:-2]} must match shape of Hx {Hx.shape}")
+    if Kx.shape[:-2] != Hy.shape:
+        raise ValueError(f"Leading shape of Kx {Kx.shape[:-2]} must match shape of Hy {Hy.shape}")
+    
+    # Indices of the incident wave in the harmonic grid
+    m_idx = m_inc + M
+    n_idx = n_inc + N
+    
+    # Initialize maps with zeros
+    shape = Kx.shape
+    Ex_map = backend.asarray(backend.zeros(shape), complex=True)
+    Ey_map = backend.asarray(backend.zeros(shape), complex=True)
+    Hx_map = backend.asarray(backend.zeros(shape), complex=True)
+    Hy_map = backend.asarray(backend.zeros(shape), complex=True)
+    
+    # Assign the incident wave components to the correct harmonic
+    Ex_map[..., m_idx, n_idx] = Ex
+    Ey_map[..., m_idx, n_idx] = Ey
+    Hx_map[..., m_idx, n_idx] = Hx
+    Hy_map[..., m_idx, n_idx] = Hy
+    
+    return Ex_map, Ey_map, Hx_map, Hy_map
+    
