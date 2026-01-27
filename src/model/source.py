@@ -3,7 +3,7 @@
 
 from src.backend import Backend
 from src.model.geometry.lattice import Lattice
-from src.compute import build_harmonic_grid, elliptical_truncation_mask, flatten_Kxy
+from src.model.geometry.harmonics import build_harmonic_grid, elliptical_truncation_mask, flatten_Kxy
 from typing import Any, Tuple
 
 class Source:

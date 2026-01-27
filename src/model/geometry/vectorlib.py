@@ -130,8 +130,8 @@ class Rectangle(VectorObject):
         Returns
         -------
         mat_mn : backend tensor
-            Fourier coefficients mat_{m,n}, shape (B, 3, 3, 2M+1, 2N+1), complex.
-            Indices correspond to m ∈ [-M..M], n ∈ [-N..N].
+            Fourier coefficients mat_{m,n}, shape (B, 3, 3, 4M+1, 4N+1), complex.
+            Indices correspond to m ∈ [-2M..2M], n ∈ [-2N..2N].
         """
         if closed_form:
             mat_mn = matmap_fourier_rect(backend,
@@ -139,8 +139,8 @@ class Rectangle(VectorObject):
                                         self.size,
                                         self.angle,
                                         lattice.period,
-                                        lattice.M,
-                                        lattice.N,
+                                        2*lattice.M,
+                                        2*lattice.N,
                                         matval, matbg)
         else:
             mat_xy = matmap(backend, 
@@ -149,8 +149,8 @@ class Rectangle(VectorObject):
                             matbg)
             mat_mn = fft_matmap(backend,
                                 mat_xy,
-                                lattice.M,
-                                lattice.N)
+                                2*lattice.M,
+                                2*lattice.N)
 
         return mat_mn
           
@@ -275,8 +275,8 @@ class Ellipse(VectorObject):
         Returns
         -------
         mat_mn : backend tensor
-            Fourier coefficients mat_{m,n}, shape (B, 3, 3, 2M+1, 2N+1), complex.
-            Indices correspond to m ∈ [-M..M], n ∈ [-N..N].
+            Fourier coefficients mat_{m,n}, shape (B, 3, 3, 4M+1, 4N+1), complex.
+            Indices correspond to m ∈ [-2M..2M], n ∈ [-2N..2N].
         """
         if closed_form:
             mat_mn = matmap_fourier_ellipse(backend,
@@ -284,8 +284,8 @@ class Ellipse(VectorObject):
                                         self.size,
                                         self.angle,
                                         lattice.period,
-                                        lattice.M,
-                                        lattice.N,
+                                        2*lattice.M,
+                                        2*lattice.N,
                                         matval, matbg)
         else:
             mat_xy = matmap(backend, 
@@ -294,8 +294,8 @@ class Ellipse(VectorObject):
                             matbg)
             mat_mn = fft_matmap(backend,
                                 mat_xy,
-                                lattice.M,
-                                lattice.N)
+                                2*lattice.M,
+                                2*lattice.N)
 
         return mat_mn
 

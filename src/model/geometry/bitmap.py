@@ -234,8 +234,8 @@ class Bitmap(BaseObject):
         Returns
         -------
         mat_mn : backend tensor
-            Fourier coefficients mat_{m,n}, shape (B, 3, 3, 2M+1, 2N+1), complex.
-            Indices correspond to m ∈ [-M..M], n ∈ [-N..N].
+            Fourier coefficients mat_{m,n}, shape (B, 3, 3, 4M+1, 4N+1), complex.
+            Indices correspond to m ∈ [-2M..2M], n ∈ [-2N..2N].
         """
         
         mat_xy = matmap(backend, 
@@ -245,8 +245,8 @@ class Bitmap(BaseObject):
         
         mat_mn = fft_matmap(backend,
                             mat_xy,
-                            lattice.M,
-                            lattice.N)
+                            2*lattice.M,
+                            2*lattice.N)
 
         return mat_mn
         

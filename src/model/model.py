@@ -66,8 +66,6 @@ class Model:
             props.append(prop)
         return props
     
-    
-    
     """ Static helper methods """
     @staticmethod
     def _init_validation(backend, lattice, layers, source):

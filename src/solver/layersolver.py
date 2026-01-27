@@ -3,10 +3,19 @@ from typing import Any, Tuple
 
 from src.model.layer import Layer
 from src.model.source import Source
-from src.config import LayerConfig
-from src.tvf import TVF
-from src.compute import build_index_map, toeplitz_2d, diagonal_K_matrices, kz_sign, flatten_Kxy
-from src.compute import build_harmonic_grid, elliptical_truncation_mask, build_block, split_block
+from src.solver.config import LayerConfig
+from src.solver.tvf import TVF
+from src.solver.utils import (
+    flatten_Kxy,
+    build_harmonic_grid,
+    elliptical_truncation_mask,
+    build_block,
+    split_block,
+    diagonal_K_matrices,
+    kz_sign,
+    toeplitz_2d,
+    build_index_map,
+)
 from src.model.geometry.geometry import custom_fft
 
 class LayerSolver:
