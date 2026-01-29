@@ -107,7 +107,7 @@ class Layer:
         Returns
         -------
         epsilon_mn : backend tensor
-            Fourier coefficients epsilon_{m,n}, shape (wvl, 3, 3, 2M+1, 2N+1), complex.
+            Fourier coefficients epsilon_{m,n}, shape (wvl, 1, 1, 2M+1, 2N+1) or (wvl, 1, 3, 2M+1, 2N+1) or (wvl, 3, 3, 2M+1, 2N+1), complex.
         """
         epsilon_mn = self.objects.epsilon_mn(
             backend, lattice, self.material_bg, closed_form=closed_form,
@@ -141,7 +141,7 @@ class Layer:
         Returns
         -------
         mu_mn : backend tensor
-            Fourier coefficients mu_{m,n}, shape (wvl, 3, 3, 2M+1, 2N+1), complex.
+            Fourier coefficients mu_{m,n}, shape (wvl, 1, 1, 2M+1, 2N+1) or (wvl, 1, 3, 2M+1, 2N+1) or (wvl, 3, 3, 2M+1, 2N+1), complex.
         """
         mu_mn = self.objects.mu_mn(
             backend, lattice, self.material_bg, closed_form=closed_form,

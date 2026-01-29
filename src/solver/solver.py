@@ -1,6 +1,6 @@
 # src/solver/solver.py
 # RCWA Solver class
-from typing import List, Union
+from typing import List, Union, Tuple
 
 from src.solver.config import Config
 from src.model import Model
@@ -108,8 +108,31 @@ class Solver:
         
         return solver_engine
     
-    def _prepare_solver_inputs(self) -> List[dict]:
+    def _prepare_solver_inputs(self, 
+                               inc_field: List[Tuple[Tuple[int, int], complex, complex]]) -> dict:
         """ Prepare inputs for the solver engine. """
+        
+        # Validation of inc_field
+        if not isinstance(inc_field, list):
+            raise TypeError("inc_field must be a list of incident field specifications per model.")
+        if any(not isinstance(field, tuple) for field in inc_field):
+            raise TypeError("Each element of inc_field must be a list of incident field specifications.")
+        if any(len(field) != 3 for field in inc_field):
+            raise ValueError("Each incident field specification must be a tuple of (mn, s, p).")
+        if any(
+            not isinstance(mn, tuple) or len(mn) != 2
+            for mn, s, p in inc_field
+        ):
+            raise TypeError("Each mn in incident field specification must be a tuple of (m, n).")
+        
+        # Input field
+        input_fields = []
+        for idx, field in enumerate(inc_field):
+            input_field = self.source.plane_wave_field(self.backend, self.lattice, 
+                                                       self.models[0].n_inc, 
+                                                       field[0], field[1], field[2])  # (Ex, Ey, Hx, Hy), each [wvl, theta, phi, 2M+1, 2N+1]
+            input_fields.append(input_field)
+        
         # Prepare TVF for all models
         tvf_layers_all_models = self._prepare_tvf() # List of List of TVF per layer
         
@@ -118,10 +141,6 @@ class Solver:
         
         # Prepare k0 
         k0 = self.models[0].k0  # (wvl,)
-        
-        # Input field
-        input_field = self.source.plane_wave_field(self.backend, self.lattice, 
-                                                   self.models[0].n_inc, )  
         
         models_data = []
         for model_idx, model in enumerate(self.models):
@@ -136,6 +155,7 @@ class Solver:
         
         return {
             "models": models_data,
+            "input_fields": input_fields,
             "Kx": Kx,
             "Ky": Ky,
             "k0": k0
@@ -147,22 +167,22 @@ class Solver:
         epsilon = layer.epsilon_mn(self.backend, self.lattice,
                                    closed_form=self.cfg.closed_form,
                                    inverse = False, regularized = False,
-                                   regularization = self.cfg.inverse_regularization) # (wvl, 3, 3, 4M+1, 4N+1)
+                                   regularization = self.cfg.inverse_regularization) # (wvl, 1, 1, 4M+1, 4N+1) or (wvl, 1, 3, 4M+1, 4N+1) or (wvl, 3, 3, 4M+1, 4N+1)
         
         epsilon_inv = layer.epsilon_mn(self.backend, self.lattice,
                                        closed_form=self.cfg.closed_form,
                                        inverse = True, regularized = True,
-                                       regularization = self.cfg.inverse_regularization) # (wvl, 3, 3, 4M+1, 4N+1)
+                                       regularization = self.cfg.inverse_regularization) # (wvl, 1, 1, 4M+1, 4N+1) or (wvl, 1, 3, 4M+1, 4N+1) or (wvl, 3, 3, 4M+1, 4N+1)
         
         mu = layer.mu_mn(self.backend, self.lattice,
                         closed_form=self.cfg.closed_form,
                         inverse = False, regularized = False,
-                        regularization = self.cfg.inverse_regularization) # (wvl, 3, 3, 4M+1, 4N+1)
+                        regularization = self.cfg.inverse_regularization) # (wvl, 1, 1, 4M+1, 4N+1) or (wvl, 1, 3, 4M+1, 4N+1) or (wvl, 3, 3, 4M+1, 4N+1)
 
         mu_inv = layer.mu_mn(self.backend, self.lattice,
                             closed_form=self.cfg.closed_form,
                             inverse = True, regularized = True,
-                            regularization = self.cfg.inverse_regularization) # (wvl, 3, 3, 4M+1, 4N+1)
+                            regularization = self.cfg.inverse_regularization) # (wvl, 1, 1, 4M+1, 4N+1) or (wvl, 1, 3, 4M+1, 4N+1) or (wvl, 3, 3, 4M+1, 4N+1)
         
         return {
             "thickness": d,

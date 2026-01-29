@@ -54,15 +54,15 @@ class Material(BaseMaterial):
         return 1.0
 
     def epsilon_tensor(self, backend: "Backend") -> Any:
-        """Return wvlx3×3 permittivity tensor."""
+        """Return wvlx1×1 permittivity tensor."""
         epsilon = backend.asarray(self.epsilon, complex=True)
         if len(epsilon.shape) == 0:
             # Scalar case
             epsilon = backend.reshape(epsilon, (1,))
-        return backend.reshape(epsilon, (len(epsilon), 1, 1))*backend.eye(3)
+        return backend.reshape(epsilon, (len(epsilon), 1, 1))
     
     def mu_tensor(self, backend: "Backend") -> Any:
-        """Return wvlx3×3 permeability tensor."""
+        """Return wvlx1×1 permeability tensor."""
         mu = backend.ones_like(self.epsilon_tensor(backend))
         return backend.asarray(mu, complex=True)
     

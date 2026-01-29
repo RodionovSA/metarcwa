@@ -71,25 +71,27 @@ def fft_matmap(
         Computational backend.
     matmap_xy : array-like or backend tensor
         Material function map in real space. Can be real or complex.
-        Shape: (wvl, 3, 3, Nx, Ny)
+        Shape: (wvl, 1, 1, Nx, Ny) or (wvl, 1, 3, Nx, Ny) or (wvl, 3, 3, Nx, Ny).
     M, N : int
         Truncation orders along x and y. Total numbers are (2M+1) and (2N+1).
 
     Returns
     -------
     matmap_mn : backend tensor
-        Fourier coefficients matmap_{m,n}, shape (wvl, 3, 3, 2M+1, 2N+1),
+        Fourier coefficients matmap_{m,n}, shape (wvl, 1, 1, 2M+1, 2N+1) or (wvl, 1, 3, 2M+1, 2N+1) or (wvl, 3, 3, 2M+1, 2N+1),
         complex-valued.
     """
     matmap_xy = backend.asarray(matmap_xy, complex=True)
 
     shape = matmap_xy.shape
     if len(shape) != 5:
-        raise ValueError("matmap_xy must have shape (wvl, 3, 3, Nx, Ny)")
-    if shape[1] != 3 or shape[2] != 3:
-        raise ValueError("matmap_xy must have shape (wvl, 3, 3, Nx, Ny)")
+        raise ValueError("matmap_xy must have shape (wvl, 1, 1, Nx, Ny) or (wvl, 1, 3, Nx, Ny) or (wvl, 3, 3, Nx, Ny)")
+    if not (shape[1] == 1 or shape[1] == 3):
+        raise ValueError("matmap_xy must have shape (wvl, 1, 1, Nx, Ny) or (wvl, 1, 3, Nx, Ny) or (wvl, 3, 3, Nx, Ny)")
+    if not (shape[2] == 1 or shape[2] == 3):
+        raise ValueError("matmap_xy must have shape (wvl, 1, 1, Nx, Ny) or (wvl, 1, 3, Nx, Ny) or (wvl, 3, 3, Nx, Ny)")
     
-    matmap_mn = custom_fft(backend, matmap_xy, M, N)  # (wvl, 3, 3, 2M+1, 2N+1)
+    matmap_mn = custom_fft(backend, matmap_xy, M, N)  # (wvl, 1, 1, 2M+1, 2N+1) or (wvl, 1, 3, 2M+1, 2N+1) or (wvl, 3, 3, 2M+1, 2N+1)
 
     return matmap_mn
 
@@ -200,14 +202,14 @@ def matmap_fourier_rect(backend: "Backend",
     M, N : int
         Number of harmonics along x and y.
     matval : complex
-        Material value tensor inside the rectangle (B, 3, 3).
+        Material value tensor inside the rectangle (B, 1, 1) or (B, 1, 3) or (B, 3, 3). 
     matbg : complex
-        Background material value tensor (B, 3, 3).
+        Background material value tensor (B, 1, 1) or (B, 1, 3) or (B, 3, 3).
     
     Returns
     -------
     mat_mn : backend tensor
-        Fourier coefficients mat_{m,n}, shape (B, 3, 3, 2M+1, 2N+1), complex.
+        Fourier coefficients mat_{m,n}, shape (B, 1, 1, 2M+1, 2N+1) or (B, 1, 3, 2M+1, 2N+1) or (B, 3, 3, 2M+1, 2N+1), complex.
         Indices correspond to m ∈ [-M..M], n ∈ [-N..N].
     """
     w, h = size
@@ -233,11 +235,11 @@ def matmap_fourier_rect(backend: "Backend",
         else:
             raise ValueError("Material and background material must have the same number of wavelengths")
         
-    val_b = backend.reshape(matval, (matval.shape[0], 3, 3, 1, 1)) # (B, 3, 3, 1, 1)
-    bg_b  = backend.reshape(matbg,  (matbg.shape[0], 3, 3, 1, 1)) # (B, 3, 3, 1, 1)
+    val_b = backend.reshape(matval, (matval.shape[0], matval.shape[1], matval.shape[2], 1, 1)) # (B, 1, 1, 1, 1) or (B, 1, 3, 1, 1) or (B, 3, 3, 1, 1)
+    bg_b  = backend.reshape(matbg,  (matbg.shape[0], matbg.shape[1], matbg.shape[2], 1, 1)) # (B, 1, 1, 1, 1) or (B, 1, 3, 1, 1) or (B, 3, 3, 1, 1)
 
     # Material contrast
-    delta_mat = val_b - bg_b   # (B, 3, 3, 1, 1)
+    delta_mat = val_b - bg_b   # (B, 1, 1, 1, 1) or (B, 1, 3, 1, 1) or (B, 3, 3, 1, 1)
 
     ku, kv, phase = get_fourier_rotated_grid(backend, (cx, cy), (Lx, Ly), angle, M, N)  # (2M+1, 2N+1)
 
@@ -248,7 +250,7 @@ def matmap_fourier_rect(backend: "Backend",
     Sx = sinc(backend, zx) # (2M+1, 2N+1)
     Sy = sinc(backend, zy) # (2M+1, 2N+1)
     
-    #Broadcast to (B, 3, 3, 2M+1, 2N+1)
+    #Broadcast to (B, 1, 1, 2M+1, 2N+1) or (B, 1, 3, 2M+1, 2N+1) or (B, 3, 3, 2M+1, 2N+1)
     Sx = backend.reshape(Sx, (1, 1, 1, 2 * M + 1, 2 * N + 1))
     Sy = backend.reshape(Sy, (1, 1, 1, 2 * M + 1, 2 * N + 1))
     phase = backend.reshape(phase, (1, 1, 1, 2 * M + 1, 2 * N + 1))
@@ -256,7 +258,7 @@ def matmap_fourier_rect(backend: "Backend",
     # Contrast contribution
     area_factor = (w * h) / (Lx * Ly)
     
-    delta_mat_mn = delta_mat * area_factor * Sx * Sy * phase  # (B, 3, 3, 2M+1, 2N+1)
+    delta_mat_mn = delta_mat * area_factor * Sx * Sy * phase  # (B, 1, 1, 2M+1, 2N+1) or (B, 1, 3, 2M+1, 2N+1) or (B, 3, 3, 2M+1, 2N+1)
 
     # Initialize with contrast term
     mat_mn = delta_mat_mn
@@ -309,14 +311,14 @@ def matmap_fourier_ellipse(backend: "Backend",
     M, N : int
         Truncation order along x and y.
     matval : complex
-        Material value tensor inside the ellipse (B, 3, 3).
+        Material value tensor inside the ellipse (B, 1, 1) or (B, 1, 3) or (B, 3, 3).
     matbg : complex
-        Background material value tensor (B, 3, 3).
+        Background material value tensor (B, 1, 1) or (B, 1, 3) or (B, 3, 3).
     
     Returns
     -------
     mat_mn : backend tensor
-        Fourier coefficients mat_{m,n}, shape (B, 3, 3, 2M+1, 2N+1), complex.
+        Fourier coefficients mat_{m,n}, shape (B, 1, 1, 2M+1, 2N+1) or (B, 1, 3, 2M+1, 2N+1) or (B, 3, 3, 2M+1, 2N+1), complex.
         Indices correspond to m ∈ [-M..M], n ∈ [-N..N].
     """
     
@@ -343,11 +345,11 @@ def matmap_fourier_ellipse(backend: "Backend",
         else:
             raise ValueError("Material and background material must have the same number of wavelengths")
         
-    val_b = backend.reshape(matval, (matval.shape[0], 3, 3, 1, 1)) # (B, 3, 3, 1, 1)
-    bg_b  = backend.reshape(matbg,  (matbg.shape[0], 3, 3, 1, 1)) # (B, 3, 3, 1, 1)
+    val_b = backend.reshape(matval, (matval.shape[0], matval.shape[1], matval.shape[2], 1, 1)) # (B, 1, 1, 1, 1) or (B, 1, 3, 1, 1) or (B, 3, 3, 1, 1)
+    bg_b  = backend.reshape(matbg,  (matbg.shape[0], matbg.shape[1], matbg.shape[2], 1, 1)) # (B, 1, 1, 1, 1) or (B, 1, 3, 1, 1) or (B, 3, 3, 1, 1)
 
     # Material contrast
-    delta_mat = val_b - bg_b   # (B, 3, 3, 1, 1)
+    delta_mat = val_b - bg_b   # (B, 1, 1, 1, 1) or (B, 1, 3, 1, 1) or (B, 3, 3, 1, 1)
 
     # Get rotated Fourier grid and phase
     ku, kv, phase = get_fourier_rotated_grid(backend, (cx, cy), (Lx, Ly), angle, M, N)  # (2M+1, 2N+1)
@@ -366,14 +368,14 @@ def matmap_fourier_ellipse(backend: "Backend",
     ellipse_kernel = (2.0 * J1) / rho
     ellipse_kernel = backend.where(rho2 > eps, ellipse_kernel, backend.ones_like(rho2)) # lim_{rho→0} J1(rho)/rho = 1/2)
 
-    #Broadcast to (B, 3, 3, 2M+1, 2N+1)
+    #Broadcast to (B, 1, 1, 2M+1, 2N+1) or (B, 1, 3, 2M+1, 2N+1) or (B, 3, 3, 2M+1, 2N+1)
     ellipse_kernel = backend.reshape(ellipse_kernel, (1, 1, 1, 2 * M + 1, 2 * N + 1))
     phase = backend.reshape(phase, (1, 1, 1, 2 * M + 1, 2 * N + 1))
 
     # Contrast contribution
     area_factor = (backend.pi * a * b) / (Lx * Ly)
     
-    delta_mat_mn = delta_mat * area_factor * ellipse_kernel * phase  # (B, 3, 3, 2M+1, 2N+1)
+    delta_mat_mn = delta_mat * area_factor * ellipse_kernel * phase  # (B, 1, 1, 2M+1, 2N+1) or (B, 1, 3, 2M+1, 2N+1) or (B, 3, 3, 2M+1, 2N+1)
 
     # Initialize with contrast term
     mat_mn = delta_mat_mn

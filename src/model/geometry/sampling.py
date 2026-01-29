@@ -4,7 +4,6 @@
 from typing import Any, Tuple
 
 from src.model.geometry.lattice import Lattice
-from src.model.material import BaseMaterial
 from src.backend import Backend
 
 def matmap(backend: "Backend", 
@@ -21,13 +20,13 @@ def matmap(backend: "Backend",
     bitmap: Any,
         Bitmap representation of the object.
     matval : complex
-        Material value tensor inside the shape (B, 3, 3).
+        Material value tensor inside the shape (B, 1, 1) or (B, 1, 3) or (B, 3, 3).
     matbg : complex
-        Background material value tensor (B, 3, 3).
+        Background material value tensor (B, 1, 1) or (B, 1, 3) or (B, 3, 3).
     Returns
     -------
     matdist_xy : backend tensor
-        Material distribution in real space, shape (B, 3, 3, Nx, Ny), complex dtype.
+        Material distribution in real space, shape (B, 1, 1, Nx, Ny) or (B, 1, 3, Nx, Ny) or (B, 3, 3, Nx, Ny), complex dtype.
     '''
     Nx, Ny = bitmap.shape
 
@@ -36,8 +35,8 @@ def matmap(backend: "Backend",
     mask_c = backend.reshape(mask_c, (1, 1, 1, Nx, Ny))  # (1, 1, 1, Nx, Ny)
     
     # Material values
-    mat_tensor = matval  # (wvl, 3, 3)
-    mat_bg_tensor = matbg  # (wvl, 3, 3)
+    mat_tensor = matval  # (wvl, 1, 1) or (wvl, 1, 3) or (wvl, 3, 3)
+    mat_bg_tensor = matbg  # (wvl, 1, 1) or (wvl, 1, 3) or (wvl, 3, 3)
     
     if mat_tensor.shape[0] != mat_bg_tensor.shape[0]:
         if mat_bg_tensor.shape[0] == 1:
@@ -48,17 +47,17 @@ def matmap(backend: "Backend",
             raise ValueError("Material and background material must have the same number of wavelengths")
     
     # Broadcast epsilon and epsilon_bg to (wvl, 3, 3, 1, 1)
-    init_shape = mat_tensor.shape      # (wvl, 3, 3)
-    mat = backend.reshape(mat_tensor, init_shape + (1, 1))# (wvl, 3, 3, 1, 1)
-    mat_bg = backend.reshape(mat_bg_tensor, init_shape + (1, 1))# (wvl, 3, 3, 1, 1)
+    init_shape = mat_tensor.shape      # (wvl, 1, 1) or (wvl, 1, 3) or (wvl, 3, 3)
+    mat = backend.reshape(mat_tensor, init_shape + (1, 1))# (wvl, 1, 1, 1, 1) or (wvl, 1, 3, 1, 1) or (wvl, 3, 3, 1, 1)
+    mat_bg = backend.reshape(mat_bg_tensor, init_shape + (1, 1))# (wvl, 1, 1, 1, 1) or (wvl, 1, 3, 1, 1) or (wvl, 3, 3, 1, 1)
     
-    # Expand eps_bg to (wvl, 3, 3, Nx, Ny)
-    matdist_xy = backend.expand(mat_bg,init_shape + (Nx, Ny))# (wvl, 3, 3, Nx, Ny)
+    # Expand eps_bg 
+    matdist_xy = backend.expand(mat_bg,init_shape + (Nx, Ny))# (wvl, 1, 1, Nx, Ny) or (wvl, 1, 3, Nx, Ny) or (wvl, 3, 3, Nx, Ny)
     # Δmat per batch
-    delta_mat_b = mat - mat_bg                          # (B, 3, 3, 1, 1)
+    delta_mat_b = mat - mat_bg                          # (B, 1, 1, 1, 1) or (B, 1, 3, 1, 1) or (B, 3, 3, 1, 1)
 
     # mat = bg + Δmat * mask
-    matdist_xy = matdist_xy + delta_mat_b * mask_c      # (B, 3, 3, Nx, Ny)
+    matdist_xy = matdist_xy + delta_mat_b * mask_c      # (B, 1, 1, Nx, Ny) or (B, 1, 3, Nx, Ny) or (B, 3, 3, Nx, Ny)
 
     return matdist_xy
 

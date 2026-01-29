@@ -81,7 +81,7 @@ class VectorObject(BaseObject):
         Returns
         -------
         epsilon_xy : backend tensor
-            Permittivity distribution tensor in real space, shape (wvl, 3, 3, Nx, Ny), complex dtype.
+            Permittivity distribution tensor in real space, shape (wvl, 1, 1, Nx, Ny) or (wvl, 1, 3, Nx, Ny) or (wvl, 3, 3, Nx, Ny), complex dtype.
         '''
         return matmap(backend, 
                       self.bitmap(backend, lattice),
@@ -105,7 +105,7 @@ class VectorObject(BaseObject):
         Returns
         -------
         mu_xy : backend tensor
-            Permeability distribution in real space, shape (wvl, 3, 3, Nx, Ny), complex dtype.
+            Permeability distribution in real space, shape (wvl, 1, 1, Nx, Ny) or (wvl, 1, 3, Nx, Ny) or (wvl, 3, 3, Nx, Ny), complex dtype.
         '''
         return matmap(backend, 
                       self.bitmap(backend, lattice),
@@ -140,10 +140,10 @@ class VectorObject(BaseObject):
         Returns
         -------
         epsilon_mn : backend tensor
-            Fourier coefficients epsilon_{m,n}, shape (wvl, 3, 3, 2M+1, 2N+1), complex.
+            Fourier coefficients epsilon_{m,n}, shape (wvl, 1, 1, 2M+1, 2N+1) or (wvl, 1, 3, 2M+1, 2N+1) or (wvl, 3, 3, 2M+1, 2N+1), complex.
         '''
-        epsilon_tensor = self.material.epsilon_tensor(backend)      # (wvl, 3, 3)
-        epsilonbg_tensor = mat_bg.epsilon_tensor(backend)  # (wvl, 3, 3)
+        epsilon_tensor = self.material.epsilon_tensor(backend)      # (wvl, 1, 1) or (wvl, 1, 3) or (wvl, 3, 3)
+        epsilonbg_tensor = mat_bg.epsilon_tensor(backend)  # (wvl, 1, 1) or (wvl, 1, 3) or (wvl, 3, 3)
         
         if inverse:
             if regularized:
@@ -188,10 +188,10 @@ class VectorObject(BaseObject):
         Returns
         -------
         mu_mn : backend tensor
-            Fourier coefficients mu_{m,n}, shape (wvl, 3, 3, 2M+1, 2N+1), complex.
+            Fourier coefficients mu_{m,n}, shape (wvl, 1, 1, 2M+1, 2N+1) or (wvl, 1, 3, 2M+1, 2N+1) or (wvl, 3, 3, 2M+1, 2N+1), complex.
         '''
-        mu_tensor = self.material.mu_tensor(backend)      # (wvl, 3, 3)
-        mubg_tensor = mat_bg.mu_tensor(backend)  # (wvl, 3, 3)
+        mu_tensor = self.material.mu_tensor(backend)      # (wvl, 1, 1) or (wvl, 1, 3) or (wvl, 3, 3)
+        mubg_tensor = mat_bg.mu_tensor(backend)  # (wvl, 1, 1) or (wvl, 1, 3) or (wvl, 3, 3)
         
         if inverse:
             if regularized:
