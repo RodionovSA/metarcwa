@@ -1,4 +1,4 @@
-# MetaSolverRCWA
+# MetaRCWA
 
 A flexible framework for Rigorous Coupled-Wave Analysis (RCWA) simulations with multi-backend support.
 
