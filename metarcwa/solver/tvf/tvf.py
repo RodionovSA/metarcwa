@@ -1,8 +1,11 @@
-from src.backend import Backend
-from src.model import Lattice
+#metarcwa/solver/tvf/tvf.py
+# DESCRIPTION
+
+from metarcwa.model import Lattice
 from .optimizers import make_optimizer
 from .tvf_utils import _grad_periodic, low_pass_filter, normalize_elementwise, normalize_jones, normalize_max_global, _field_magnitude, total_loss
 
+import torch
 from typing import Any, Tuple
 
 
@@ -18,14 +21,11 @@ class TVF:
     The approach was inspired by the implementations in S4 and FMMax.
     """
     def __init__(self, 
-                 backend: Backend,
                  lattice: Lattice,
                  method: str, 
                  optimizer: str = "LBFGS"):
         """
         Parameters:
-            backend: Backend
-                Computational backend (e.g., PyTorch, JAX, NumPy).
             lattice: Lattice
                 Lattice object defining the grid and spacing.
             method: str
@@ -33,75 +33,74 @@ class TVF:
             optimizer: str
                 Optimizer to use for TVF optimization (default: "LBFGS").
         """
-        self.backend = backend
         self.lattice = lattice
         self.M = lattice.M
         self.N = lattice.N
         self.method = method
         if method not in ["Jones", "Pol", "Normal", "Jones_direct"]:
             raise ValueError(f"Unknown method '{method}' for TVF computation")
-        self.optimizer = make_optimizer(backend, optimizer)
+        self.optimizer = make_optimizer(optimizer)
         
-    def _prepare_field(self, field: Any) -> Tuple[Any, Any, Any]:
+    def _prepare_field(self, field: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Prepare the vector field before processing.
         
         Parameters:
-            field: Any
+            field: torch.Tensor
                 Input scalar field. Shape: [B, Nx, Ny].
         
         Returns:
-            target_field: Any
+            target_field: torch.Tensor
                 Prepared target vector field. Shape: [B, Nx, Ny, 2].
-            initial_field_fft: Any
+            initial_field_fft: torch.Tensor
                 Initial vector field in Fourier domain for optimization. Shape: [B, Nx, Ny, 2].
-            weights: Any
+            weights: torch.Tensor
                 Weights for alignment loss. Shape: [B, Nx, Ny, 1].
         """
         # Step 1: Compute gradients assuming periodic boundaries
-        gradx, grady = _grad_periodic(self.backend, self.lattice, field)  # [B, Nx, Ny]
+        gradx, grady = _grad_periodic(self.lattice, field)  # [B, Nx, Ny]
         
         # Step 2: Filter and resample gradients ((4M+1, 4N+1) window)
-        gradx_f, grady_f = low_pass_filter(self.backend, (gradx, grady), M=2*self.M, N=2*self.N)  # [B, Nx, Ny]
+        gradx_f, grady_f = low_pass_filter((gradx, grady), M=2*self.M, N=2*self.N)  # [B, Nx, Ny]
         
         # Step 3: Global normalization
-        grad_n = normalize_max_global(self.backend, self.backend.stack((gradx_f, grady_f), dim=-1))
+        grad_n = normalize_max_global(torch.stack((gradx_f, grady_f), dim=-1))
         gradx_n, grady_n = grad_n[...,0], grad_n[...,1]  # [B, Nx, Ny]
         
         # Step 4: Define target field
         target_field = self.backend.stack((grady_n, -gradx_n), dim=-1)  # [B, Nx, Ny, 2]
         
         # Step 5: Normalize elementwise
-        target_field = normalize_elementwise(self.backend, target_field)  # [B, Nx, Ny, 2]
+        target_field = normalize_elementwise(target_field)  # [B, Nx, Ny, 2]
         
         # Step 6: Define initial field
         if self.method == "Jones_direct":
-            target_field = normalize_jones(self.backend, target_field)  # [B, Nx, Ny, 2]
+            target_field = normalize_jones(target_field)  # [B, Nx, Ny, 2]
             initial_field = target_field
         else:
-            initial_field = self.backend.stack((grady_n, -gradx_n), dim=-1)  # [B, Nx, Ny, 2]
+            initial_field = torch.stack((grady_n, -gradx_n), dim=-1)  # [B, Nx, Ny, 2]
         
         # Step 7: Shift initial field to fourier domain
-        initial_field_fft = self.backend.fftshift(self.backend.fft2(initial_field, dim=(-3, -2)), dim=(-3, -2))  # [B, Nx, Ny, 2]
+        initial_field_fft = torch.fftshift(torch.fft2(initial_field, dim=(-3, -2)), dim=(-3, -2))  # [B, Nx, Ny, 2]
             
         # Step 8: Compute alignment loss weights
-        weights = _field_magnitude(self.backend, self.backend.stack((gradx_n, grady_n), dim=-1))  # [B, Nx, Ny, 1]
+        weights = _field_magnitude(torch.stack((gradx_n, grady_n), dim=-1))  # [B, Nx, Ny, 1]
             
         return target_field, initial_field_fft, weights
     
     def _optimize(self, 
-                  field: Any, 
+                  field: torch.Tensor, 
                   alpha: float = 1.0, 
                   beta: float = 1e-8, 
                   gamma: float = 1.0,
-                  steps: int = 1) -> Any:
+                  steps: int = 1) -> torch.Tensor:
         """
         Optimize the Tangent Vector Field (TVF) from the input scalar field.
         Optimization works on geometry-based TVF derived from Re(field) in Fourier domain.
         The resulting TVF does not keep computational graph from field.
 
         Parameters:
-            field: Any
+            field: torch.Tensor
                 Input scalar field. Shape: [B, Nx, Ny].
             alpha: float
                 Weight for alignment loss.
@@ -113,7 +112,7 @@ class TVF:
                 Number of optimization steps.
                 
         Returns:
-            optimized_field: Any
+            optimized_field: torch.Tensor
                 Computed TVF. Shape: [B, Nx, Ny, 2].
         """
         # Sanity check
@@ -121,16 +120,15 @@ class TVF:
             raise ValueError("Input field must be a 3D tensor with shape [B, Nx, Ny].")
         
         # Clone and detach grads
-        field = self.backend.real(self.backend.detach(field))
+        field = torch.real(field.detach())
         
         # Prepare fields
         target_field, initial_field_fft, weights = self._prepare_field(field)
-        initial_field = self.backend.stack([self.backend.real(initial_field_fft), 
-                                            self.backend.imag(initial_field_fft)], dim=-1) #Split real and imag parts
+        initial_field = torch.stack([torch.real(initial_field_fft), 
+                                    torch.imag(initial_field_fft)], dim=-1) #Split real and imag parts
         
         def loss_fn(current_field: Any) -> Any:
-            return total_loss(self.backend, 
-                              current_field, 
+            return total_loss(current_field, 
                               target_field, 
                               weights=weights, 
                               lattice=self.lattice,
@@ -138,26 +136,26 @@ class TVF:
                               beta=beta,
                               gamma=gamma)
         
-        optimized_field = self.backend.requires_grad(self.backend.detach(initial_field), set=True)
+        optimized_field = initial_field.detach().requires_grad(True)
         for _ in range(steps):
             optimized_field = self.optimizer.step(optimized_field, loss_fn)
         
-        optimized_field = self.backend.detach(optimized_field) # Detach from computation graph
+        optimized_field = optimized_field.detach() # Detach from computation graph
         optimized_field = optimized_field[...,0] + 1j * optimized_field[...,1]  # Combine real and imag parts
-        optimized_field = self.backend.ifft2(self.backend.ifftshift(optimized_field, dim=(-3, -2)), dim=(-3, -2))  # Back to spatial domain
+        optimized_field = torch.ifft2(torch.ifftshift(optimized_field, dim=(-3, -2)), dim=(-3, -2))  # Back to spatial domain
         
         return optimized_field
     
     def compute(self, 
-                field: Any, 
+                field: torch.Tensor, 
                 alpha: float = 1.0, 
                 beta: float = 1e-8, 
                 gamma: float = 1.0,
-                steps: int = 1) -> Tuple[Any, Any]:
+                steps: int = 1) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Compute the Tangent Vector Field (TVF) from the input scalar field.
         Parameters:
-            field: Any
+            field: torch.Tensor
                 Input scalar field. Shape: [B, Nx, Ny].
             alpha: float
                 Weight for alignment loss.
@@ -168,25 +166,25 @@ class TVF:
             steps: int
                 Number of optimization steps.
         Returns:
-            Tx: Any
+            Tx: torch.Tensor
                 Tangent vector field x-component. Shape: [B, Nx, Ny].
-            Ty: Any
+            Ty: torch.Tensor
                 Tangent vector field y-component. Shape: [B, Nx, Ny].
             
         """
-        optimized_field = normalize_max_global(self.backend, self._optimize(field, alpha, beta, gamma, steps))
+        optimized_field = normalize_max_global(self._optimize(field, alpha, beta, gamma, steps))
         
         if self.method == "Jones":
             # Transform to Jones field
-            optimized_field = normalize_jones(self.backend, optimized_field)
+            optimized_field = normalize_jones(optimized_field)
         
         elif self.method == "Pol":
             # Global normalization
-            optimized_field = normalize_max_global(self.backend, self.backend.real(optimized_field))
+            optimized_field = normalize_max_global(torch.real(optimized_field))
             
         elif self.method == "Normal":
             # Elementwise normalization
-            optimized_field = normalize_elementwise(self.backend, self.backend.real(optimized_field))
+            optimized_field = normalize_elementwise(torch.real(optimized_field))
             
         elif self.method == "Jones_direct":
             # Already Jones-normalized

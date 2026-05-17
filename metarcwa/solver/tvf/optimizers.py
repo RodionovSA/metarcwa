@@ -1,8 +1,9 @@
+#metarcwa/solver/tvf/optimizers.py
+# DESCRIPTION
+
 from typing import Any, Callable, Tuple
 from abc import ABC, abstractmethod
 import torch
-
-from src.backend import Backend
 
 # ----- Optimizers -----
 class TVFOptimizer(ABC):
@@ -60,20 +61,10 @@ class TorchLBFGS(TVFOptimizer):
         return params
     
 # ----- Optimizers factory -----
-def make_optimizer(backend: Backend, name: str, **kwargs) -> TVFOptimizer:
+def make_optimizer(name: str, **kwargs) -> TVFOptimizer:
     name = name.lower()
 
-    if backend.name == "torch":
-        if name == "lbfgs":
+    if name == "lbfgs":
             return TorchLBFGS(**kwargs)
-        else:
-            raise ValueError(f"Unknown optimizer '{name}' for Torch backend")
-
-    elif backend.name == "jax":
-        raise NotImplementedError("JAX optimizers are not implemented yet")
-
-    elif backend.name == "numpy":
-        raise NotImplementedError("Numpy optimizers are not implemented yet")
-
     else:
-        raise ValueError(f"Unsupported backend '{backend.name}'")
+        raise ValueError(f"Unknown optimizer '{name}' for Torch backend")
