@@ -1,33 +1,34 @@
 # metarcwa/model/stack.py
 # DESCRIPTION
 
-from typing import Sequence
+from typing import Callable, Sequence
 import torch
 import torch.nn as nn
 
 from .layer import Layer
 from .lattice import Lattice
-from .material import Material
 from .spec import StackSpec
 
 
 class Stack(nn.Module):
     """An ordered stack of finite layers between two semi-infinite media.
 
-    Owns the system-wide invariants — lattice and grid shape — and builds
-    the canvas passed to each layer's shape_fn. The incidence and
-    transmission media are semi-infinite half-spaces: they have a material
-    but no thickness and no pattern, so they are stored separately from the
-    finite layers.
+    Owns the system-wide invariants — lattice and grid shape — shared by all
+    layers. The incidence and transmission media are semi-infinite half-spaces:
+    they have permittivity but no thickness and no pattern, so they are stored
+    separately from the finite layers.
 
     Parameters
     ----------
-    incidence : Material
-        Semi-infinite medium on the incidence side.
+    incidence : Callable
+        Permittivity of the semi-infinite incidence medium, called as
+        ``eps_fn(wavelength) -> eps``. Same contract as
+        ``Layer.eps_solid_fn`` but returns a scalar-like value (no Nx, Ny).
     layers : Sequence[Layer]
         Ordered finite layers, incidence side first.
-    transmission : Material
-        Semi-infinite medium on the transmission side.
+    transmission : Callable
+        Permittivity of the semi-infinite transmission medium, same contract
+        as ``incidence``.
     lattice : Lattice
         In-plane periodicity, shared by all layers.
     grid_shape : tuple[int, int]
@@ -36,9 +37,9 @@ class Stack(nn.Module):
 
     def __init__(
         self,
-        incidence: Material,
+        incidence: Callable,
         layers: Sequence[Layer],
-        transmission: Material,
+        transmission: Callable,
         lattice: Lattice,
         grid_shape: tuple[int, int],
     ):
@@ -46,6 +47,10 @@ class Stack(nn.Module):
         nx, ny = grid_shape
         if not (isinstance(nx, int) and isinstance(ny, int) and nx > 0 and ny > 0):
             raise ValueError(f"grid_shape must be two positive ints, got {grid_shape}.")
+        if not callable(incidence):
+            raise TypeError("incidence must be callable.")
+        if not callable(transmission):
+            raise TypeError("transmission must be callable.")
 
         self.incidence = incidence
         self.layers = nn.ModuleList(layers)
@@ -53,39 +58,24 @@ class Stack(nn.Module):
         self.lattice = lattice
         self.grid_shape = grid_shape
 
-    def _build_canvas(self):
-        """Construct a fresh canvas from lattice + grid_shape.
-
-        Called once per spec() call — never cached — so geometry is
-        re-rasterized each time and inverse design does not reuse stale
-        coordinates.
-        """
-        ...
-
     def spec(self, wavelength: torch.Tensor) -> StackSpec:
-        canvas = self._build_canvas()
+        eps_layers = [self._layer_epsilon(layer, wavelength) for layer in self.layers]
+        thicknesses = [layer.thickness for layer in self.layers]
 
-        eps_layers = []
-        thicknesses = []
-        for layer in self.layers:
-            # Problem with uniform and patterned layers stacking. Dim mismatch
-            eps_layers.append(self._layer_epsilon(layer, canvas, wavelength))
-            thicknesses.append(layer.thickness)
-
+        eps_layers = torch.broadcast_tensors(*eps_layers)
         return StackSpec(
             layer_eps=torch.stack(eps_layers, dim=0),
             layer_thickness=torch.stack(thicknesses, dim=0),
-            eps_incidence=self.incidence.epsilon(wavelength),
-            eps_transmission=self.transmission.epsilon(wavelength),
+            eps_incidence=self.incidence(wavelength),
+            eps_transmission=self.transmission(wavelength),
             lattice=self.lattice,
         )
 
-    def _layer_epsilon(self, layer: Layer, canvas, wavelength: torch.Tensor) -> torch.tensor:
-        """Combine a layer's shape mask and materials into a grid permittivity."""
-        eps_solid = layer.material_solid.epsilon(wavelength)
+    def _layer_epsilon(self, layer: Layer, wavelength: torch.Tensor) -> torch.Tensor:
+        nx, ny = self.grid_shape
+        eps_solid = layer.eps_solid_fn(wavelength)
         if layer.shape_fn is None:
-            nx, ny = self.grid_shape
-            return eps_solid * torch.ones(nx, ny, dtype=eps_solid.dtype)
-        mask = layer.shape_fn(canvas)
-        eps_void = layer.material_void.epsilon(wavelength)
+            return eps_solid.unsqueeze(-1).unsqueeze(-1).expand(*eps_solid.shape, nx, ny)
+        mask = layer.shape_fn(self.lattice, nx, ny)
+        eps_void = layer.eps_void_fn(wavelength)
         return mask * eps_solid + (1.0 - mask) * eps_void
