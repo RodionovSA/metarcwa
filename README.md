@@ -1,17 +1,16 @@
 # MetaRCWA
 
-A flexible framework for Rigorous Coupled-Wave Analysis (RCWA) simulations with multi-backend support.
+A flexible framework for Rigorous Coupled-Wave Analysis (RCWA) simulations built on PyTorch.
 
 ## Overview
 
-MetaSolverRCWA provides a modular framework for 3D electromagnetic simulations using the RCWA method. The current implementation leverages PyTorch for GPU acceleration and automatic differentiation, with planned support for NumPy and JAX backends.
+MetaRCWA provides a modular framework for 3D electromagnetic simulations using the RCWA method. It leverages PyTorch for GPU acceleration and automatic differentiation.
 
 ## Features
 
-- **Multi-Backend Support**
-    - PyTorch (current): GPU acceleration and autograd capabilities
-    - NumPy (planned)
-    - JAX (planned)
+- **PyTorch Backend**
+    - GPU acceleration
+    - Automatic differentiation for inverse design and optimization
 
 - **Advanced Numerical Methods**
     - Li factorization rules
@@ -19,28 +18,58 @@ MetaSolverRCWA provides a modular framework for 3D electromagnetic simulations u
     - Multiple eigenvalue solver options
 
 - **Machine Learning Integration**
-    - ML-based simulation capabilities via PyTorch backend
+    - Gradient-based optimization via PyTorch autograd
 
 ## Installation
 
 ```bash
-pip install metasolverrcwa
+uv add git+https://github.com/RodionovSA/metarcwa.git
 ```
 
-## Quick Start
+Or with pip:
 
-```python
-# Example usage coming soon
+```bash
+pip install git+https://github.com/RodionovSA/metarcwa.git
+```
+
+### Optional extras
+
+For dispersion models (wavelength-dependent refractive indices):
+
+```bash
+uv add git+https://github.com/RodionovSA/metarcwa.git --extra dispertorch
+```
+
+For geometry and shape utilities:
+
+```bash
+uv add git+https://github.com/RodionovSA/metarcwa.git --extra metashapes
+```
+
+Install both:
+
+```bash
+uv add git+https://github.com/RodionovSA/metarcwa.git --extra dispertorch --extra metashapes
+```
+
+### Development installation
+
+Clone the repo and install all extras and dev dependencies:
+
+```bash
+git clone https://github.com/RodionovSA/metarcwa.git
+cd metarcwa
+uv sync --all-extras --dev
 ```
 
 ## Requirements
 
-- Python 3.7+
-- PyTorch
+- Python 3.12+
+- PyTorch 2.1+
 
 ## License
 
-Standard MIT
+MIT
 
 ## Contributing
 
