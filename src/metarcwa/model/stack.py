@@ -76,8 +76,14 @@ class Stack(nn.Module):
         eps_solid = layer.eps_solid_fn(wavelength)
         if layer.shape_fn is None:
             return eps_solid.unsqueeze(-1).unsqueeze(-1).expand(*eps_solid.shape, nx, ny)
-        mask = layer.shape_fn(self.lattice, nx, ny)
-        eps_void = layer.eps_void_fn(wavelength)
-        return mask * eps_solid + (1.0 - mask) * eps_void
+
+        mask = layer.shape_fn(self.lattice, nx, ny)           # Shape [Nx,Ny]
+        eps_void = layer.eps_void_fn(wavelength)              # Shape [N_wl]
+
+        mask = mask[None,...,...]                             # Shape [1, Nx, Ny]
+        eps_void = eps_void[...,None,None]                    # Shape [N_wl, 1, 1]
+        eps_solid = eps_solid[...,None,None]                  # Shape [N_wl, 1, 1]
+
+        return mask * eps_solid + (1.0 - mask) * eps_void     # Shape [N_wl, Nx, Ny]
 
 
