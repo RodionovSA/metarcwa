@@ -26,14 +26,7 @@ def from_metashapes(shape, soft, softness) -> Callable:
         MetaShapes shape object
 
     soft: Boolean
-        Inside our mask, every pixel will either be a 1 or 0 depending
-        the material occupying that specific pixel. 
-
-        0  to 1 gives a sudden jump at those boundaries.
-
-        This gives discontinuity where the derivative is undefined at these
-        jumps. PyTorch does a lot of gradient-based optimisations for which
-        this wouldn't be ideal. 
+        If True, use soft transition between 0 and 1 mask values at the boundaries. 
 
     softness: Float
         The degree to which you smooth the boundary between the 0 and 1
