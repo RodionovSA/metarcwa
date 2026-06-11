@@ -79,3 +79,5 @@ class Stack(nn.Module):
         mask = layer.shape_fn(self.lattice, nx, ny)
         eps_void = layer.eps_void_fn(wavelength)
         return mask * eps_solid + (1.0 - mask) * eps_void
+
+
