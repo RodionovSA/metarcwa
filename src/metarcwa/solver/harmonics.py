@@ -3,7 +3,7 @@
 
 import torch
 
-def reciprocal_lattice_vectors(a1: torch.tensor, a2: torch.tensor):
+def reciprocal_lattice_vectors(a1: torch.Tensor, a2: torch.Tensor):
     """
     Compute 2D reciprocal lattice vectors b1 and b2
     using a1 and a2.
@@ -161,15 +161,17 @@ def reciprocal_index_map(M: torch.Tensor, N: torch.Tensor, b1: torch.Tensor, b2:
     # Build the reciprocal lattice vector from its
     # 2 basis vectors b1 and b2
 
-    G = M[...,None] * b1 + N[...,None] * b2
+    G = M[...,None] * b1 + N[...,None] * b2            #shape [N_m,N_n,2]
 
-    # (rows (m),columns(n),vector components(x,y) )
+    # rows = m , columns = n, vector components = [x,y]
 
-    G_x = G[...,0]
-    G_y = G[...,1]
+    Gx = G[...,0]  
+    Gy = G[...,1]
+
+    return Gx,Gy
 
 def harmonic_wavevectors(kx0: torch.Tensor, ky0: torch.Tensor, Gx: torch.Tensor,
-                         Gy: torch.Tensor)
+                         Gy: torch.Tensor):
     """
     Compute the in-plane wavevector components for every harmonic.
 
