@@ -5,26 +5,27 @@ import math
 import torch
 import torch.nn as nn
 
+from .utils import register
+
 class Lattice(nn.Module):
-    """In-plane periodicity of the unit cell. Fixed (non-optimizable).
+    """In-plane periodicity of the unit cell.
     Defined by two lattice vectors. A rectangular lattice is the special
     case of axis-aligned vectors.
 
     Parameters
     ----------
-    a1 : Tensor
-        First lattice vector, shape [2].
-    a2 : Tensor
-        Second lattice vector, shape [2].
+    a1 : float | Tensor | nn.Parameter
+        First lattice vector, shape [2]. Stored as a buffer by default;
+        pass an ``nn.Parameter`` to make it optimizable.
+    a2 : float | Tensor | nn.Parameter
+        Second lattice vector, shape [2]. Same convention as ``a1``.
     """
     def __init__(self, a1, a2):
         super().__init__()
-        a1 = torch.as_tensor(a1, dtype=torch.float32)
-        a2 = torch.as_tensor(a2, dtype=torch.float32)
-        if torch.linalg.det(torch.stack([a1, a2], 1)).abs() <= 1e-12:
+        register(self, "a1", a1)
+        register(self, "a2", a2)
+        if self.cell_area <= 1e-12:
             raise ValueError("a1, a2 must be linearly independent")
-        self.register_buffer("a1", a1)
-        self.register_buffer("a2", a2)
         
     @property
     def device(self): return self.a1.device
@@ -32,21 +33,34 @@ class Lattice(nn.Module):
     def dtype(self):  return self.a1.dtype
 
     @classmethod
-    def rectangular(cls, px: float, py: float) -> "Lattice":
-        """Build an axis-aligned rectangular lattice from two periods."""
-        return cls(
-            a1=torch.tensor([px, 0.0]),
-            a2=torch.tensor([0.0, py]),
-        )
+    def rectangular(cls, px, py) -> "Lattice":
+        """Build an axis-aligned rectangular lattice from two periods.
+
+        Parameters
+        ----------
+        px, py : float | nn.Parameter
+            Period along x and y. Pass ``nn.Parameter`` to make the
+            corresponding lattice vector optimizable.
+        """
+        px_v = px.detach().item() if isinstance(px, torch.Tensor) else float(px)
+        py_v = py.detach().item() if isinstance(py, torch.Tensor) else float(py)
+        a1 = torch.tensor([px_v, 0.0])
+        a2 = torch.tensor([0.0, py_v])
+        if isinstance(px, nn.Parameter):
+            a1 = nn.Parameter(a1)
+        if isinstance(py, nn.Parameter):
+            a2 = nn.Parameter(a2)
+        return cls(a1=a1, a2=a2)
 
     @classmethod
-    def hexagonal(cls, a: float, *, orientation: str = "pointy") -> "Lattice":
+    def hexagonal(cls, a, *, orientation: str = "pointy") -> "Lattice":
         """Build a hexagonal (triangular) lattice from the lattice constant.
 
         Parameters
         ----------
-        a : float
-            Nearest-neighbour distance (lattice constant).
+        a : float | nn.Parameter
+            Nearest-neighbour distance (lattice constant). Pass
+            ``nn.Parameter`` to make both lattice vectors optimizable.
         orientation : str
             ``"pointy"`` — Wigner-Seitz cell has vertices at top and bottom;
             lattice vectors at 0° and 60°::
@@ -60,18 +74,18 @@ class Lattice(nn.Module):
                 a1 = [a·√3/2,  a/2        ]
                 a2 = [0,       a           ]
         """
+        a_v = a.detach().item() if isinstance(a, torch.Tensor) else float(a)
         if orientation == "pointy":
-            return cls(
-                a1=torch.tensor([a, 0.0]),
-                a2=torch.tensor([a / 2.0, a * math.sqrt(3) / 2.0]),
-            )
+            a1 = torch.tensor([a_v, 0.0])
+            a2 = torch.tensor([a_v / 2.0, a_v * math.sqrt(3) / 2.0])
         elif orientation == "flat":
-            return cls(
-                a1=torch.tensor([a * math.sqrt(3) / 2.0, a / 2.0]),
-                a2=torch.tensor([0.0, a]),
-            )
+            a1 = torch.tensor([a_v * math.sqrt(3) / 2.0, a_v / 2.0])
+            a2 = torch.tensor([0.0, a_v])
         else:
             raise ValueError(f"orientation must be 'pointy' or 'flat', got {orientation!r}")
+        if isinstance(a, nn.Parameter):
+            a1, a2 = nn.Parameter(a1), nn.Parameter(a2)
+        return cls(a1=a1, a2=a2)
 
     # --- matrix form: columns are the lattice vectors ----------------
     @property

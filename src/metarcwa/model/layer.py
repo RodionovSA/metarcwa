@@ -4,9 +4,9 @@
 import torch
 import torch.nn as nn
 
-from typing import Callable, Optional
+from typing import Optional
 
-from .utils import register
+from .utils import register, CallableModule
 
 class Layer(nn.Module):
     """A single layer of the stack: a patterned or uniform slab.
@@ -18,12 +18,21 @@ class Layer(nn.Module):
 
     Parameters
     ----------
-    eps_solid_fn : Callable
+    eps_solid_fn : CallableModule
         Permittivity, called as ``eps_fn(wavelength) -> eps``. Receives
         wavelength; returns complex permittivity (isotropic scalar, one ε per
         point), broadcastable to ``[..., Nx, Ny]`` — a non-dispersive material
-        returns a complex scalar, a dispersive one may return ``[N_wl]``. If the callable 
-        is an ``nn.Module``, it registers as a submodule and its parameters are optimizable.
+        returns a complex scalar, a dispersive one may return ``[N_wl]``.
+
+        **Parameter visibility:** for the callable's tensors to appear in
+        ``model.parameters()`` / ``model.buffers()`` and move with
+        ``model.to()``, the callable must be an ``nn.Module`` (PyTorch only
+        traverses modules, not plain functions or closures). Use the provided
+        helpers: ``from_dispertorch(disp)`` wraps a DisperTorch model;
+        ``CallableModule(fn, dep1, dep2, …)`` wraps any plain callable and
+        registers its module/parameter dependencies. A plain ``lambda`` or
+        closure will work numerically but its closed-over tensors are invisible
+        to the model.
 
         Reserved (unsupported): anisotropy via 3x3 trailing dims; magnetic
         response via a separate mu callable. Current contract is isotropic,
@@ -32,28 +41,29 @@ class Layer(nn.Module):
     thickness : float | Tensor | nn.Parameter
         Layer thickness. May be an nn.Parameter for inverse design.
         
-    eps_void_fn : Callable, optional
+    eps_void_fn : CallableModule, optional
         Permittivity of the void (un-masked) region, same contract as
         ``eps_solid_fn``. Fills the ``mask == 0`` region in the blend
         ``eps = mask * eps_solid + (1 - mask) * eps_void``. Required iff
         ``shape_fn`` is given; for a uniform layer (no ``shape_fn``) it must
         be omitted and only ``eps_solid_fn`` is used.
         
-    shape_fn : Callable, optional
+    shape_fn : CallableModule, optional
         Geometry mask, called as ``shape_fn(lattice, Nx, Ny) -> mask``.
         Receives the lattice and grid resolution; returns a real mask in
         [0, 1] of shape ``[Nx, Ny]`` (or ``[N_geom, Nx, Ny]`` for batched
-        geometry). Any geometry parameters are closed over by the callable; an
-        ``nn.Parameter`` so closed is optimizable. Required iff ``eps_void_fn``
-        is given; omit for a uniform layer.
+        geometry). Same ``nn.Module`` requirement as ``eps_solid_fn`` — use
+        ``from_metashapes(shape, …)`` or ``CallableModule(fn, dep, …)`` to
+        make geometry parameters visible to the model. Required iff
+        ``eps_void_fn`` is given; omit for a uniform layer.
     """
 
     def __init__(
         self,
-        eps_solid_fn: Callable,
+        eps_solid_fn: CallableModule,
         thickness,
-        eps_void_fn: Optional[Callable] = None,
-        shape_fn: Optional[Callable] = None,
+        eps_void_fn: Optional[CallableModule] = None,
+        shape_fn: Optional[CallableModule] = None,
     ):
         super().__init__()
 

@@ -1,12 +1,13 @@
 # metarcwa/model/stack.py
 # DESCRIPTION
 
-from typing import Callable, Sequence
+from typing import Sequence
 import torch
 import torch.nn as nn
 
 from .layer import Layer
 from .lattice import Lattice
+from .utils import CallableModule
 from .spec import StackSpec
 
 
@@ -20,13 +21,13 @@ class Stack(nn.Module):
 
     Parameters
     ----------
-    incidence : Callable
+    incidence : CallableModule
         Permittivity of the semi-infinite incidence medium, called as
         ``eps_fn(wavelength) -> eps``. Same contract as
         ``Layer.eps_solid_fn`` but returns a scalar-like value (no Nx, Ny).
     layers : Sequence[Layer]
         Ordered finite layers, incidence side first.
-    transmission : Callable
+    transmission : CallableModule
         Permittivity of the semi-infinite transmission medium, same contract
         as ``incidence``.
     lattice : Lattice
@@ -37,9 +38,9 @@ class Stack(nn.Module):
 
     def __init__(
         self,
-        incidence: Callable,
+        incidence: CallableModule,
         layers: Sequence[Layer],
-        transmission: Callable,
+        transmission: CallableModule,
         lattice: Lattice,
         grid_shape: tuple[int, int],
     ):
@@ -68,7 +69,8 @@ class Stack(nn.Module):
             layer_thickness=torch.stack(thicknesses, dim=0),
             eps_incidence=self.incidence(wavelength),
             eps_transmission=self.transmission(wavelength),
-            lattice=self.lattice,
+            a1=self.lattice.a1,
+            a2=self.lattice.a2,
         )
 
     def _layer_epsilon(self, layer: Layer, wavelength: torch.Tensor) -> torch.Tensor:
