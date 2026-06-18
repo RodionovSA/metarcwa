@@ -51,7 +51,7 @@ def reciprocal_lattice_vectors(a1: torch.Tensor, a2: torch.Tensor):
     return b1, b2
 
 
-def harmonic_index_map(m_max:int, n_max: int, device=None):
+def harmonic_index_map(m_max:int, n_max: int, circular: bool = False, device=None):
     """
     Create flattened harmonic index arrays meaning each harmonic
     is one entry in a Nh length list.
@@ -67,12 +67,14 @@ def harmonic_index_map(m_max:int, n_max: int, device=None):
         Maximum harmonic order in the first reciprocal-lattice direction
     n_max: int
         Maximum harmonic order in the second reciprocal-lattice direction
+    circular: bool
+        if True, uses elliptical shape truncation for the indices array.
 
     Returns:
     ------------------
-    M_flat: torch.Tensor
+    m_flat: torch.Tensor
         Flattened m indicies, shape [Nh]
-    N_flat: torch.Tensor
+    n_flat: torch.Tensor
         Flattened n indicies, shape [Nh]
     """
 
@@ -80,14 +82,19 @@ def harmonic_index_map(m_max:int, n_max: int, device=None):
     n = torch.arange(-n_max, n_max + 1, device = device)
 
     # rows m, column n
-    M, N = torch.meshgrid(m,n, indexing="ij")
+    M, N = torch.meshgrid(m,n, indexing="ij") # shape [2*m_max + 1, 2*n_max + 1]
+    
+    # Switch between rectangular and circular truncation of Fourier harmonics 
+    if circular:
+        r2 = (M / m_max) ** 2 + (N / n_max) ** 2
+        mask = r2 <= 1.0 
+    else:
+        mask = torch.ones_like(M, dtype=torch.bool)
+        
+    m_flat, n_flat = M[mask], N[mask] # shape [Nh = (2*m_max + 1)*(2*n_max + 1)]
+    return m_flat, n_flat
 
-    M_flat = torch.reshape(M, (-1,))
-    N_flat = torch.reshape(N, (-1,))
-
-    return M_flat,N_flat
-
-def reciprocal_index_map(M_flat: torch.Tensor, N_flat: torch.Tensor, 
+def reciprocal_index_map(m_flat: torch.Tensor, n_flat: torch.Tensor, 
                          b1: torch.Tensor, b2: torch.Tensor):
     """
     Computs reciprocal lattice vectors G_mn for every harmonic order.
@@ -97,9 +104,9 @@ def reciprocal_index_map(M_flat: torch.Tensor, N_flat: torch.Tensor,
 
     Parameters:
     --------------------
-    M_flat: torch.Tensor
+    m_flat: torch.Tensor
         Flattened m indicies, shape [Nh]
-    N_flat: torch.Tensor
+    n_flat: torch.Tensor
         Flattened n indicies, shape [Nh]
     b1: torch.Tensor
         First reciprocal lattice vector, shape [2]
@@ -117,15 +124,15 @@ def reciprocal_index_map(M_flat: torch.Tensor, N_flat: torch.Tensor,
     """
 
     # G = m*b1 + n*b2
-    # M and N, shape [Nh] -> shape [Nh,1]
+    # m and n, shape [Nh] -> shape [Nh,1]
     # b1 and b2, shape [2]
     # G, shape [Nh,2]
-    G = M_flat[:,None] * b1 + N_flat[:,None] * b2
+    G = m_flat[:,None] * b1 + n_flat[:,None] * b2
 
     Gx = G[:,0]
     Gy = G[:,1]
 
-    return Gx, Gy, G
+    return Gx, Gy
 
 def harmonic_wavevectors(kx0: torch.Tensor, ky0: torch.Tensor, Gx: torch.Tensor,
                          Gy: torch.Tensor):
@@ -171,4 +178,10 @@ def harmonic_wavevectors(kx0: torch.Tensor, ky0: torch.Tensor, Gx: torch.Tensor,
     ky = ky0[...,None] + Gy         
 
     return kx, ky
+
+def compute_kxy(kx0: torch.Tensor, ky0: torch.Tensor, 
+                a1: torch.Tensor, a2: torch.Tensor,
+                m_flat: torch.Tensor, n_flat: torch.Tensor):
+    """ Shortcut function to compute kx and ky"""
+    pass
 
