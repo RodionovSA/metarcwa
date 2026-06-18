@@ -14,10 +14,10 @@ def reciprocal_lattice_vectors(a1: torch.Tensor, a2: torch.Tensor):
 
     Orthogonality relations:
 
-    b1 * a1 = 2pi
-    b1 * a2 = 0
-    b2 * a1 = 0
-    b2 * a1 = 2pi
+    b1 . a1 = 2pi
+    b1 . a2 = 0
+    b2 . a1 = 0
+    b2 . a1 = 2pi
 
     Parameters:
     -------------------------
@@ -35,56 +35,31 @@ def reciprocal_lattice_vectors(a1: torch.Tensor, a2: torch.Tensor):
 
     """
 
-    # Convert a1 and a2 to float before stacking
-    a1 = torch.as_tensor(a1, dtype = torch.float32)
-    a2 = torch.as_tensor(a2, dtype = torch.float32)
-
-    # Define matrix a and r
-
-    a = torch.stack([a1,a2],dim=0)
-    r = 2 * torch.pi * torch.eye(2)
-
-    # Solve the linear system ab = r
+    # Solve for b using matrices
     
-    b = torch.linalg.solve(a,r)
+    # Decompose lattice vectors into x and y componenets to calculate determinant
+    a1x, a1y = a1[0], a1[1]
+    a2x,a2y = a2[0], a2[1]
+    
+    det = a1x * a2y - a1y * a2x
 
-    b1 = b[:,0]
-    b2 = b[:,1]
+    factor = 2 * torch.pi / det
 
-    return b1,b2
+    b1 = factor * torch.stack([a2y,-a2x])
+    b2 = factor * torch.stack([-a1y, a1x])
 
-# Test
-
-a1 = torch.tensor([15,0])
-a2 = torch.tensor([0,15])
-
-# Convert a1 and a2 to float before doing dot product
-# so that a and b are of same type
-
-a1 = torch.as_tensor(a1, dtype = torch.float32)
-a2 = torch.as_tensor(a2, dtype = torch.float32)
-
-b1, b2 = reciprocal_lattice_vectors(a1,a2)
-
-print(b1)
-print(b2)
-print(torch.dot(b1, a1), f"should be 2pi")
-print(torch.dot(b1,a2), f"should be 0")
-print(torch.dot(b2,a1), f"should be 0")
-print(torch.dot(b2,a2), f"should be 2pi") 
+    return b1, b2
 
 
-def harmonic_index_map(m_max:int, n_max: int):
+def harmonic_index_map(m_max:int, n_max: int, device=None):
     """
-    Create 2D grid of harmonic indicies m and n.
+    Create flattened harmonic index arrays meaning each harmonic
+    is one entry in a Nh length list.
 
-    The harmonics are:
+    Returns all harmonic orders:
 
     m = -m_max,...0,...,+m_max
     n = -n_max,...,0,...,+n_max
-
-    Each position (row, column) in the returned tensor corresponds
-    to one harmonic order (m,n)
 
     Parameters:
     ----------------
@@ -95,57 +70,37 @@ def harmonic_index_map(m_max:int, n_max: int):
 
     Returns:
     ------------------
-    M: torch.Tensor
-        Grid containing m indices, shape [2*m_max + 1, 2*n_max + 1]
-    N: torch.Tensor
-        Grid containing n indicies, shape [2*m_max + 1, 2*n_max +1]
+    M_flat: torch.Tensor
+        Flattened m indicies, shape [Nh]
+    N_flat: torch.Tensor
+        Flattened n indicies, shape [Nh]
     """
 
-    m = torch.arange(-m_max, m_max + 1)
-    n = torch.arange(-n_max, n_max + 1)
+    m = torch.arange(-m_max, m_max + 1, device = device)
+    n = torch.arange(-n_max, n_max + 1, device = device)
 
-    M, N = torch.meshgrid(m,n)
+    # rows m, column n
+    M, N = torch.meshgrid(m,n, indexing="ij")
 
-    return M,N
+    M_flat = torch.reshape(M, (-1,))
+    N_flat = torch.reshape(N, (-1,))
 
-# Test
+    return M_flat,N_flat
 
-M, N = harmonic_index_map(1,1)
-print(M)
-print(N)
-print(M.shape)  # [3,3]
-
-M,N = harmonic_index_map(2,2)
-print(M)
-print(N)
-print(M.shape) #[5,5]
-
-def reciprocal_index_map(M: torch.Tensor, N: torch.Tensor, b1: torch.Tensor, b2: torch.Tensor):
+def reciprocal_index_map(M_flat: torch.Tensor, N_flat: torch.Tensor, 
+                         b1: torch.Tensor, b2: torch.Tensor):
     """
     Computs reciprocal lattice vectors G_mn for every harmonic order.
 
-    Each harmonic order (m,n) corresponds to a reciprocal lattice vector:
-
-     G_mn = m*b1 + n*b2
-
-     where b1 and b2 are the reciprocal lattice basis vectors.
-
-     Since each G_mn is a 2D vector, the intermediate tensor G has shape:
-
-    [N_m, N_n, 2]
-
-    where:
-
-    N_m = 2*m_max + 1
-    N_n = 2*n_max + 1
-    and the last dimension refers to [x,y]
+    Each harmonic (m,n) corresponds to:
+    G_mn = m*b1 + n*b2
 
     Parameters:
     --------------------
-    M: torch.Tensor
-        Grid of m indicies, shape [N_m, N_n]
-    N: torch. Tensor
-        Grid of n indicies, shape [N_m, N_n]
+    M_flat: torch.Tensor
+        Flattened m indicies, shape [Nh]
+    N_flat: torch.Tensor
+        Flattened n indicies, shape [Nh]
     b1: torch.Tensor
         First reciprocal lattice vector, shape [2]
     b2: torch.Tensor
@@ -153,22 +108,24 @@ def reciprocal_index_map(M: torch.Tensor, N: torch.Tensor, b1: torch.Tensor, b2:
 
     Returns:
     ------------------------
+    G: torch.Tensor
+        Full reciprocal vectors, shape [Nh,2]
     G_x: torch.Tensor
-        x-component of G_mn for every harmonic, shape [N_m, N_n]
+        x-component of G_mn, shape[Nh]
     G_y: torch.Tensor
-        y-component of G_m for every harmonic, shape [N_m, N_n]
+        y-component of G_mn, shape [Nh]
     """
-    # Build the reciprocal lattice vector from its
-    # 2 basis vectors b1 and b2
 
-    G = M[...,None] * b1 + N[...,None] * b2            #shape [N_m,N_n,2]
+    # G = m*b1 + n*b2
+    # M and N, shape [Nh] -> shape [Nh,1]
+    # b1 and b2, shape [2]
+    # G, shape [Nh,2]
+    G = M_flat[:,None] * b1 + N_flat[:,None] * b2
 
-    # rows = m , columns = n, vector components = [x,y]
+    Gx = G[:,0]
+    Gy = G[:,1]
 
-    Gx = G[...,0]  
-    Gy = G[...,1]
-
-    return Gx,Gy
+    return Gx, Gy, G
 
 def harmonic_wavevectors(kx0: torch.Tensor, ky0: torch.Tensor, Gx: torch.Tensor,
                          Gy: torch.Tensor):
@@ -186,24 +143,32 @@ def harmonic_wavevectors(kx0: torch.Tensor, ky0: torch.Tensor, Gx: torch.Tensor,
     ------------
     kx0: torch.Tensor
         x component of the incident in-plane wavevector
+        Shape [N_wl, N_theta, N_phi]
     ky0: torch.Tensor
         y component of the incident in-plane wavevector
+        Shape [N_wl, N_theta, N_phi]
     Gx: torch.Tensor
-        x component of reciprocal lattice shifts, shape [N_m, N_n]
+        x component of reciprocal lattice shifts
+        Shape [Nh]
     Gy: torch.Tensor
-        y component of reciprocal lattice shifts, shape [N_m, N_n]
+        y component of reciprocal lattice shifts
+        Shape [Nh]
 
     Returns:
     ---------------
     kx: torch.Tensor
-        x-component of each harmonic wavevector, shape [N_m, N_n]
+        x-component of each harmonic wavevector
+        Shape [N_wl, N_theta, N_phi, Nh]
     ky: torch.Tensor
-        y-component of each harmonic wavevector, shape [N_m, N_n]
+        y-component of each harmonic wavevector
+        Shape [N_wl, N_theta, N_phi, Nh]
 
     """
 
-    kx = kx0 + Gx
-    ky = ky0 + Gy
+    # Add an extra dimension to kx0 and ky0
+    # Shape [N_wl, N_theta, N_phi] -> [N_wl, N_theta, N_phi, 1]
+    kx = kx0[...,None] + Gx         # Shape [N_wl, N_theta, N_phi, Nh]
+    ky = ky0[...,None] + Gy         
 
     return kx, ky
 
