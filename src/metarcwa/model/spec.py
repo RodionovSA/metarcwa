@@ -46,15 +46,22 @@ class StackSpec(Spec):
     Attributes
     ----------
     layer_eps : Tensor | nn.Parameter
-        Per-layer permittivity on the grid, shape [N_layers, ..., Nx, Ny].
-        Leading dims after N_layers may carry a geometry/wavelength batch.
+        Per-layer permittivity on the grid, shape ``[N_layers, ..., Ny, Nx]``
+        (rows = y, cols = x). Leading dims after ``N_layers`` may carry a
+        geometry/wavelength batch. **Always complex** (promoted by
+        ``Stack.spec()`` if the user supplies a real eps callable).
     layer_thickness : Tensor | nn.Parameter
         Thickness of each finite layer, shape [N_layers] (broadcastable
         against any batch).
     eps_incidence : Tensor | nn.Parameter
         Permittivity of the semi-infinite incidence medium (uniform).
+        **Always real** — the incidence medium is treated as lossless so that
+        ``n = sqrt(eps_inc)`` and the resulting wavevectors are real.
+        A ``UserWarning`` is emitted if the callable returns a complex value
+        with non-negligible imaginary part.
     eps_transmission : Tensor | nn.Parameter
         Permittivity of the semi-infinite transmission medium (uniform).
+        **Always complex** (same promotion as ``layer_eps``).
     a1 : Tensor | nn.Parameter
         First lattice vector, shape [2]. Needed for reciprocal-lattice
         construction.

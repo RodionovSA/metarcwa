@@ -7,7 +7,7 @@ import torch.nn as nn
 
 from .layer import Layer
 from .lattice import Lattice
-from .utils import CallableModule
+from .utils import CallableModule, to_complex, to_real
 from .spec import StackSpec
 
 
@@ -33,7 +33,9 @@ class Stack(nn.Module):
     lattice : Lattice
         In-plane periodicity, shared by all layers.
     grid_shape : tuple[int, int]
-        Real-space sampling (Nx, Ny) of the unit cell.
+        Real-space sampling ``(Nx, Ny)`` of the unit cell (resolution pair only).
+        Eps arrays are laid out ``[..., Ny, Nx]`` (rows = y, cols = x — the
+        standard image / ``imshow`` convention).
     """
 
     def __init__(
@@ -65,10 +67,10 @@ class Stack(nn.Module):
 
         eps_layers = torch.broadcast_tensors(*eps_layers)
         return StackSpec(
-            layer_eps=torch.stack(eps_layers, dim=0),
+            layer_eps=to_complex(torch.stack(eps_layers, dim=0)),
             layer_thickness=torch.stack(thicknesses, dim=0),
-            eps_incidence=self.incidence(wavelength),
-            eps_transmission=self.transmission(wavelength),
+            eps_incidence=to_real(self.incidence(wavelength), name="eps_incidence"),
+            eps_transmission=to_complex(self.transmission(wavelength)),
             a1=self.lattice.a1,
             a2=self.lattice.a2,
         )
@@ -77,15 +79,15 @@ class Stack(nn.Module):
         nx, ny = self.grid_shape
         eps_solid = layer.eps_solid_fn(wavelength)
         if layer.shape_fn is None:
-            return eps_solid.unsqueeze(-1).unsqueeze(-1).expand(*eps_solid.shape, nx, ny)
+            return eps_solid.unsqueeze(-1).unsqueeze(-1).expand(*eps_solid.shape, ny, nx)
 
-        mask = layer.shape_fn(self.lattice, nx, ny)           # Shape [Nx,Ny]
+        mask = layer.shape_fn(self.lattice, nx, ny)           # Shape [Ny, Nx]
         eps_void = layer.eps_void_fn(wavelength)              # Shape [N_wl]
 
-        mask = mask[None,...,...]                             # Shape [1, Nx, Ny]
+        mask = mask[None]                                     # Shape [1, Ny, Nx]
         eps_void = eps_void[...,None,None]                    # Shape [N_wl, 1, 1]
         eps_solid = eps_solid[...,None,None]                  # Shape [N_wl, 1, 1]
 
-        return mask * eps_solid + (1.0 - mask) * eps_void     # Shape [N_wl, Nx, Ny]
+        return mask * eps_solid + (1.0 - mask) * eps_void     # Shape [N_wl, Ny, Nx]
 
 

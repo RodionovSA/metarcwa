@@ -81,8 +81,10 @@ def harmonic_index_map(m_max:int, n_max: int, circular: bool = False, device=Non
     m = torch.arange(-m_max, m_max + 1, device = device)
     n = torch.arange(-n_max, n_max + 1, device = device)
 
-    # rows m, column n
-    M, N = torch.meshgrid(m,n, indexing="ij") # shape [2*m_max + 1, 2*n_max + 1]
+    # Lay the harmonic grid out to match the eps grid [..., Ny, Nx]:
+    #   axis 0 (rows) -> n  (a2 / y direction, Ny axis, axis -2)
+    #   axis 1 (cols) -> m  (a1 / x direction, Nx axis, axis -1)
+    N, M = torch.meshgrid(n, m, indexing="ij")  # shape [2*n_max + 1, 2*m_max + 1]
     
     # Switch between rectangular and circular truncation of Fourier harmonics 
     if circular:
@@ -94,13 +96,17 @@ def harmonic_index_map(m_max:int, n_max: int, circular: bool = False, device=Non
     m_flat, n_flat = M[mask], N[mask] # shape [Nh = (2*m_max + 1)*(2*n_max + 1)]
     return m_flat, n_flat
 
-def reciprocal_index_map(m_flat: torch.Tensor, n_flat: torch.Tensor, 
+def reciprocal_index_map(m_flat: torch.Tensor, n_flat: torch.Tensor,
                          b1: torch.Tensor, b2: torch.Tensor):
     """
     Computs reciprocal lattice vectors G_mn for every harmonic order.
 
     Each harmonic (m,n) corresponds to:
     G_mn = m*b1 + n*b2
+
+    Axis-convention note: m indexes b1/a1 (x direction) and n indexes b2/a2
+    (y direction). In the eps grid (shape [..., Ny, Nx]), this means the FFT
+    over axis -1 (Nx) corresponds to m/Gx, and over axis -2 (Ny) to n/Gy.
 
     Parameters:
     --------------------

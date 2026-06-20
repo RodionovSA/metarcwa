@@ -21,7 +21,7 @@ class Layer(nn.Module):
     eps_solid_fn : CallableModule
         Permittivity, called as ``eps_fn(wavelength) -> eps``. Receives
         wavelength; returns complex permittivity (isotropic scalar, one ε per
-        point), broadcastable to ``[..., Nx, Ny]`` — a non-dispersive material
+        point), broadcastable to ``[..., Ny, Nx]`` — a non-dispersive material
         returns a complex scalar, a dispersive one may return ``[N_wl]``.
 
         **Parameter visibility:** for the callable's tensors to appear in
@@ -49,13 +49,15 @@ class Layer(nn.Module):
         be omitted and only ``eps_solid_fn`` is used.
         
     shape_fn : CallableModule, optional
-        Geometry mask, called as ``shape_fn(lattice, Nx, Ny) -> mask``.
-        Receives the lattice and grid resolution; returns a real mask in
-        [0, 1] of shape ``[Nx, Ny]`` (or ``[N_geom, Nx, Ny]`` for batched
-        geometry). Same ``nn.Module`` requirement as ``eps_solid_fn`` — use
-        ``from_metashapes(shape, …)`` or ``CallableModule(fn, dep, …)`` to
-        make geometry parameters visible to the model. Required iff
-        ``eps_void_fn`` is given; omit for a uniform layer.
+        Geometry mask, called as ``shape_fn(lattice, nx, ny) -> mask``.
+        Receives the lattice and grid resolution (integers); returns a real
+        mask in [0, 1] of shape ``[Ny, Nx]`` (rows = y, cols = x — the
+        standard image convention, matching metashapes output) or
+        ``[N_geom, Ny, Nx]`` for batched geometry. Same ``nn.Module``
+        requirement as ``eps_solid_fn`` — use ``from_metashapes(shape, …)``
+        or ``CallableModule(fn, dep, …)`` to make geometry parameters visible
+        to the model. Required iff ``eps_void_fn`` is given; omit for a
+        uniform layer.
     """
 
     def __init__(

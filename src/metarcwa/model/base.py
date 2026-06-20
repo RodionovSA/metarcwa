@@ -7,15 +7,7 @@ import torch.nn as nn
 from .stack import Stack
 from .source import Source
 from .spec import ModelSpec
-
-# Maps a real floating dtype to its matching complex dtype.
-# Used in Model.to() so a blanket `to(float64)` never silently drops imaginary parts.
-_REAL_TO_COMPLEX = {
-    torch.float16: torch.complex32,
-    torch.float32: torch.complex64,
-    torch.float64: torch.complex128,
-}
-
+from .utils import _REAL_TO_COMPLEX  
 
 class Model(nn.Module):
     """
