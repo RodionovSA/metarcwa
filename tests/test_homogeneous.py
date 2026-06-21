@@ -139,14 +139,14 @@ class TestHomogeneousQ:
         def diag(block):
             return torch.diagonal(block, dim1=-2, dim2=-1)
 
-        # Q0 = [[ Kx*Ky ,      eps - Kx^2 ],
-        #       [ Ky^2 - eps , -Ky*Kx     ]]
+        # Q = [[ -Kx*Ky ,     Kx^2 - eps ],
+        #      [ eps - Ky^2 ,   Ky*Kx   ]]
         # Cast real expected values to Q's complex dtype before comparing.
         dt = Q.dtype
-        assert torch.allclose(diag(Q[..., :N, :N]), (kx * ky).to(dt),     atol=1e-12)
-        assert torch.allclose(diag(Q[..., :N, N:]),  eps - kx**2,          atol=1e-12)
-        assert torch.allclose(diag(Q[..., N:, :N]),  ky**2 - eps,          atol=1e-12)
-        assert torch.allclose(diag(Q[..., N:, N:]), -(ky * kx).to(dt),    atol=1e-12)
+        assert torch.allclose(diag(Q[..., :N, :N]), -(kx * ky).to(dt),    atol=1e-12)
+        assert torch.allclose(diag(Q[..., :N, N:]),  kx**2 - eps,          atol=1e-12)
+        assert torch.allclose(diag(Q[..., N:, :N]),  eps - ky**2,          atol=1e-12)
+        assert torch.allclose(diag(Q[..., N:, N:]),  (ky * kx).to(dt),    atol=1e-12)
 
     def test_each_block_is_a_diagonal_matrix(self, device):
         """Off-diagonal entries within every N×N block must be zero."""
