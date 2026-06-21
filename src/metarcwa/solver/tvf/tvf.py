@@ -2,7 +2,6 @@
 # Tangent Vector Field (TVF) solver for RCWA factorization rules.
 #
 # Interface: all arguments are plain torch.Tensor or Python types.
-# No objects from the model layer are accepted.
 # Device and dtype are inherited from input tensors via PyTorch ops.
 
 import torch
@@ -12,6 +11,7 @@ from .optimizers import make_optimizer
 from .tvf_utils import (
     _grad_periodic,
     low_pass_filter,
+    low_pass_mask,
     normalize_elementwise,
     normalize_jones,
     normalize_max_global,
@@ -49,8 +49,7 @@ class TVF:
     ``"Normal"``
         Schuster 2007 (DOI 10.1364/JOSAA.24.002880). Elementwise unit field.
     ``"Jones_direct"``
-        FMMax (DOI 10.1364/OE.503481). Jones field from the filtered gradient,
-        bypassing the spatial optimisation.
+        FMMax (DOI 10.1364/OE.503481). Jones field from the filtered gradient.
 
     Parameters
     ----------
@@ -70,8 +69,7 @@ class TVF:
         TVF method. One of ``"Jones"``, ``"Pol"``, ``"Normal"``,
         ``"Jones_direct"``.
     optimizer : str
-        Optimizer name (case-insensitive). Only ``"lbfgs"`` is currently
-        supported. Default ``"LBFGS"``.
+        Optimizer name (case-insensitive). Default ``"lbfgs"``.
     """
 
     METHODS = ("Jones", "Pol", "Normal", "Jones_direct")
@@ -83,7 +81,7 @@ class TVF:
         M: int,
         N: int,
         method: str,
-        optimizer: str = "LBFGS",
+        optimizer: str = "newton",
     ):
         if method not in self.METHODS:
             raise ValueError(
@@ -141,7 +139,7 @@ class TVF:
         # Step 6: Initial field, with optional Jones conversion for direct method
         if self.method == "Jones_direct":
             target_field = normalize_jones(target_field)
-            # Use the full complex Jones field as the initial guess (FMMax parity)
+            # Use the full complex Jones field as the initial guess 
             initial_field = target_field                                  # [B, Ny, Nx, 2] complex
         else:
             initial_field = torch.stack((grady_n, -gradx_n), dim=-1)   # [B, Ny, Nx, 2]
@@ -164,16 +162,16 @@ class TVF:
         self,
         field: torch.Tensor,
         alpha: float = 1.0,
-        beta: float = 1e-8,
-        gamma: float = 1.0,
+        beta: float = 0.05,
+        gamma: float = 0.05,
         steps: int = 1,
     ) -> torch.Tensor:
         """
         Optimize the TVF from a real scalar permittivity field.
 
-        Optimization is performed in the centred Fourier domain on the
-        geometry derived from ``Re(field)``. The returned TVF is
-        **detached** from the input field's computation graph.
+        Optimization is performed **exclusively over the in-band Fourier
+        coefficients** (the ``(2M+1)×(2N+1)`` harmonics kept by the
+        simulation), enforcing a hard band limit.
 
         Parameters
         ----------
@@ -181,39 +179,70 @@ class TVF:
             Input permittivity field (complex accepted; imaginary part is
             discarded). Shape ``[B, Ny, Nx]``.
         alpha : float
-            Alignment loss weight. Default 1.0.
+            Alignment loss weight.  Default: 1.0.
         beta : float
-            Fourier regularization weight. Default 1e-8.
+            Fourier regularization weight.  Default: 0.05.  Both ``beta`` and
+            ``gamma`` weight the same physical quantity (Dirichlet energy
+            ``∫‖∇f‖²dA``) and are therefore on the same scale; typical values
+            are in the range 0.01–0.1.  The weights are **not** divided by the
+            number of harmonics, so they remain meaningful as ``M`` and ``N``
+            change.
         gamma : float
-            Smoothness loss weight. Default 1.0.
+            Smoothness loss weight.  Default: 0.05.  See ``beta``.
         steps : int
-            Number of L-BFGS optimizer steps. Default 1.
+            Number of optimizer steps (1 = exact for Newton on a quadratic loss).
 
         Returns
         -------
         optimized_field : torch.Tensor
             TVF in spatial domain, shape ``[B, Ny, Nx, 2]``, **complex**.
-            Real-output methods (``Pol``, ``Normal``, ``Jones``) will find the
-            imaginary part negligible; ``compute()`` takes ``.real`` for them.
         """
         if field.ndim != 3:
             raise ValueError("field must be 3-D with shape [B, Ny, Nx].")
 
         # Work on real part; detach from the model graph
         field_real = torch.real(field).detach()
+        B, D0, D1 = field_real.shape
 
         # Derive target, initial Fourier field, and loss weights
         target_field, initial_field_fft, weights = self._prepare_field(field_real)
+        # initial_field_fft: [B, D0, D1, 2] complex, centred
 
-        # Build optimization variable: real/imag split of the centred 2-comp FFT
-        # Shape: [B, Ny, Nx, 2, 2], last dim = (real, imag)
+        # ── Hard band-limit: gather only in-band coefficients ──────────────────
+        # mask shape [D0, D1]; True for the (2M+1)(2N+1) kept harmonics
+        mask = low_pass_mask(D0, D1, self.M, self.N, device=field_real.device)  # [D0, D1]
+        # flat indices of in-band positions
+        in_band_idx = mask.flatten().nonzero(as_tuple=True)[0]  # [num_terms]
+
+        # Extract in-band complex coefficients: [B, num_terms, 2]
+        fft_flat = initial_field_fft.reshape(B, D0 * D1, 2)       # [B, D0*D1, 2]
+        init_inband = fft_flat[:, in_band_idx, :]                   # [B, num_terms, 2] complex
+
+        # Optimization variable: real/imag of in-band coeffs
+        # Shape: [B, num_terms, 2, 2], last dim = (real, imag)
         params = torch.stack(
-            [initial_field_fft.real, initial_field_fft.imag], dim=-1
-        ).detach().requires_grad_(True)
+            [init_inband.real, init_inband.imag], dim=-1
+        ).detach().requires_grad_(True)                             # [B, num_terms, 2, 2]
 
         def loss_fn(p: torch.Tensor) -> torch.Tensor:
+            # Reconstruct complex in-band field: [B, num_terms, 2]
+            inband_complex = p[..., 0] + 1j * p[..., 1]
+
+            # Scatter back into full [B, D0*D1, 2] grid (zeros outside band)
+            full_fft_flat = torch.zeros(B, D0 * D1, 2,
+                                        dtype=inband_complex.dtype,
+                                        device=p.device)
+            full_fft_flat[:, in_band_idx, :] = inband_complex
+
+            field_fft = full_fft_flat.reshape(B, D0, D1, 2)       # centred [B,D0,D1,2]
+
+            # Unpack into the [B, D0, D1, 2, 2] format expected by total_loss
+            params_full = torch.stack(
+                [field_fft.real, field_fft.imag], dim=-1
+            )
+
             return total_loss(
-                p,
+                params_full,
                 target_field,
                 weights=weights,
                 a1=self.a1,
@@ -226,23 +255,27 @@ class TVF:
         params = self.optimizer.minimize(params, loss_fn, steps=steps)
         params = params.detach()
 
-        # Reconstruct centred complex FFT of the 2-component field
-        field_fft = params[..., 0] + 1j * params[..., 1]               # [B, Ny, Nx, 2]
+        # Scatter optimized in-band coeffs back to full grid
+        inband_opt = params[..., 0] + 1j * params[..., 1]          # [B, num_terms, 2]
+        full_fft_flat = torch.zeros(B, D0 * D1, 2,
+                                    dtype=inband_opt.dtype,
+                                    device=params.device)
+        full_fft_flat[:, in_band_idx, :] = inband_opt
+        field_fft = full_fft_flat.reshape(B, D0, D1, 2)            # [B, D0, D1, 2] centred
 
-        # Inverse FFT back to spatial domain; keep complex so Jones_direct
-        # retains its phase. Real-output methods have negligible imaginary parts.
+        # Inverse FFT back to spatial domain
         optimized_field = torch.fft.ifft2(
             torch.fft.ifftshift(field_fft, dim=(-3, -2)), dim=(-3, -2)
-        )                                                                # [B, Ny, Nx, 2] complex
+        )                                                            # [B, D0, D1, 2] complex
 
         return optimized_field
 
     def compute(
         self,
         field: torch.Tensor,
-        alpha: float = 1.0,
-        beta: float = 1e-8,
-        gamma: float = 1.0,
+        alpha: float | None = None,
+        beta: float | None = None,
+        gamma: float | None = None,
         steps: int = 1,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -256,14 +289,17 @@ class TVF:
         field : torch.Tensor
             Permittivity field (complex; imaginary part is discarded for
             geometry extraction). Shape ``[B, Ny, Nx]``.
-        alpha : float
-            Alignment loss weight. Default 1.0.
-        beta : float
-            Fourier regularization weight. Default 1e-8.
-        gamma : float
-            Smoothness loss weight. Default 1.0.
+        alpha : float or None
+            Alignment loss weight.  ``None`` → 1.0.
+        beta : float or None
+            Fourier regularization weight.  ``None`` → 0.05.  Both ``beta`` and
+            ``gamma`` weight the physical Dirichlet energy ``∫‖∇f‖²dA`` and
+            are on the same scale; typical values are 0.01–0.1.
+        gamma : float or None
+            Smoothness loss weight.  ``None`` → 0.05.  See ``beta``.
         steps : int
-            Optimizer steps. Default 1.
+            Optimizer steps.  Default 1 (exact for the Newton solve on a
+            quadratic loss).
 
         Returns
         -------
@@ -274,6 +310,9 @@ class TVF:
         Ty : torch.Tensor
             y-component of TVF. Shape ``[B, Ny, Nx]``. Same dtype as ``Tx``.
         """
+        alpha = 1.0 if alpha is None else alpha
+        beta  = 0.05 if beta is None else beta
+        gamma = 0.05 if gamma is None else gamma
         optimized = self._optimize(field, alpha, beta, gamma, steps)    # [B, Ny, Nx, 2] complex
 
         if self.method == "Jones":
@@ -288,7 +327,7 @@ class TVF:
 
         elif self.method == "Jones_direct":
             # The optimized field is already complex (Jones initial + target);
-            # normalize to max magnitude 1 (FMMax parity).
+            # normalize to max magnitude 1.
             optimized = normalize_max_global(optimized)                  # [B, Ny, Nx, 2] complex
 
         return optimized[..., 0], optimized[..., 1]

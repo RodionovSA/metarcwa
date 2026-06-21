@@ -63,8 +63,7 @@ b1 = factor * torch.stack([ a2y, -a2x])
 b2 = factor * torch.stack([-a1y,  a1x])
 ```
 
-This convention is shared across the whole solver (`harmonics.py`,
-`convolution.py`) so that TVF output can feed directly into the Fourier
+This convention is shared across the whole solver so that TVF output can feed directly into the Fourier
 convolution stage.
 
 ---
@@ -82,8 +81,10 @@ TVF.compute(eps)
        │    ├─ rotate −90° → tangent-to-boundary target field
        │    ├─ [Jones_direct] convert to Jones field
        │    └─ fftshift(fft2(...)) → initial Fourier coefficients + boundary weights
-       ├─ optimize params = [Re F̂, Im F̂] under total_loss (L-BFGS)
-       └─ ifft2(ifftshift(optimized params))   → spatial field
+       ├─ gather in-band coeffs → params [B, num_terms, 2, 2]  (hard band limit)
+       ├─ optimize params = [Re F̂, Im F̂] under total_loss (exact Newton)
+       ├─ scatter back → full [B,D0,D1,2] FFT grid
+       └─ ifft2(ifftshift(...))   → spatial field
   └─ method-specific final normalization → Tx [B,D0,D1], Ty [B,D0,D1]
 ```
 
@@ -92,9 +93,12 @@ permittivity (which points perpendicular to material boundaries), band-limit it
 to the Fourier harmonics actually retained in the simulation, then rotate it
 90° to obtain a first guess for the tangential direction. An optimization step
 then smooths this field — finding the nearest smooth, periodic, band-limited
-vector field that still aligns with the boundaries. The result is detached from
-the autograd graph; TVF is treated as a precomputed geometry quantity, not
-differentiated through during training.
+vector field that still aligns with the boundaries. The optimization variable
+is **only the `(2M+1)(2N+1)` in-band coefficients** (a hard constraint enforced
+by gather/scatter around the optimizer), so out-of-band harmonics are
+structurally zero throughout. The result is detached from the autograd graph;
+TVF is treated as a precomputed geometry quantity, not differentiated through
+during training.
 
 ---
 
@@ -127,6 +131,31 @@ difference denominator, because the fractional step size is `Δfᵢ = 1/Dᵢ`.
 gradient is consistent with the periodicity of the lattice for any Bravais
 geometry, including oblique and hexagonal cells.
 
+### Forward-difference gradient for the smoothness loss
+
+The **smoothness loss** measures how quickly the TVF varies spatially. It is
+computed via `_grad_forward_periodic(s, a1, a2)`, which uses *forward*
+differences instead of central differences:
+
+```python
+ds_df2 = D0 * (torch.roll(s, shifts=-1, dims=-2) - s)   # forward along a2
+ds_df1 = D1 * (torch.roll(s, shifts=-1, dims=-1) - s)   # forward along a1
+gradx = (ds_df1 * b1[0] + ds_df2 * b2[0]) / two_pi
+grady = (ds_df1 * b1[1] + ds_df2 * b2[1]) / two_pi
+```
+
+**Why forward, not central?** Central differences `0.5(f[+1]−f[−1])` have a
+null space at the Nyquist / checkerboard frequency: any perfectly alternating
+`+1, −1, +1, −1, …` pattern produces *zero* derivative at every point, making
+the smoothness loss completely blind to grid-scale noise. Forward differences
+`f[+1]−f` do not have this null space (the checkerboard gives a constant
+`−2` everywhere), so they correctly penalise all frequencies up to Nyquist.
+
+Note that the **array gradient** (used to detect material boundaries and build
+the target field) is still computed with `_grad_periodic` (central differences),
+which is more accurate for that role. Only the smoothness penalty inside the
+loss switches to forward differences.
+
 ### Fourier low-pass filtering
 
 Before anything else, the gradient is band-limited to the `(2M+1) × (2N+1)`
@@ -154,6 +183,14 @@ filteredx  = torch.fft.ifft2(torch.fft.ifftshift(gradx_fft * mask, ...), ...).re
 
 The `.real` at the end discards the round-off imaginary part — the input
 gradient is real, so the output should be too.
+
+The band limit is enforced **twice**: once on the initial gradient (above), and
+once as a **hard structural constraint** on the optimization variable itself.
+In `_optimize`, the centred FFT coefficients are *gathered* to just the
+`num_terms = (2M+1)(2N+1)` in-band positions before being handed to the
+optimizer, and *scattered* back into the full `D0×D1` grid (with zeros outside
+the band) before every loss evaluation. This means the optimizer cannot
+accidentally push energy into out-of-band harmonics.
 
 ### Magnitudes and normalizations
 
@@ -223,11 +260,11 @@ receive the isotropic fallback orientation `(1/√2, 1/√2)`.
 
 Rather than using the raw band-limited gradient as the TVF directly, the
 implementation optimizes a smooth version of it. The optimization variable is
-the **centred Fourier representation** of the vector field — specifically the
-real and imaginary parts of the 2-component Fourier coefficient array, stacked
-into a real leaf tensor of shape `[B, D0, D1, 2, 2]`. Working in Fourier space
-means the band limit is enforced implicitly: any optimizer step stays within
-the `(2M+1)(2N+1)` active harmonics.
+the **in-band Fourier coefficients** — specifically the real and imaginary parts
+of the `(2M+1)(2N+1)` active harmonics of the 2-component field, gathered into
+a real leaf tensor of shape `[B, num_terms, 2, 2]`. The band limit is a **hard
+structural constraint**: the optimizer never sees or touches out-of-band
+harmonics (they are kept at zero by the gather/scatter wrapper).
 
 The total loss is:
 
@@ -235,7 +272,11 @@ The total loss is:
 L = α · L_align  +  β · L_fourier  +  γ · L_smooth
 ```
 
-with default weights `α = 1.0`, `β = 1e-8`, `γ = 1.0`.
+All three weights can be overridden per-call; pass `None` to use the defaults
+(`alpha = 1.0`, `beta = gamma = 0.05`).  Because both `L_fourier` and
+`L_smooth` measure the same physical Dirichlet energy `∫‖∇f‖²dA`, **β and γ sit
+on the same scale** (O(0.01–0.1)); they are independent of the lattice period
+and the Fourier truncation order (M, N).
 
 **Alignment loss** pulls the field toward the target tangent direction,
 weighted by boundary strength (gradient magnitude):
@@ -245,30 +286,60 @@ L_align = mean_xy( w(r) · ‖T(r) − T_target(r)‖² )
 ```
 
 where `w(r) = |∇ε(r)|` is large at sharp boundaries and zero in flat regions.
-Computed in real space after an inverse FFT of the current params.
+Computed in real space after an inverse FFT of the current in-band params.
 
 **Fourier regularization loss** penalizes high-frequency content by weighting
-each Fourier coefficient by the squared magnitude of the corresponding
-reciprocal vector:
+each physical Fourier expansion coefficient by the squared magnitude of the
+corresponding reciprocal vector:
 
 ```
-L_fourier = (area) · mean_{m,n}( |G_{mn}|² · ‖F̂_{mn}‖² ),   G = m·b₁ + n·b₂
+L_fourier = area · sum_{m,n}( |G_{mn}|² · |c_{mn}|² ),   G = m·b₁ + n·b₂
 ```
 
-Computed directly on the Fourier coefficients (no IFFT needed). The unit-cell
-area `|det[a₁|a₂]|` makes the weight dimensionally consistent across different
-lattice sizes.
+where `c_{mn} = F̂_{mn} / (D0·D1)` is the **physical** Fourier expansion
+coefficient (O(1) for an O(1) spatial field). The raw `torch.fft.fft2` output
+`F̂_{mn}` is O(D²) because `torch.fft.fft2` is unnormalized; `fourier_regularization_loss`
+divides internally by `D0·D1` before squaring to recover the physical
+coefficients. 
 
-**Smoothness loss** is the mean squared spatial gradient of the field,
-computed in real space via `_grad_periodic` applied to each component:
+> **Why this matters**: without the `/D0·D1` normalization, the Fourier penalty
+> is `(D0·D1)²` ≈ 2.7×10¹⁰ times too large for a 128×128 grid, completely
+> overwhelming the alignment term and causing the Newton solver to collapse all
+> spatial structure to a DC-only (constant) field.
+
+The unit-cell area `|det[a₁|a₂]|` makes the weight dimensionally consistent
+across different lattice sizes. Note the **sum** (not mean) over harmonics —
+both `L_fourier` and `L_smooth` are integrals over the cell, so they remain on
+the same absolute scale regardless of the number of harmonics retained.
+
+**Smoothness loss** is the Dirichlet energy of the field, computed in real
+space via `_grad_forward_periodic` (forward differences) applied to each
+component:
 
 ```
-L_smooth = mean_xy( ‖∇Tₓ‖² + ‖∇T_y‖² )
+L_smooth = area · mean_xy( ‖∇Tₓ‖² + ‖∇T_y‖² )  =  ∫‖∇T‖² dA
 ```
+
+where `area = |det[a₁|a₂]|`.  Multiplying the per-pixel mean squared gradient
+by the cell area converts it to the physical Dirichlet integral ∫‖∇T‖²dA,
+making the result dimensionless and scale-invariant (independent of the lattice
+size `P`).
+
+This is the real-space twin of `L_fourier`: both measure the same Dirichlet
+energy ∫‖∇f‖²dA — one via spectral `|G|²` weighting, one via forward
+differences on the grid.  The forward-difference form additionally penalises
+grid-scale (Nyquist) noise that the spectral form cannot reach, which is why
+both regularizers coexist.  With the area factor in place, γ and β sit on the
+**same scale** (both O(0.01–0.1)) regardless of the lattice period or the
+truncation order (M, N).
+
+Forward differences are required — see the "Forward-difference gradient"
+section above for why central differences would be incorrect.
 
 These three terms work together: alignment keeps the field pointing the right
-way, smoothness pushes it to vary slowly, and Fourier regularization provides
-an additional high-frequency damper directly in spectral space.
+way, smoothness pushes it to vary slowly (including at Nyquist scale), and
+Fourier regularization provides an additional high-frequency damper in spectral
+space.
 
 In `total_loss`, the reconstruction from params to spatial field and back is:
 
@@ -284,19 +355,19 @@ loss = alpha * alignment_loss(field_spatial, target, weights)
 
 ## The Four Methods
 
-| Method | Literature | Final normalization | Output dtype |
-|--------|------------|---------------------|--------------|
-| `Jones` | Antos 2009 | `normalize_jones` on `.real` of optimized field | complex |
-| `Pol` | S4 / Liu & Fan 2012 | `normalize_max_global` on `.real` | real |
-| `Normal` | Schuster 2007 | `normalize_elementwise` on `.real` | real |
-| `Jones_direct` | FMMax / Schubert 2023 | `normalize_max_global` (complex, no `.real`) | complex |
+| Method | Literature | Default β, γ | Final normalization | Output dtype |
+|--------|------------|--------------|---------------------|--------------|
+| `Jones` | Antos 2009 | 0.05, 0.05 | `normalize_jones` on `.real` of optimized field | complex |
+| `Pol` | S4 / Liu & Fan 2012 | 0.05, 0.05 | `normalize_max_global` on `.real` | real |
+| `Normal` | Schuster 2007 | 0.05, 0.05 | `normalize_elementwise` on `.real` | real |
+| `Jones_direct` | FMMax / Schubert 2023 | 0.05, 0.05 | `normalize_max_global` (complex, no `.real`) | complex |
 
-`Jones_direct` is different in one more way: in `_prepare_field` the target
-itself is immediately converted to a Jones field via `normalize_jones`, and the
-initial Fourier coefficients are set equal to that target. This means the
-optimization (if run) starts at the answer, and running with `steps=1` is
-effectively just refining the FMMax-style field through the band-limited
-objective.
+`Jones_direct` is unique in its target construction: in `_prepare_field`
+the target itself is immediately converted to a Jones field via `normalize_jones`,
+and the initial Fourier coefficients are set equal to that target. Because the
+loss is exactly quadratic and the Newton solve is exact, the optimizer finds
+the unique in-band-limited Jones field closest (in the weighted sense) to this
+target in a single step.
 
 For all other methods the initial guess is the raw (non-elementwise-normalized)
 perpendicular-gradient field — a geometrically meaningful but potentially rough
@@ -306,30 +377,56 @@ starting point that the optimizer then smooths.
 
 ## Optimizer
 
-The optimizer is `TorchLBFGS`, a thin wrapper around `torch.optim.LBFGS`.
-L-BFGS is the natural choice for this problem: the loss is smooth and the
-number of optimization variables (`(2M+1)(2N+1) × 2 × 2` real numbers) is
-moderate, so quasi-Newton convergence is fast and reliable without the
-per-iteration cost of a full Hessian.
+The default optimizer is `NewtonExact`. The TVF total loss is a **real
+quadratic function** of the in-band Fourier coefficients (all three loss terms
+are sums/means of squared linear functions of the coefficients), which means a
+**single Newton step gives the exact global minimum**:
 
-The closure sums the per-batch loss to a scalar so all elements in a batch
-optimize simultaneously in a single run:
-
-```python
-def closure():
-    opt.zero_grad()
-    loss = loss_fn(params).sum()  # sum over batch
-    loss.backward()
-    return loss
-
-for _ in range(steps):
-    opt.step(closure)
+```
+x ← x − H⁻¹ g,   where g = ∇L,  H = ∇²L  (constant for a quadratic)
 ```
 
-One optimizer instance is created and reused across all `steps`, so the
-curvature history (the L-BFGS Hessian approximation) accumulates across
-steps. With the default `steps=1` and `max_iter=20`, a single `opt.step` runs
-up to 20 internal L-BFGS iterations before returning.
+Two structural properties of the loss are exploited to make this fully
+vectorized:
+
+1. **Quadratic in params** — IFFT, gather/scatter, and all three loss terms are
+   composed of linear and squared-linear operations in `params`. The Hessian is
+   therefore constant everywhere; one step lands exactly at the minimum.
+
+2. **Decoupled across the batch** — `L[b]` depends only on `params[b]`, so the
+   full batch gradient `∇ L.sum()` equals the stack of per-sample gradients, and
+   the Hessian is block-diagonal with one `[flat, flat]` block per batch element.
+
+The implementation uses `torch.func` functional transforms:
+
+```python
+grad_fn = torch.func.grad(lambda p: loss_fn(p).sum())
+
+# 1. All per-sample gradients in one backward pass
+g = grad_fn(x)                                  # [B, *shape_per]
+
+# 2. Hessian columns: vmap over flat basis vectors, one JVP each
+def hvp_col(v):
+    v_batch = v.unsqueeze(0).expand(B, *shape_per)
+    return torch.func.jvp(grad_fn, (x,), (v_batch,))[1]
+
+basis = torch.eye(flat).reshape(flat, *shape_per)
+cols  = torch.func.vmap(hvp_col)(basis)         # [flat, B, *shape_per]
+H     = cols.reshape(flat, B, flat).permute(1, 2, 0)   # [B, flat, flat]
+
+# 3. One batched solve for all batch elements
+delta = torch.linalg.solve(H + ε·I, g.reshape(B, flat))
+```
+
+A small diagonal shift `ε = 1e-12` regularizes the Hessian for numerical
+safety; in practice H is well-conditioned for typical permittivity patterns.
+
+With the default `steps=1` the solver runs a single Newton update, which is the
+exact solution. Running `steps=2` produces negligibly different output.
+
+The `TorchLBFGS` optimizer (wrapping `torch.optim.LBFGS`) is also available via
+`optimizer="lbfgs"`. The Newton solve is preferred because it is both exact and
+faster for this loss structure.
 
 ---
 
@@ -337,17 +434,22 @@ up to 20 internal L-BFGS iterations before returning.
 
 | Parameter | Value | Location |
 |-----------|-------|----------|
-| Loss weight α (alignment) | `1.0` | `TVF._optimize`, `TVF.compute` |
-| Loss weight β (Fourier reg) | `1e-8` | `TVF._optimize`, `TVF.compute` |
-| Loss weight γ (smoothness) | `1.0` | `TVF._optimize`, `TVF.compute` |
-| Optimization steps | `1` | `TVF._optimize`, `TVF.compute` |
-| L-BFGS learning rate | `1.0` | `TorchLBFGS.__init__` |
-| L-BFGS max iterations | `20` | `TorchLBFGS.__init__` |
-| L-BFGS tolerance (grad) | `1e-8` | `TorchLBFGS.__init__` |
-| L-BFGS tolerance (change) | `1e-8` | `TorchLBFGS.__init__` |
-| L-BFGS line search | `None` | `TorchLBFGS.__init__` |
-| Central-difference factor | `0.5` | `_grad_periodic` |
-| Reciprocal-vector normalization | `2π` | `_grad_periodic`, `fourier_regularization_loss` |
+| Default optimizer | `NewtonExact` | `TVF.__init__` |
+| Optimization variable | in-band coeffs only, shape `[B, num_terms, 2, 2]` | `TVF._optimize` |
+| Band limit enforcement | hard (gather/scatter via `low_pass_mask`) | `TVF._optimize` |
+| Newton diagonal regularization | `1e-12` | `NewtonExact.__init__` |
+| Optimization steps | `1` (exact for quadratic loss) | `TVF.compute` |
+| Loss weight α (alignment) | `1.0` | `TVF.compute` |
+| Loss weight β (Fourier reg) | `0.05` (all methods) | `TVF.compute` |
+| Loss weight γ (smoothness) | `0.05` (all methods) | `TVF.compute` |
+| β, γ scale-invariance | both weight `∫‖∇f‖²dA`; independent of P, M, N | `fourier_regularization_loss`, `smoothness_loss` |
+| Fourier loss reduction | `sum` over harmonics | `fourier_regularization_loss` |
+| FFT coefficient normalization | ÷ `D0·D1` inside `fourier_regularization_loss` (converts unnormalized `fft2` output to physical Fourier expansion coefficients) | `fourier_regularization_loss` |
+| Smoothness gradient | **forward** difference (`_grad_forward_periodic`) | `smoothness_loss` |
+| Array / target gradient | central difference (`_grad_periodic`) | `_prepare_field` |
+| Central-difference factor | `0.5 · Dᵢ` | `_grad_periodic` |
+| Forward-difference factor | `Dᵢ` | `_grad_forward_periodic` |
+| Reciprocal-vector normalization | `2π` | `_grad_periodic`, `_grad_forward_periodic`, `fourier_regularization_loss` |
 | DC centering (fftshift) | integer `// 2` | `low_pass_mask`, `fourier_regularization_loss` |
 | Jones zero fallback | `(1/√2, 1/√2)` | `normalize_jones` |
 | Jones phase parameter | `φ = (π/8)(1 + cos(π·‖t‖))` | `normalize_jones` |
@@ -372,7 +474,7 @@ a2 = torch.tensor([0.0, 1.0])
 # Fourier truncation orders: keep |m| <= M (a1), |n| <= N (a2)
 M, N = 5, 5
 
-tvf = TVF(a1, a2, M, N, method="Jones")  # or "Pol", "Normal", "Jones_direct"
+tvf = TVF(a1, a2, M, N, method="Jones_direct")  # or "Jones", "Pol", "Normal"
 
 # eps: real or complex permittivity, shape [B, D0, D1]
 eps = torch.rand(2, 64, 64)
@@ -383,10 +485,25 @@ Tx, Ty = tvf.compute(eps)
 # detached from the autograd graph
 ```
 
-The optimizer can be chosen at construction time (currently only `"LBFGS"` is
-supported). Loss weights and the number of optimizer outer steps can be
-overridden per-call:
+The default optimizer is `"newton"` (exact Newton solve). To use L-BFGS instead,
+pass `optimizer="lbfgs"` at construction time:
 
 ```python
-Tx, Ty = tvf.compute(eps, alpha=1.0, beta=1e-8, gamma=1.0, steps=3)
+tvf_lbfgs = TVF(a1, a2, M, N, method="Jones_direct", optimizer="lbfgs")
+```
+
+Loss weights default to `alpha=1.0`, `beta=gamma=0.05`.  Both `beta` and
+`gamma` weight the Dirichlet energy `∫‖∇f‖²dA` and sit on the same scale
+(O(0.01–0.1)); they do not depend on the period P, grid size D, or truncation
+(M, N).  Pass explicit values to override; `None` restores the defaults:
+
+```python
+# Use defaults (recommended):
+Tx, Ty = tvf.compute(eps)
+
+# Override specific weights or number of steps:
+Tx, Ty = tvf.compute(eps, beta=0.02, gamma=0.1, steps=2)
+
+# Override all:
+Tx, Ty = tvf.compute(eps, alpha=1.0, beta=0.05, gamma=0.05, steps=1)
 ```

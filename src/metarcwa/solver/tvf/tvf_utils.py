@@ -28,6 +28,49 @@ from metarcwa.solver.harmonics import reciprocal_lattice_vectors
 # Gradient computation for 2-D scalar fields
 # ---------------------------------------------------------------------------
 
+def _grad_forward_periodic(s: torch.Tensor,
+                           a1: torch.Tensor,
+                           a2: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Cartesian gradient of a 2-D scalar field using **forward** differences.
+
+    Unlike ``_grad_periodic`` (central differences), forward differences have no
+    null-space at the Nyquist / checkerboard frequency, so the smoothness loss
+    built on this function penalises all grid-scale noise.  
+
+    Formula::
+
+        ds_df2 = D0 * (roll(s, -1, axis=-2) - s)   # forward along a2
+        ds_df1 = D1 * (roll(s, -1, axis=-1) - s)   # forward along a1
+        ∇s = (ds_df1·b1 + ds_df2·b2) / (2π)
+
+    Parameters
+    ----------
+    s : torch.Tensor
+        Input scalar field, shape ``[B, D0, D1]``.
+    a1, a2 : torch.Tensor
+        Lattice vectors, shape ``[2]``.
+
+    Returns
+    -------
+    gradx, grady : torch.Tensor
+        Cartesian x- and y-components, shape ``[B, D0, D1]``.
+    """
+    D0 = s.shape[-2]
+    D1 = s.shape[-1]
+
+    b1, b2 = reciprocal_lattice_vectors(a1, a2)
+
+    ds_df2 = D0 * (torch.roll(s, shifts=-1, dims=-2) - s)
+    ds_df1 = D1 * (torch.roll(s, shifts=-1, dims=-1) - s)
+
+    two_pi = 2.0 * torch.pi
+    gradx = (ds_df1 * b1[0] + ds_df2 * b2[0]) / two_pi
+    grady = (ds_df1 * b1[1] + ds_df2 * b2[1]) / two_pi
+
+    return gradx, grady
+
+
 def _grad_periodic(s: torch.Tensor,
                    a1: torch.Tensor,
                    a2: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -288,11 +331,19 @@ def fourier_regularization_loss(field_fft: torch.Tensor,
     """
     Fourier-domain smoothness penalty: penalises high-frequency content.
 
-    ``loss = mean(|G|² * ||F̂(field)||²)``
+    ``loss = area · sum_{m,n}( |G_{mn}|² · |c_{mn}|² )``
 
-    where ``G = m·b1 + n·b2`` is the Cartesian reciprocal-lattice vector
-    for harmonic order ``(m, n)`` (m along a1, n along a2), and the cell
-    area ``|det[a1|a2]|`` provides the correct dimensional weight.
+    where ``G = m·b1 + n·b2`` is the Cartesian reciprocal-lattice vector,
+    ``c_{mn} = F̂_{mn} / (D0·D1)`` are the **physical** Fourier expansion
+    coefficients (O(1) for an O(1) spatial field), and the cell area
+    ``|det[a1|a2]|`` provides the correct dimensional weight.
+
+    **Normalization note**: ``field_fft`` is the raw (unnormalized)
+    ``torch.fft.fft2`` output, whose values are O(D²) for an O(1) spatial
+    field.  This function divides by ``D0·D1`` internally to recover the
+    physical Fourier coefficients before squaring.
+    Omitting this factor causes the Fourier penalty to dominate alignment
+    by ``(D0·D1)²``.
 
     The input must be the **centred** FFT of the 2-component vector field
     with spatial dims at axes -3, -2 (a2 and a1 directions respectively).
@@ -300,7 +351,8 @@ def fourier_regularization_loss(field_fft: torch.Tensor,
     Parameters
     ----------
     field_fft : torch.Tensor
-        Centred Fourier coefficients of the 2-component field.
+        Centred **unnormalized** (``torch.fft.fft2`` default) Fourier
+        coefficients of the 2-component field.
         Shape ``[B, D0, D1, 2]``, complex.
         Axis -3 (size D0): a2 direction, harmonic order n.
         Axis -2 (size D1): a1 direction, harmonic order m.
@@ -332,18 +384,31 @@ def fourier_regularization_loss(field_fft: torch.Tensor,
 
     K_norm2 = area * (Gx ** 2 + Gy ** 2)                               # [D0, D1]
 
-    # Sum over Cartesian vector components; average over spatial harmonics
-    power = torch.sum(torch.abs(field_fft) ** 2, dim=-1)               # [B, D0, D1]
-    return torch.mean(K_norm2 * power, dim=(-2, -1))                    # [B]
+    # Normalize: convert from unnormalized FFT2 (O(D²)) to physical Fourier
+    # expansion coefficients c_{mn} = F̂_{mn} / (D0·D1) (O(1)).
+    norm = D0 * D1
+    power = torch.sum(torch.abs(field_fft / norm) ** 2, dim=-1)        # [B, D0, D1]
+    return torch.sum(K_norm2 * power, dim=(-2, -1))                     # [B]
 
 
 def smoothness_loss(field: torch.Tensor,
                     a1: torch.Tensor,
                     a2: torch.Tensor) -> torch.Tensor:
     """
-    Spatial smoothness penalty: mean squared gradient of a vector field.
+    Spatial smoothness penalty: Dirichlet energy of a vector field.
 
-    ``loss = mean(||∇field||²)``
+    ``loss = area · mean(||∇field||²)  =  ∫‖∇field‖² dA``
+
+    where ``area = |det[a1 | a2]|`` is the unit-cell area.  Multiplying the
+    mean squared gradient by the cell area converts the per-pixel average into
+    the physical integral over the cell, making the result dimensionless and
+    scale-invariant (independent of the lattice size).
+
+    This quantity is the real-space counterpart of ``fourier_regularization_loss``:
+    both measure the same Dirichlet energy ∫‖∇f‖²dA — one via spectral |G|²
+    weighting, one via forward-difference gradients on the grid.  The forward-
+    difference form additionally penalises grid-scale (Nyquist) noise that the
+    spectral form cannot reach, which is why both terms are kept.
 
     Parameters
     ----------
@@ -362,14 +427,18 @@ def smoothness_loss(field: torch.Tensor,
     fx = field[..., 0]    # [B, D0, D1]
     fy = field[..., 1]
 
-    gradx_fx, grady_fx = _grad_periodic(fx, a1, a2)
-    gradx_fy, grady_fy = _grad_periodic(fy, a1, a2)
+    # Forward differences: no Nyquist null-space
+    gradx_fx, grady_fx = _grad_forward_periodic(fx, a1, a2)
+    gradx_fy, grady_fy = _grad_forward_periodic(fy, a1, a2)
 
     # Use |grad|² (not grad²) so the loss is real for complex fields too.
     grad_sq = (torch.abs(gradx_fx) ** 2 + torch.abs(grady_fx) ** 2
                + torch.abs(gradx_fy) ** 2 + torch.abs(grady_fy) ** 2)  # [B, D0, D1] real
 
-    return torch.mean(grad_sq, dim=(-1, -2))                            # [B]
+    # Multiply by cell area to obtain the physical Dirichlet integral ∫‖∇f‖²dA.
+    area = (a1[0] * a2[1] - a1[1] * a2[0]).abs()
+
+    return area * torch.mean(grad_sq, dim=(-1, -2))                     # [B]
 
 
 def total_loss(params: torch.Tensor,
@@ -378,7 +447,7 @@ def total_loss(params: torch.Tensor,
                a1: torch.Tensor,
                a2: torch.Tensor,
                alpha: float = 1.0,
-               beta: float = 1e-3,
+               beta: float = 1e-8,
                gamma: float = 1.0) -> torch.Tensor:
     """
     Weighted sum of alignment, Fourier-regularization and smoothness losses.
