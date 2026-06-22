@@ -4,25 +4,28 @@
 
 Rigorous Coupled-Wave Analysis (RCWA) expresses electromagnetic fields and
 material properties as truncated Fourier series. When two such series are
-multiplied — as happens constantly when enforcing Maxwell's equations inside a
+multiplied — as occurs constantly when enforcing Maxwell's equations inside a
 patterned layer — the result is not simply the convolution of the two spectra.
 For *discontinuous* functions (step-like permittivity distributions), naive
 multiplication in Fourier space converges slowly and can give systematically
-wrong results. Li (1996) showed that the correct rule depends on whether the
-two functions being multiplied are simultaneously discontinuous at the same
-point: if they are, you must factor them together using the *inverse rule*; if
-they are not, the standard *direct rule* applies.
+wrong results. Li (1996) established that the correct factorization rule depends
+on the local continuity of the two factors: if both are simultaneously
+discontinuous at the same point, the *inverse rule* must be applied; otherwise,
+the standard *Laurent rule* applies. The full statement of these rules and their
+derivation are given in [Factorization rules](factorization.md).
 
 The practical consequence is that the field components parallel to a material
 boundary must be factorized differently from those normal to it. To apply this
-selectively, you need to know the orientation of every boundary at every point
-on the grid — which is exactly what the **Tangential Vector Field** encodes.
-A TVF is a 2-D vector field **T(r) = (Tₓ, T_y)** that is smooth, periodic,
-and everywhere tangent (parallel) to the nearest material boundary. Given T,
-the permittivity tensor can be split into a parallel part (factorized with the
-inverse rule) and a normal part (factorized with the direct rule), and the
-resulting Fourier convolution matrices converge at the expected exponential
-rate.
+selectively, the orientation of every material boundary must be encoded at every
+grid point — which is exactly what the **Tangential Vector Field** (TVF)
+encodes. A TVF is a 2-D vector field $\mathbf{T}(\mathbf{r}) = (T_x, T_y)$
+that is smooth, periodic, and everywhere tangent (parallel) to the nearest
+material boundary. Given $\mathbf{T}$, the permittivity tensor can be split
+into a tangential part (factorized with the inverse rule) and a normal part
+(factorized with the Laurent rule), yielding the correction matrices
+$[[A_{ij}]]$ that appear in the $Q$ operator (see [RCWA Core](rcwa_core.md)).
+The resulting Fourier convolution matrices converge at the expected exponential
+rate, in contrast to the power-law convergence of naive truncation.
 
 Four published methods for constructing a TVF are supported here:
 

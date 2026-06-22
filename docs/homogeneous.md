@@ -9,7 +9,7 @@ eigenvalue problem: the $z$-dependence of the coupled Fourier amplitudes is
 governed by a matrix operator $\Omega^2$, and the electromagnetic modes of the
 layer are its eigenvectors.
 
-For a **patterned** layer — one whose permittivity $\epsilon(\mathbf{r})$ varies
+For a **patterned** layer — one whose permittivity $\varepsilon(\mathbf{r})$ varies
 within the unit cell — the Fourier harmonics are mixed by $\Omega^2$, so a full
 numerical eigendecomposition is required. A **homogeneous** layer, however, has a
 spatially uniform permittivity: every harmonic propagates independently, and each
@@ -23,9 +23,7 @@ patterned-layer treatment.
 
 ## Problem formulation
 
-Substituting the Fourier expansions into Maxwell's curl equations and projecting
-onto each harmonic yields two decoupled eigenvalue problems of the same form,
-one for the electric-field amplitudes and one for the magnetic-field amplitudes:
+As derived in [RCWA Core](rcwa_core.md) and [Eigenvalue problem](eigenproblem.md), combining the coupled first-order system for the transverse field amplitudes yields two second-order equations that share the same eigenvalues:
 
 $$
 \begin{align}
@@ -34,13 +32,7 @@ $$
 \end{align}
 $$
 
-where $k_0 = \omega/c$ is the free-space wavenumber and $P$, $Q$ are
-layer-dependent matrix operators (defined in the following section). The compact
-notation $(s;\, u)$ used elsewhere is a shorthand for these two parallel
-equations: $\Omega^2 = PQ$ when acting on $s$ and $\Omega^2 = QP$ when acting
-on $u$. Both problems share the same eigenvalues. Here $s$ and $u$ are stacked
-column vectors of Fourier amplitudes for the transverse electric and magnetic
-fields, respectively:
+where $k_0 = \omega/c$ is the free-space wavenumber, $P$ and $Q$ are layer-dependent matrix operators defined below, and $s$, $u$ are the stacked column vectors of transverse Fourier amplitudes:
 
 $$
 \begin{align}
@@ -49,45 +41,7 @@ u = \begin{pmatrix} [U_x] \\ [U_y] \end{pmatrix}.
 \end{align}
 $$
 
-Each sub-vector $[F_i]$ collects the Fourier coefficients of field component
-$F_i$ ordered lexicographically over the harmonic indices $(m, n)$ from
-$(-M, -N)$ to $(M, N)$:
-
-$$
-\begin{align}
-[F_i] = \begin{pmatrix}
-F_{i,\,-M,\,-N} \\
-F_{i,\,-M,\,-N+1} \\
-\vdots \\
-F_{i,\,M,\,N}
-\end{pmatrix}.
-\end{align}
-$$
-
-The coefficients $S_{i;\,m,n}$ and $U_{i;\,m,n}$ arise from the Bloch–Fourier
-expansion of the transverse fields. Writing each component as a sum of plane
-waves modulated by the incident Bloch momentum $(k_{x,0},\, k_{y,0})$:
-
-$$
-\begin{align}
-E_i &= e^{j(k_{x,0}\,x\,+\,k_{y,0}\,y)}
-       \sum_{m,n} S_{i;\,m,n}(z,\omega)\,
-       e^{j(G_{x,m}\,x\,+\,G_{y,n}\,y)}, \\[4pt]
-H_i &= j\sqrt{\frac{\epsilon_0}{\mu_0}}\,
-       e^{j(k_{x,0}\,x\,+\,k_{y,0}\,y)}
-       \sum_{m,n} U_{i;\,m,n}(z,\omega)\,
-       e^{j(G_{x,m}\,x\,+\,G_{y,n}\,y)},
-\end{align}
-$$
-
-where $G_{x,m}$ and $G_{y,n}$ are the Cartesian projections of the
-reciprocal-lattice vector $\mathbf{G}_{m,n} = m\,\mathbf{b}_1 + n\,\mathbf{b}_2$,
-and the prefactor $j\sqrt{\epsilon_0/\mu_0}$ normalizes $U$ so that $S$ and $U$
-carry the same physical dimensions throughout the solver.
-
-Since $s$ and $u$ share the same eigenvalues, it is sufficient to solve only
-the first problem (for $s$). The magnetic-field amplitudes $u$ are then
-recovered from the first-order relation
+The full definitions of the field vectors, Fourier indices, and the Bloch–Fourier expansion are given in [RCWA Core](rcwa_core.md). Since Eqs. (1) and (2) share the same eigenvalues, it is sufficient to solve Eq. (1) for $s$ and then recover $u$ from the first-order relation:
 
 $$
 \begin{align}
@@ -115,23 +69,15 @@ $$
 \begin{align}
 Q=
 \begin{pmatrix}
--K_{x}K_{y}-\Delta[[T_xT_y^*]]&
-K_xK_x-[[\varepsilon]]-\Delta[[|T_x|^2]]\\
-[[\varepsilon]]-\Delta[[|T_y|^2]] - K_yK_y&
-K_yK_x+\Delta[[T_x^*T_y]]
+-K_xK_y - \Delta[[T_xT_y^*]] &
+K_x^2 - [[\varepsilon]] + \Delta[[|T_x|^2]]\\
+[[\varepsilon]] - K_y^2 - \Delta[[|T_y|^2]] &
+K_yK_x + \Delta[[T_x^*T_y]]
 \end{pmatrix},
 \end{align}
 $$
 
-where $T_x, T_y$ are the tangential-vector-field components used in Li's
-factorization (see the TVF documentation), and
-$\Delta = [[\varepsilon]] - [[\frac{1}{\varepsilon}]]^{-1}$
-is the difference between the direct and inverse permittivity convolution
-matrices. For a homogeneous layer $[[\varepsilon]] = \varepsilon I$ and
-$[[\frac{1}{\varepsilon}]]^{-1} = \varepsilon I$, so $\Delta = 0$ — every
-$\Delta$-weighted Li correction vanishes. Combined with
-$[[\varepsilon]]^{-1} = \frac{1}{\varepsilon} I$, every block reduces to a
-diagonal matrix (since $K_x$ and $K_y$ are diagonal), giving
+where $T_x$, $T_y$ are the tangential-vector-field (TVF) components (see [Factorization rules](factorization.md) and [TVF](tvf.md)), and $\Delta = [[\varepsilon]] - [[\varepsilon^{-1}]]^{-1}$ is the difference between the direct and inverse permittivity convolution matrices. For a homogeneous layer $[[\varepsilon]] = \varepsilon I$ and $[[\varepsilon^{-1}]]^{-1} = \varepsilon I$, so $\Delta = 0$ and every TVF correction term vanishes. Combined with $[[\varepsilon]]^{-1} = \varepsilon^{-1} I$, every block reduces to a diagonal matrix (since $K_x$ and $K_y$ are diagonal), giving
 
 $$
 \begin{align}
