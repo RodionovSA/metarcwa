@@ -49,6 +49,7 @@ This is cheap when d is DIAG or SCALAR (d⁻¹ is elementwise).
 
 from __future__ import annotations
 import torch
+from typing import Tuple
 
 class Block:
     """A 2D operator in one of three representations, dispatched internally.
@@ -83,6 +84,10 @@ class Block:
     @property
     def n(self) -> int | None:
         return None if self.kind == Block.SCALAR else self.data.shape[-1]
+    
+    @property
+    def shape(self) -> torch.Size:
+        return self.data.shape
 
     def _check_n(self, o: "Block"):
         if self.kind == Block.SCALAR or o.kind == Block.SCALAR:
@@ -200,7 +205,13 @@ class Block2x2:
             Si,            -(Si @ bdi),
             -(dic @ Si),   di + dic @ Si @ bdi,
         )
+        
+    @property
+    def shape(self) -> Tuple[torch.Size, torch.Size, torch.Size, torch.Size]:
+        return self.a.shape, self.b.shape, self.c.shape, self.d.shape
 
     @classmethod
     def identity(cls) -> "Block2x2":
         return cls(Block.eye(), Block.zeros(), Block.zeros(), Block.eye())
+    
+    

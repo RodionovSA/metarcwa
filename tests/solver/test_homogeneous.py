@@ -1,4 +1,4 @@
-# tests/test_homogeneous.py
+# tests/solver/test_homogeneous.py
 # Tests for metarcwa.solver.homogeneous: kz, Q, modes — shapes, physics,
 # device portability (CPU + CUDA), and autograd flow.
 
@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from metarcwa.solver.homogeneous import homogeneous_kz, homogeneous_Q, homogeneous_modes
+from metarcwa.solver.blockmatrix import Block, Block2x2
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -62,6 +63,10 @@ def _make_inputs(
         kx.requires_grad_(True)
         ky.requires_grad_(True)
     return eps, kx, ky
+
+
+def _block2x2_entries(m: Block2x2):
+    return (m.a, m.b, m.c, m.d)
 
 
 # ---------------------------------------------------------------------------
@@ -125,46 +130,30 @@ class TestHomogeneousKz:
 
 class TestHomogeneousQ:
 
-    def test_output_shape(self, device):
+    def test_returns_block2x2_of_diag(self, device):
+        """Q is a Block2x2; every entry is Block(DIAG, …) of shape (N_wl, Nh)."""
         eps, kx, ky = _make_inputs(device)
         Q = homogeneous_Q(eps, kx, ky)
-        assert Q.shape == (N_WL, 2 * Nh, 2 * Nh)
+        assert isinstance(Q, Block2x2)
+        for entry in _block2x2_entries(Q):
+            assert entry.kind == Block.DIAG
+            assert entry.data.shape == (N_WL, Nh)
 
     def test_block_diagonal_values(self, device):
-        """Each of the four N×N diagonal blocks holds the correct expression."""
+        """Each of the four diagonal blocks holds the correct expression."""
         eps, kx, ky = _make_inputs(device)
-        Q = homogeneous_Q(eps, kx, ky)
-        N = Nh
-
-        def diag(block):
-            return torch.diagonal(block, dim1=-2, dim2=-1)
-
-        # Q = [[ -Kx*Ky ,     Kx^2 - eps ],
-        #      [ eps - Ky^2 ,   Ky*Kx   ]]
-        # Cast real expected values to Q's complex dtype before comparing.
-        dt = Q.dtype
-        assert torch.allclose(diag(Q[..., :N, :N]), -(kx * ky).to(dt),    atol=1e-12)
-        assert torch.allclose(diag(Q[..., :N, N:]),  kx**2 - eps,          atol=1e-12)
-        assert torch.allclose(diag(Q[..., N:, :N]),  eps - ky**2,          atol=1e-12)
-        assert torch.allclose(diag(Q[..., N:, N:]),  (ky * kx).to(dt),    atol=1e-12)
-
-    def test_each_block_is_a_diagonal_matrix(self, device):
-        """Off-diagonal entries within every N×N block must be zero."""
-        eps, kx, ky = _make_inputs(device)
-        Q = homogeneous_Q(eps, kx, ky)
-        N = Nh
-        for block in (
-            Q[..., :N, :N], Q[..., :N, N:],
-            Q[..., N:, :N], Q[..., N:, N:],
-        ):
-            d   = torch.diagonal(block, dim1=-2, dim2=-1)
-            off = block - torch.diag_embed(d)
-            assert torch.allclose(off, torch.zeros_like(off), atol=1e-12)
+        Q  = homogeneous_Q(eps, kx, ky)
+        dt = Q.a.data.dtype
+        assert torch.allclose(Q.a.data, -(kx * ky).to(dt), atol=1e-12)
+        assert torch.allclose(Q.b.data,  (kx**2 - eps),    atol=1e-12)
+        assert torch.allclose(Q.c.data,  (eps - ky**2),    atol=1e-12)
+        assert torch.allclose(Q.d.data,  (ky * kx).to(dt), atol=1e-12)
 
     def test_output_device(self, device):
         eps, kx, ky = _make_inputs(device)
         Q = homogeneous_Q(eps, kx, ky)
-        assert Q.device.type == device
+        for entry in _block2x2_entries(Q):
+            assert entry.data.device.type == device
 
 
 # ---------------------------------------------------------------------------
@@ -174,33 +163,44 @@ class TestHomogeneousQ:
 class TestHomogeneousModes:
 
     def test_output_shapes(self, device):
+        """lam is [..., 2Nh]; V is Block2x2 with DIAG entries of shape [..., Nh]."""
         eps, kx, ky = _make_inputs(device)
-        lam, W, V = homogeneous_modes(eps, kx, ky)
+        lam, V = homogeneous_modes(eps, kx, ky)
         assert lam.shape == (N_WL, 2 * Nh)
-        assert   W.shape == (N_WL, 2 * Nh, 2 * Nh)
-        assert   V.shape == (N_WL, 2 * Nh, 2 * Nh)
+        assert isinstance(V, Block2x2)
+        for entry in _block2x2_entries(V):
+            assert entry.kind == Block.DIAG
+            assert entry.data.shape == (N_WL, Nh)
 
     def test_W_is_identity(self, device):
-        """Fourier harmonics are eigenmodes of a homogeneous layer: W = I."""
+        """For a homogeneous layer W = I (not returned; harmonics are eigenmodes).
+        Verified indirectly: I @ V == V must hold."""
         eps, kx, ky = _make_inputs(device)
-        _, W, _ = homogeneous_modes(eps, kx, ky)
-        eye = torch.eye(2 * Nh, dtype=W.dtype, device=device)
-        assert torch.allclose(W, eye.expand_as(W))
+        _, V = homogeneous_modes(eps, kx, ky)
+        kw  = dict(device=device, dtype=V.a.data.dtype)
+        eye = Block2x2(Block.eye(**kw), Block.zeros(**kw), Block.zeros(**kw), Block.eye(**kw))
+        res = eye @ V
+        for ref, got in zip(_block2x2_entries(V), _block2x2_entries(res)):
+            assert torch.allclose(ref.data, got.data, atol=1e-12)
 
     def test_lam_equals_1j_times_kz(self, device):
         """lam = 1j * kz by definition; must round-trip through homogeneous_kz."""
         eps, kx, ky = _make_inputs(device)
-        lam, _, _ = homogeneous_modes(eps, kx, ky)
+        lam, _ = homogeneous_modes(eps, kx, ky)
         kz = homogeneous_kz(eps, kx, ky)
         assert torch.allclose(lam, 1j * kz, atol=1e-12)
 
     def test_V_is_Q_scaled_by_inverse_lam(self, device):
-        """V[:,j] = Q0[:,j] / lam_j  (column-wise scaling)."""
+        """V = Q0 @ diag(1/lam): left Nh columns scaled by lam[:Nh], right by lam[Nh:]."""
         eps, kx, ky = _make_inputs(device)
-        lam, _, V = homogeneous_modes(eps, kx, ky)
-        Q0    = homogeneous_Q(eps, kx, ky)
-        V_ref = Q0 * (1.0 / lam).unsqueeze(-2)
-        assert torch.allclose(V, V_ref, atol=1e-10)
+        lam, V = homogeneous_modes(eps, kx, ky)
+        Q0 = homogeneous_Q(eps, kx, ky)
+        lam_l = lam[..., :Nh]
+        lam_r = lam[..., Nh:]
+        assert torch.allclose(V.a.data, Q0.a.data / lam_l, atol=1e-10)
+        assert torch.allclose(V.b.data, Q0.b.data / lam_r, atol=1e-10)
+        assert torch.allclose(V.c.data, Q0.c.data / lam_l, atol=1e-10)
+        assert torch.allclose(V.d.data, Q0.d.data / lam_r, atol=1e-10)
 
     def test_grazing_mode_emits_runtime_warning(self, device):
         """lam = 0 at kx² + ky² == eps (exact grazing) must emit RuntimeWarning."""
@@ -219,9 +219,10 @@ class TestHomogeneousModes:
 
     def test_outputs_on_correct_device(self, device):
         eps, kx, ky = _make_inputs(device)
-        lam, W, V = homogeneous_modes(eps, kx, ky)
-        for tensor, name in ((lam, "lam"), (W, "W"), (V, "V")):
-            assert tensor.device.type == device, f"{name} ended up on wrong device"
+        lam, V = homogeneous_modes(eps, kx, ky)
+        assert lam.device.type == device
+        for entry in _block2x2_entries(V):
+            assert entry.data.device.type == device
 
 
 # ---------------------------------------------------------------------------
@@ -250,18 +251,21 @@ class TestGradientFlow:
 
     def test_Q_gradients(self, device):
         eps, kx, ky = _make_inputs(device, requires_grad=True)
-        homogeneous_Q(eps, kx, ky).abs().sum().backward()
+        Q = homogeneous_Q(eps, kx, ky)
+        loss = sum(e.data.abs().sum() for e in _block2x2_entries(Q))
+        loss.backward()
         self._assert_finite_grads(eps, kx, ky)
 
     def test_modes_lam_gradients(self, device):
         eps, kx, ky = _make_inputs(device, requires_grad=True)
-        lam, _, _ = homogeneous_modes(eps, kx, ky)
+        lam, _ = homogeneous_modes(eps, kx, ky)
         (lam.abs() ** 2).sum().backward()
         self._assert_finite_grads(eps, kx, ky)
 
     def test_modes_V_gradients(self, device):
         """Gradient flows through both Q0 and the 1/lam column scaling."""
         eps, kx, ky = _make_inputs(device, requires_grad=True)
-        _, _, V = homogeneous_modes(eps, kx, ky)
-        V.abs().sum().backward()
+        _, V = homogeneous_modes(eps, kx, ky)
+        loss = sum(e.data.abs().sum() for e in _block2x2_entries(V))
+        loss.backward()
         self._assert_finite_grads(eps, kx, ky)
