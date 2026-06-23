@@ -3,10 +3,26 @@
 
 import torch
 import torch.nn as nn
+from dataclasses import dataclass
 
 from .utils import register
-from .spec import SourceSpec, PlaneWaveSpec
 
+@dataclass(frozen=True)
+class SourceSpec:
+    """Abstract base for the solver-facing illumination description.
+
+    A SourceSpec carries the *physical*, pre-expansion description of the
+    illumination. Expansion onto Fourier harmonics is the Solver's job, so
+    nothing solver-side (e.g. the harmonic count) appears here. Concrete
+    variants — PlaneWaveSpec, and beam specs in future — subclass this.
+
+    Attributes
+    ----------
+    wavelength : Tensor | nn.Parameter
+        Free-space wavelength. May be batched.
+    """
+
+    wavelength: torch.Tensor
 
 class Source(nn.Module):
     """Abstract base class for all illumination sources.
@@ -32,6 +48,38 @@ class Source(nn.Module):
             angles to an in-plane wavevector.
         """
         raise NotImplementedError
+    
+@dataclass(frozen=True)
+class PlaneWaveSpec(SourceSpec):
+    """Plane-wave illumination.
+
+    All batch axes follow the outer-product sweep convention set by
+    ``PlaneWave.spec()``: ``[N_wl, N_theta, N_phi]``, with singleton axes
+    for scalar parameters.
+
+    Attributes
+    ----------
+    wavelength : Tensor | nn.Parameter
+        Free-space wavelength, shape ``[N_wl, 1, 1]``. Retained so the
+        free-space wavenumber ``k0 = 2*pi / wavelength`` can be recovered
+        downstream (see ``kx0``/``ky0`` below).
+    kx0, ky0 : Tensor | nn.Parameter
+        In-plane wavevector components of the incident wave, **normalized by
+        the free-space wavenumber** ``k0 = 2*pi / wavelength`` — i.e.
+        dimensionless ``kx0 = n_inc * sin(theta) * cos(phi)``, *not* the
+        physical ``k0 * n_inc * sin(theta) * cos(phi)``. The whole solver
+        works in these k0-normalized units; multiply back by ``k0`` only
+        where a physical (1/length) wavevector is required (e.g. final
+        propagation phases). Already resolved using the incidence-medium
+        index. Shape ``[N_wl, N_theta, N_phi]``.
+    s, p : Tensor | nn.Parameter
+        Complex s- and p-polarization amplitudes.
+    """
+
+    kx0: torch.Tensor
+    ky0: torch.Tensor
+    s: torch.Tensor
+    p: torch.Tensor
     
 class PlaneWave(Source):
     """A monochromatic plane wave illuminating the stack.
@@ -83,25 +131,29 @@ class PlaneWave(Source):
     def p(self) -> torch.Tensor:
         return torch.complex(self.p_real, self.p_imag)
 
-    def spec(self, eps_incidence) -> SourceSpec:
+    def spec(self, n_incidence: torch.Tensor) -> SourceSpec:
         # Place each swept parameter on its own broadcast axis:
         #   axis 0 — wavelength   [N_wl, 1,     1    ]
         #   axis 1 — theta        [1,    N_theta, 1    ]
         #   axis 2 — phi          [1,    1,       N_phi]
-        # eps_incidence was evaluated at the stored wavelength, so it rides axis 0.
-        wl      = self.wavelength.reshape(-1, 1, 1)
-        th      = self.theta.reshape(1, -1, 1)
-        ph      = self.phi.reshape(1, 1, -1)
-        eps_inc = eps_incidence.reshape(-1, 1, 1)
+        # n_incidence was resolved at the stored wavelength, so it rides axis 0.
+        #
+        # kx0/ky0 are k0-NORMALIZED (dimensionless): the free-space wavenumber
+        # k0 = 2*pi/wavelength is factored out, so kx0 = n*sin(th)*cos(ph), not
+        # k0*n*sin(th)*cos(ph). The solver runs entirely in these units; k0 is
+        # reintroduced downstream from `wavelength` only where a physical
+        # wavevector is needed.
+        wl = self.wavelength.reshape(-1, 1, 1)
+        th = self.theta.reshape(1, -1, 1)
+        ph = self.phi.reshape(1, 1, -1)
+        n  = n_incidence.reshape(-1, 1, 1)
 
-        k0  = 2.0 * torch.pi / wl
-        n   = torch.sqrt(eps_inc)
-        kt  = n * k0 * torch.sin(th)          # [N_wl, N_theta, 1]
-        kx0 = kt * torch.cos(ph)              # [N_wl, N_theta, N_phi]
+        kt  = n * torch.sin(th)          # [N_wl, N_theta, 1]  (k0-normalized)
+        kx0 = kt * torch.cos(ph)         # [N_wl, N_theta, N_phi]
         ky0 = kt * torch.sin(ph)
 
         return PlaneWaveSpec(
-            wavelength=wl,
+            wavelength=self.wavelength,
             kx0=kx0,
             ky0=ky0,
             s=self.s,

@@ -3,50 +3,54 @@
 
 import torch
 import torch.nn as nn
-
+from dataclasses import dataclass
 from typing import Optional
 
 from .utils import register, CallableModule
+from .medium import Medium, MediumSpec
+from .lattice import Lattice
+
+@dataclass(frozen=True)
+class HomogeneousLayer:
+    thickness: torch.Tensor
+    medium: MediumSpec
+
+@dataclass(frozen=True)
+class PatternedLayer:
+    thickness: torch.Tensor
+    medium_solid: MediumSpec
+    medium_void: MediumSpec
+    pattern: torch.Tensor
+
 
 class Layer(nn.Module):
     """A single layer of the stack: a patterned or uniform slab.
 
-    The in-plane permittivity is defined by a shape mask combined with two
-    permittivity callables. With no shape_fn the layer is uniform: only
-    eps_solid_fn is used, and eps_void_fn must be omitted. Thickness sets the
-    extent along the propagation axis.
+    The in-plane permittivity (and permeability, if magnetic) is defined by
+    a shape mask combined with two Medium instances. With no shape_fn the
+    layer is uniform: only medium_solid is used, and medium_void must be
+    omitted. Thickness sets the extent along the propagation axis.
 
     Parameters
     ----------
-    eps_solid_fn : CallableModule
-        Permittivity, called as ``eps_fn(wavelength) -> eps``. Receives
-        wavelength; returns complex permittivity (isotropic scalar, one ε per
-        point), broadcastable to ``[..., Ny, Nx]`` — a non-dispersive material
-        returns a complex scalar, a dispersive one may return ``[N_wl]``.
-
-        **Parameter visibility:** for the callable's tensors to appear in
-        ``model.parameters()`` / ``model.buffers()`` and move with
-        ``model.to()``, the callable must be an ``nn.Module`` (PyTorch only
-        traverses modules, not plain functions or closures). Use the provided
-        helpers: ``from_dispertorch(disp)`` wraps a DisperTorch model;
-        ``CallableModule(fn, dep1, dep2, …)`` wraps any plain callable and
-        registers its module/parameter dependencies. A plain ``lambda`` or
-        closure will work numerically but its closed-over tensors are invisible
-        to the model.
-
-        Reserved (unsupported): anisotropy via 3x3 trailing dims; magnetic
-        response via a separate mu callable. Current contract is isotropic,
-        non-magnetic.
+    medium_solid : Medium
+        Fill material of the masked (shape_fn == 1) region, or the sole
+        material for a uniform layer. One of ``Medium`` subclasses
+        — see that class's docstring for its eps_fn/mu_fn contract 
+        and parameter-visibility requirements.
         
     thickness : float | Tensor | nn.Parameter
         Layer thickness. May be an nn.Parameter for inverse design.
         
-    eps_void_fn : CallableModule, optional
-        Permittivity of the void (un-masked) region, same contract as
-        ``eps_solid_fn``. Fills the ``mask == 0`` region in the blend
-        ``eps = mask * eps_solid + (1 - mask) * eps_void``. Required iff
-        ``shape_fn`` is given; for a uniform layer (no ``shape_fn``) it must
-        be omitted and only ``eps_solid_fn`` is used.
+    medium_void : Medium, optional
+        Material of the un-masked region. Required iff shape_fn is given;
+        for a uniform layer (no shape_fn) it must be omitted. Must be the
+        same Medium subclass as medium_solid — mixing variants (e.g. an
+        isotropic void in an anisotropic solid) is not supported; promote
+        the simpler material to the richer variant explicitly instead.
+        Fills the ``mask == 0`` region in the blend
+        ``eps = mask * eps_solid + (1 - mask) * eps_void`` (and likewise
+        for mu, when both media are magnetic).
         
     shape_fn : CallableModule, optional
         Geometry mask, called as ``shape_fn(lattice, nx, ny) -> mask``.
@@ -62,28 +66,62 @@ class Layer(nn.Module):
 
     def __init__(
         self,
-        eps_solid_fn: CallableModule,
+        medium_solid: Medium,
         thickness,
-        eps_void_fn: Optional[CallableModule] = None,
+        medium_void: Optional[Medium] = None,
         shape_fn: Optional[CallableModule] = None,
     ):
         super().__init__()
 
-        if not callable(eps_solid_fn):
-            raise TypeError("eps_solid_fn must be callable.")
-        if eps_void_fn is not None and not callable(eps_void_fn):
-            raise TypeError("eps_void_fn must be callable.")
+        if not isinstance(medium_solid, Medium):
+            raise TypeError("medium_solid must be a Medium.")
+        if medium_void is not None and not isinstance(medium_void, Medium):
+            raise TypeError("medium_void must be a Medium.")
         if shape_fn is not None and not callable(shape_fn):
             raise TypeError("shape_fn must be callable.")
 
-        if shape_fn is not None and eps_void_fn is None:
-            raise ValueError("Patterned layer (shape_fn given) requires eps_void_fn.")
-        if shape_fn is None and eps_void_fn is not None:
-            raise ValueError("Uniform layer (no shape_fn) must omit eps_void_fn.")
+        if shape_fn is not None and medium_void is None:
+            raise ValueError("Patterned layer (shape_fn given) requires medium_void.")
+        if shape_fn is None and medium_void is not None:
+            raise ValueError("Uniform layer (no shape_fn) must omit medium_void.")
+        if medium_void is not None and type(medium_void) is not type(medium_solid):
+            raise TypeError("medium_solid and medium_void must be the same Medium variant.")
 
         register(self, "thickness", thickness)
-        self.eps_solid_fn = eps_solid_fn
-        self.eps_void_fn = eps_void_fn
+        self.medium_solid = medium_solid
+        self.medium_void = medium_void
         self.shape_fn = shape_fn
+        
+    def spec(
+        self,
+        wvl: torch.Tensor,
+        lattice: Optional["Lattice"] = None,
+        nx: Optional[int] = None,
+        ny: Optional[int] = None,
+    ) -> HomogeneousLayer | PatternedLayer:
+        """Resolve this Layer at a given wavelength into a Solver-facing spec.
+        lattice/nx/ny are required iff this is a patterned layer (shape_fn set);
+        """
+        medium_solid_spec = self.medium_solid.spec(wvl)
+
+        if self.shape_fn is None:
+            return HomogeneousLayer(
+                thickness=self.thickness,
+                medium=medium_solid_spec,
+            )
+
+        if lattice is None or nx is None or ny is None:
+            raise ValueError("Patterned layer requires lattice, nx, ny from Stack.")
+
+        pattern = self.shape_fn(lattice, nx, ny)              
+        medium_void_spec = self.medium_void.spec(wvl)
+
+        return PatternedLayer(
+            thickness=self.thickness,
+            medium_solid=medium_solid_spec,
+            medium_void=medium_void_spec,
+            pattern=pattern,
+        )
+    
 
     
