@@ -17,7 +17,7 @@ def reciprocal_lattice_vectors(a1: torch.Tensor, a2: torch.Tensor):
     b1 . a1 = 2pi
     b1 . a2 = 0
     b2 . a1 = 0
-    b2 . a1 = 2pi
+    b2 . a2 = 2pi
 
     Parameters:
     -------------------------
@@ -188,6 +188,32 @@ def harmonic_wavevectors(kx0: torch.Tensor, ky0: torch.Tensor, Gx: torch.Tensor,
 def compute_kxy(kx0: torch.Tensor, ky0: torch.Tensor, 
                 a1: torch.Tensor, a2: torch.Tensor,
                 m_flat: torch.Tensor, n_flat: torch.Tensor):
-    """ Shortcut function to compute kx and ky"""
-    pass
+    """ Shortcut function to compute kx and ky
+    
+    Parameters:
+    ---------------------
+    kx0, ky0: torch.Tensor
+        Incident in-plane wavevector components in the x and y
+        direction
+        Shape [N_wl, N_theta, N_phi]
+    a1, a2: torch.Tensor
+        Direct lattice vectors
+        Shape [2]
+    m_flat, n_flat: torch.Tensor
+        Flattened harmonic indices
+        Shape [Nh]
+    
+    Returns:
+    --------------------
+    kx,ky: torch.Tensor
+        Harmonic wavevector components, shape [N_wl, N_theta, N_phi, Nh]
+    """
+
+    b1, b2 = reciprocal_lattice_vectors(a1,a2)
+
+    Gx, Gy = reciprocal_index_map(m_flat, n_flat, b1, b2)
+
+    kx,ky = harmonic_wavevectors(kx0, ky0, Gx, Gy)
+
+    return kx, ky
 
