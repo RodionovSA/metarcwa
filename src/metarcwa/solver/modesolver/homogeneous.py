@@ -30,7 +30,7 @@ import torch
 from typing import Tuple
 import warnings
 
-from .blockmatrix import Block, Block2x2
+from src.metarcwa.solver.blockmatrix import Block, Block2x2
 
 
 def homogeneous_kz(epsilon: torch.Tensor,

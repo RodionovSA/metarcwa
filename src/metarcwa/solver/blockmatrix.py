@@ -49,7 +49,20 @@ This is cheap when d is DIAG or SCALAR (d⁻¹ is elementwise).
 
 from __future__ import annotations
 import torch
-from typing import Tuple
+from typing import Protocol, Tuple, Union, runtime_checkable
+
+
+@runtime_checkable
+class Entry(Protocol):
+    """Structural protocol satisfied by both Block and Block2x2."""
+    def __add__(self, o): ...
+    def __sub__(self, o): ...
+    def __neg__(self): ...
+    def __matmul__(self, o): ...
+    def inv(self): ...
+    def solve(self, rhs): ...
+    def eye_like(self): ...
+    def zeros_like(self): ...
 
 class Block:
     """A 2D operator in one of three representations, dispatched internally.
@@ -157,7 +170,8 @@ class Block:
         if self.kind in (Block.SCALAR, Block.DIAG):
             return self.inv() @ rhs                # elementwise inverse, stays cheap
         r = rhs.to(Block.DENSE, self.n)
-        return Block(Block.DENSE, torch.linalg.solve(self.data, r.data))
+        r_data = r.data.to(self.data.dtype)
+        return Block(Block.DENSE, torch.linalg.solve(self.data, r_data))
 
     # ---- constructors ----
     @classmethod
@@ -167,26 +181,34 @@ class Block:
     @classmethod
     def zeros(cls, **kw) -> "Block":
         return cls(cls.SCALAR, torch.zeros((), **kw))
+    
+    # --- neutral elements -------------------------------------------------
+    def eye_like(self) -> "Block":
+        return type(self).eye(device=self.data.device, dtype=self.data.dtype)
+
+    def zeros_like(self) -> "Block":
+        return type(self).zeros(device=self.data.device, dtype=self.data.dtype)
 
     def __repr__(self) -> str:
         name = {0: "SCALAR", 1: "DIAG", 2: "DENSE"}[self.kind]
         return f"Block({name}, shape={tuple(self.data.shape)})"
-    
-class Block2x2:
-    """2x2 block operator [[a, b], [c, d]], each entry a Block.
 
-    Structure-blind: every operation is written in terms of Block ops, so it
-    runs elementwise when the entries are SCALAR/DIAG and falls back to dense
-    only where a DENSE entry forces it.
-    """
-    def __init__(self, a: Block, b: Block, c: Block, d: Block):
+
+class Block2x2:
+    """2x2 block operator [[a, b], [c, d]], each entry a Block OR a Block2x2."""
+
+    def __init__(self, a: Entry, b: Entry, c: Entry, d: Entry):
         self.a, self.b, self.c, self.d = a, b, c, d
 
+    # --- linear structure -------------------------------------------------
     def __add__(self, o: "Block2x2") -> "Block2x2":
         return Block2x2(self.a + o.a, self.b + o.b, self.c + o.c, self.d + o.d)
 
     def __sub__(self, o: "Block2x2") -> "Block2x2":
         return Block2x2(self.a - o.a, self.b - o.b, self.c - o.c, self.d - o.d)
+
+    def __neg__(self) -> "Block2x2":
+        return Block2x2(-self.a, -self.b, -self.c, -self.d)
 
     def __matmul__(self, o: "Block2x2") -> "Block2x2":
         return Block2x2(
@@ -194,8 +216,13 @@ class Block2x2:
             self.c @ o.a + self.d @ o.c,  self.c @ o.b + self.d @ o.d,
         )
 
+    # --- inverse / solve --------------------------------------------------
     def inv(self) -> "Block2x2":
-        """Inverse via Schur complement of the d block."""
+        """Inverse via Schur complement of the d block.
+
+        Prefer solve() for M^-1 @ rhs; use inv only when the materialized
+        inverse is reused as an operator.
+        """
         di  = self.d.inv()                 # reused below -> materializing is justified
         S   = self.a - self.b @ di @ self.c
         Si  = S.inv()
@@ -205,13 +232,110 @@ class Block2x2:
             Si,            -(Si @ bdi),
             -(dic @ Si),   di + dic @ Si @ bdi,
         )
-        
+
+    def solve(self, rhs: "Block2x2") -> "Block2x2":
+        """Solve  self @ X = rhs  via Schur complement of the d block.
+
+        Leaf solve is lu_factor/lu_solve (DENSE) or elementwise (SCALAR/DIAG):
+        no explicit inverse is formed. Preferred over inv() @ rhs.
+        """
+        a, b, c, d = self.a, self.b, self.c, self.d
+        dic = d.solve(c)                       # d^-1 c
+        S   = a - b @ dic                      # Schur complement of d
+
+        def col(r1, r2):
+            t  = d.solve(r2)                   # d^-1 r2
+            x1 = S.solve(r1 - b @ t)
+            return x1, t - dic @ x1            # x2 = d^-1 (r2 - c x1)
+
+        x1a, x2a = col(rhs.a, rhs.c)
+        x1b, x2b = col(rhs.b, rhs.d)
+        return Block2x2(x1a, x1b, x2a, x2b)
+
+    # --- Redheffer star product ------------------------------------------
+    def star(self, o: "Block2x2") -> "Block2x2":
+        """Redheffer star product: self (left) ⋆ o (right).
+
+        Composes the self|o stack. Not commutative — physical left/right
+        order must be preserved. Associative, so fold direction is free.
+        Inverts only (I - R1 R2), never an S-matrix.
+        Convention: a=S11, b=S12, c=S21, d=S22 (reflection on the diagonal).
+        """
+        P = o.a @ self.d                       # S11^B S22^A
+        Q = self.d @ o.a                       # S22^A S11^B
+        D = self.b @ (P.eye_like() - P).inv()  # S12^A (I - S11^B S22^A)^-1
+        F = o.c   @ (Q.eye_like() - Q).inv()   # S21^B (I - S22^A S11^B)^-1
+        return Block2x2(
+            self.a + D @ o.a @ self.c,  D @ o.b,
+            F @ self.c,                 o.d + F @ self.d @ o.b,
+        )
+
+    # --- neutral elements -------------------------------------------------
+    def eye_like(self) -> "Block2x2":
+        """Multiplicative identity [[I, 0], [0, I]] of matching type/shape."""
+        return Block2x2(self.a.eye_like(), self.b.zeros_like(),
+                        self.c.zeros_like(), self.d.eye_like())
+
+    def zeros_like(self) -> "Block2x2":
+        """Additive zero of matching type/shape."""
+        return Block2x2(self.a.zeros_like(), self.b.zeros_like(),
+                        self.c.zeros_like(), self.d.zeros_like())
+
+    def to_dense(self, n: int | None = None) -> torch.Tensor:
+        """Flatten to a dense ``(..., 2N, 2N)`` tensor where N is the block size.
+
+        Each Block entry is promoted to DENSE; nested Block2x2 entries are
+        flattened recursively.  If ``n`` is not given it is inferred from the
+        first non-SCALAR leaf block.  Pass ``n`` explicitly when any leaf
+        block is SCALAR.
+
+        Parameters
+        ----------
+        n : int or None
+            Harmonic size of each leaf Block.  Required when any entry is a
+            SCALAR Block (which carries no size information).
+
+        Returns
+        -------
+        torch.Tensor
+            Dense matrix of shape ``(..., 2N, 2N)`` (or ``(..., 2^k·N, 2^k·N)``
+            for k levels of nesting).
+        """
+        def _find_n(m):
+            for e in (m.a, m.b, m.c, m.d):
+                found = _find_n(e) if hasattr(e, 'a') else e.n
+                if found is not None:
+                    return found
+            return None
+
+        n_eff = n if n is not None else _find_n(self)
+
+        def _entry(e):
+            if hasattr(e, 'a'):                   # nested Block2x2
+                return e.to_dense(n_eff)
+            if n_eff is None:
+                raise ValueError(
+                    "n must be provided when entries contain SCALAR Blocks"
+                )
+            return e.to(Block.DENSE, n_eff).data
+        A, B = _entry(self.a), _entry(self.b)
+        C, D = _entry(self.c), _entry(self.d)
+        return torch.cat([torch.cat([A, B], dim=-1),
+                          torch.cat([C, D], dim=-1)], dim=-2)
+
+    # --- misc -------------------------------------------------------------
     @property
-    def shape(self) -> Tuple[torch.Size, torch.Size, torch.Size, torch.Size]:
+    def shape(self) -> Tuple[object, object, object, object]:
+        # A nested entry's `shape` is itself a 4-tuple, not a torch.Size.
         return self.a.shape, self.b.shape, self.c.shape, self.d.shape
 
     @classmethod
     def identity(cls) -> "Block2x2":
-        return cls(Block.eye(), Block.zeros(), Block.zeros(), Block.eye())
-    
+        """Matmul identity [[I, 0], [0, I]] at leaf level (Block entries)."""
+        return cls(Block.eye(), Block.zeros(), Block.zeros(), Block.eye())  # noqa: F821
+
+    @classmethod
+    def star_identity(cls) -> "Block2x2":
+        """Star-product identity [[0, I], [I, 0]] at leaf level (Block entries)."""
+        return cls(Block.zeros(), Block.eye(), Block.eye(), Block.zeros())  # noqa: F821
     

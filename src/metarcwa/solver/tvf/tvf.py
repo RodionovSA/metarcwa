@@ -69,7 +69,18 @@ class TVF:
         TVF method. One of ``"Jones"``, ``"Pol"``, ``"Normal"``,
         ``"Jones_direct"``.
     optimizer : str
-        Optimizer name (case-insensitive). Default ``"lbfgs"``.
+        Optimizer name (case-insensitive). Default ``"newton"``.
+    alpha : float or None
+            Alignment loss weight.  ``None`` → 1.0.
+    beta : float or None
+        Fourier regularization weight.  ``None`` → 0.05.  Both ``beta`` and
+        ``gamma`` weight the physical Dirichlet energy ``∫‖∇f‖²dA`` and
+        are on the same scale; typical values are 0.01–0.1.
+    gamma : float or None
+        Smoothness loss weight.  ``None`` → 0.05.  See ``beta``.
+    steps : int
+        Optimizer steps.  Default 1 (exact for the Newton solve on a
+        quadratic loss).
     """
 
     METHODS = ("Jones", "Pol", "Normal", "Jones_direct")
@@ -82,6 +93,10 @@ class TVF:
         N: int,
         method: str,
         optimizer: str = "newton",
+        alpha: float | None = None,
+        beta: float | None = None,
+        gamma: float | None = None,
+        steps: int = 1,
     ):
         if method not in self.METHODS:
             raise ValueError(
@@ -93,6 +108,10 @@ class TVF:
         self.N = int(N)
         self.method = method
         self.optimizer = make_optimizer(optimizer)
+        self.alpha = 1.0 if alpha is None else alpha
+        self.beta  = 0.05 if beta is None else beta
+        self.gamma = 0.05 if gamma is None else gamma
+        self.steps = steps
 
     def _prepare_field(
         self, field: torch.Tensor
@@ -161,10 +180,6 @@ class TVF:
     def _optimize(
         self,
         field: torch.Tensor,
-        alpha: float = 1.0,
-        beta: float = 0.05,
-        gamma: float = 0.05,
-        steps: int = 1,
     ) -> torch.Tensor:
         """
         Optimize the TVF from a real scalar permittivity field.
@@ -178,19 +193,6 @@ class TVF:
         field : torch.Tensor
             Input permittivity field (complex accepted; imaginary part is
             discarded). Shape ``[B, Ny, Nx]``.
-        alpha : float
-            Alignment loss weight.  Default: 1.0.
-        beta : float
-            Fourier regularization weight.  Default: 0.05.  Both ``beta`` and
-            ``gamma`` weight the same physical quantity (Dirichlet energy
-            ``∫‖∇f‖²dA``) and are therefore on the same scale; typical values
-            are in the range 0.01–0.1.  The weights are **not** divided by the
-            number of harmonics, so they remain meaningful as ``M`` and ``N``
-            change.
-        gamma : float
-            Smoothness loss weight.  Default: 0.05.  See ``beta``.
-        steps : int
-            Number of optimizer steps (1 = exact for Newton on a quadratic loss).
 
         Returns
         -------
@@ -247,12 +249,12 @@ class TVF:
                 weights=weights,
                 a1=self.a1,
                 a2=self.a2,
-                alpha=alpha,
-                beta=beta,
-                gamma=gamma,
+                alpha=self.alpha,
+                beta=self.beta,
+                gamma=self.gamma,
             )
 
-        params = self.optimizer.minimize(params, loss_fn, steps=steps)
+        params = self.optimizer.minimize(params, loss_fn, steps=self.steps)
         params = params.detach()
 
         # Scatter optimized in-band coeffs back to full grid
@@ -273,10 +275,6 @@ class TVF:
     def compute(
         self,
         field: torch.Tensor,
-        alpha: float | None = None,
-        beta: float | None = None,
-        gamma: float | None = None,
-        steps: int = 1,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Compute the Tangent Vector Field from a permittivity field.
@@ -289,17 +287,6 @@ class TVF:
         field : torch.Tensor
             Permittivity field (complex; imaginary part is discarded for
             geometry extraction). Shape ``[B, Ny, Nx]``.
-        alpha : float or None
-            Alignment loss weight.  ``None`` → 1.0.
-        beta : float or None
-            Fourier regularization weight.  ``None`` → 0.05.  Both ``beta`` and
-            ``gamma`` weight the physical Dirichlet energy ``∫‖∇f‖²dA`` and
-            are on the same scale; typical values are 0.01–0.1.
-        gamma : float or None
-            Smoothness loss weight.  ``None`` → 0.05.  See ``beta``.
-        steps : int
-            Optimizer steps.  Default 1 (exact for the Newton solve on a
-            quadratic loss).
 
         Returns
         -------
@@ -310,10 +297,7 @@ class TVF:
         Ty : torch.Tensor
             y-component of TVF. Shape ``[B, Ny, Nx]``. Same dtype as ``Tx``.
         """
-        alpha = 1.0 if alpha is None else alpha
-        beta  = 0.05 if beta is None else beta
-        gamma = 0.05 if gamma is None else gamma
-        optimized = self._optimize(field, alpha, beta, gamma, steps)    # [B, Ny, Nx, 2] complex
+        optimized = self._optimize(field, self.alpha, self.beta, self.gamma, self.steps)    # [B, Ny, Nx, 2] complex
 
         if self.method == "Jones":
             # Apply Jones normalization to the real part of the optimized field.

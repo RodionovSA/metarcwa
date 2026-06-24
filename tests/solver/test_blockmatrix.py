@@ -603,3 +603,215 @@ class TestBlock2x2:
         M_flat  = to_mat(M, n)
         Mi_flat = to_mat(M.inv(), n)
         assert_close(M_flat @ Mi_flat, torch.eye(2 * n), atol=1e-5, rtol=1e-5)
+
+    # ---- neg / eye_like / zeros_like / star_identity / shape ----
+
+    def test_neg(self):
+        M   = make_block2x2_scalar(1.0, 2.0, 3.0, 4.0)
+        res = -M
+        assert_close(res.a.data, torch.tensor(-1.0, dtype=torch.float64))
+        assert_close(res.b.data, torch.tensor(-2.0, dtype=torch.float64))
+        assert_close(res.c.data, torch.tensor(-3.0, dtype=torch.float64))
+        assert_close(res.d.data, torch.tensor(-4.0, dtype=torch.float64))
+
+    def test_eye_like(self):
+        M   = make_block2x2_scalar(2.0, 3.0, 4.0, 5.0)
+        E   = M.eye_like()
+        assert_close(E.a.data, torch.ones((), dtype=torch.float64))
+        assert_close(E.b.data, torch.zeros((), dtype=torch.float64))
+        assert_close(E.c.data, torch.zeros((), dtype=torch.float64))
+        assert_close(E.d.data, torch.ones((), dtype=torch.float64))
+
+    def test_zeros_like(self):
+        M   = make_block2x2_scalar(2.0, 3.0, 4.0, 5.0)
+        Z   = M.zeros_like()
+        assert_close(Z.a.data, torch.zeros((), dtype=torch.float64))
+        assert_close(Z.b.data, torch.zeros((), dtype=torch.float64))
+        assert_close(Z.c.data, torch.zeros((), dtype=torch.float64))
+        assert_close(Z.d.data, torch.zeros((), dtype=torch.float64))
+
+    def test_star_identity_structure(self):
+        si = Block2x2.star_identity()
+        assert_close(si.a.data, torch.zeros(()))
+        assert_close(si.b.data, torch.ones(()))
+        assert_close(si.c.data, torch.ones(()))
+        assert_close(si.d.data, torch.zeros(()))
+
+    def test_shape_property(self):
+        M = make_block2x2_scalar(1.0, 2.0, 3.0, 4.0)
+        s = M.shape
+        assert len(s) == 4
+        assert s[0] == M.a.shape
+
+
+# ---- Block2x2 solve ----------------------------------------------------------
+
+class TestBlock2x2Solve:
+
+    def test_solve_scalar_roundtrip(self):
+        # M.solve(M @ X) should recover X
+        M = make_block2x2_scalar(3.0, 1.0, 1.0, 3.0)
+        X = make_block2x2_scalar(1.0, 2.0, 3.0, 4.0)
+        MX  = M @ X
+        res = M.solve(MX)
+        assert_close(res.a.data, X.a.data, atol=1e-10, rtol=1e-10)
+        assert_close(res.b.data, X.b.data, atol=1e-10, rtol=1e-10)
+        assert_close(res.c.data, X.c.data, atol=1e-10, rtol=1e-10)
+        assert_close(res.d.data, X.d.data, atol=1e-10, rtol=1e-10)
+
+    def test_solve_dense_roundtrip(self):
+        # Compare flattened solve against torch.linalg.solve on 2n×2n
+        n  = N
+        dv = torch.arange(1, n + 1, dtype=torch.float)
+        A  = Block(Block.DENSE, torch.diag(dv)         + 0.1 * torch.eye(n))
+        B_ = Block(Block.DENSE, 0.3 * torch.eye(n))
+        C  = Block(Block.DENSE, 0.2 * torch.eye(n))
+        D_ = Block(Block.DENSE, torch.diag(dv.flip(0)) + 0.1 * torch.eye(n))
+        M  = Block2x2(A, B_, C, D_)
+        R  = Block2x2(
+            Block(Block.DENSE, torch.eye(n)),
+            Block(Block.DENSE, 0.1 * torch.eye(n)),
+            Block(Block.DENSE, 0.1 * torch.eye(n)),
+            Block(Block.DENSE, torch.eye(n)),
+        )
+        X_flat    = torch.linalg.solve(to_mat(M, n), to_mat(R, n))
+        res_flat  = to_mat(M.solve(R), n)
+        assert_close(res_flat, X_flat, atol=1e-5, rtol=1e-5)
+
+    def test_solve_vs_inv(self):
+        # solve and inv() @ rhs should produce the same result
+        M   = make_block2x2_scalar(2.0, 1.0, 1.0, 2.0)
+        rhs = make_block2x2_scalar(1.0, 0.0, 0.0, 1.0)
+        via_solve = M.solve(rhs)
+        via_inv   = M.inv() @ rhs
+        assert_close(via_solve.a.data, via_inv.a.data, atol=1e-10, rtol=1e-10)
+        assert_close(via_solve.b.data, via_inv.b.data, atol=1e-10, rtol=1e-10)
+        assert_close(via_solve.c.data, via_inv.c.data, atol=1e-10, rtol=1e-10)
+        assert_close(via_solve.d.data, via_inv.d.data, atol=1e-10, rtol=1e-10)
+
+
+# ---- Block2x2 star product ---------------------------------------------------
+
+class TestBlock2x2Star:
+
+    def test_star_left_identity(self):
+        # star_identity ⋆ M == M
+        M  = make_block2x2_scalar(2.0, 3.0, 4.0, 5.0)
+        SI = Block2x2.star_identity()
+        res = SI.star(M)
+        assert_close(res.a.data, M.a.data, atol=1e-10, rtol=1e-10)
+        assert_close(res.b.data, M.b.data, atol=1e-10, rtol=1e-10)
+        assert_close(res.c.data, M.c.data, atol=1e-10, rtol=1e-10)
+        assert_close(res.d.data, M.d.data, atol=1e-10, rtol=1e-10)
+
+    def test_star_right_identity(self):
+        # M ⋆ star_identity == M
+        M  = make_block2x2_scalar(2.0, 3.0, 4.0, 5.0)
+        SI = Block2x2.star_identity()
+        res = M.star(SI)
+        assert_close(res.a.data, M.a.data, atol=1e-10, rtol=1e-10)
+        assert_close(res.b.data, M.b.data, atol=1e-10, rtol=1e-10)
+        assert_close(res.c.data, M.c.data, atol=1e-10, rtol=1e-10)
+        assert_close(res.d.data, M.d.data, atol=1e-10, rtol=1e-10)
+
+    def test_star_known_scalar(self):
+        # Two interfaces: S1=[[r1,t1],[t1,r1]], S2=[[r2,t2],[t2,r2]]
+        # Composed transmission: t = t1*t2/(1 - r1*r2)
+        # Composed left reflection: r = r1 + t1^2*r2/(1 - r1*r2)
+        r1, t1 = 0.2, 0.8
+        r2, t2 = 0.3, 0.7
+        S1  = make_block2x2_scalar(r1, t1, t1, r1)
+        S2  = make_block2x2_scalar(r2, t2, t2, r2)
+        res = S1.star(S2)
+        denom = 1.0 - r1 * r2
+        exp_t = t1 * t2 / denom
+        exp_r_left  = r1 + t1 ** 2 * r2 / denom
+        exp_r_right = r2 + t2 ** 2 * r1 / denom
+        assert_close(res.b.data, torch.tensor(exp_t,       dtype=torch.float64), atol=1e-10, rtol=1e-10)
+        assert_close(res.c.data, torch.tensor(exp_t,       dtype=torch.float64), atol=1e-10, rtol=1e-10)
+        assert_close(res.a.data, torch.tensor(exp_r_left,  dtype=torch.float64), atol=1e-10, rtol=1e-10)
+        assert_close(res.d.data, torch.tensor(exp_r_right, dtype=torch.float64), atol=1e-10, rtol=1e-10)
+
+    def test_star_dense_roundtrip(self):
+        # (M ⋆ M.inv_star) should recover star_identity
+        # Instead: verify associativity: (S1 ⋆ S2) ⋆ S3 == S1 ⋆ (S2 ⋆ S3)
+        S1 = make_block2x2_scalar(0.1, 0.9, 0.9, 0.1)
+        S2 = make_block2x2_scalar(0.2, 0.8, 0.8, 0.2)
+        S3 = make_block2x2_scalar(0.3, 0.7, 0.7, 0.3)
+        lhs = S1.star(S2).star(S3)
+        rhs = S1.star(S2.star(S3))
+        for attr in ("a", "b", "c", "d"):
+            assert_close(getattr(lhs, attr).data, getattr(rhs, attr).data, atol=1e-10, rtol=1e-10)
+
+
+# ---- Block2x2.to_dense -------------------------------------------------------
+
+class TestBlock2x2ToDense:
+
+    def test_scalar_entries_shape_and_values(self):
+        """Scalar entries: to_dense(n) gives (2n, 2n) with correct blocks."""
+        n  = 2
+        M  = make_block2x2_scalar(1.0, 2.0, 3.0, 4.0)
+        T  = M.to_dense(n)
+        assert T.shape == (2 * n, 2 * n)
+        # Top-left n×n block = 1·I, top-right = 2·I, etc.
+        assert_close(T[:n, :n], 1.0 * torch.eye(n, dtype=T.dtype), atol=1e-12, rtol=0)
+        assert_close(T[:n, n:], 2.0 * torch.eye(n, dtype=T.dtype), atol=1e-12, rtol=0)
+        assert_close(T[n:, :n], 3.0 * torch.eye(n, dtype=T.dtype), atol=1e-12, rtol=0)
+        assert_close(T[n:, n:], 4.0 * torch.eye(n, dtype=T.dtype), atol=1e-12, rtol=0)
+
+    def test_diag_entries(self):
+        """DIAG entries: n is inferred; off-diagonals are zero."""
+        dv = torch.tensor([1.0, 2.0, 3.0, 4.0])
+        D  = Block(Block.DIAG, dv)
+        Z  = Block.zeros()
+        M  = Block2x2(D, Z, Z, D)
+        T  = M.to_dense()          # n inferred as N=4
+        assert T.shape == (2 * N, 2 * N)
+        assert_close(T[:N, :N], torch.diag(dv), atol=1e-12, rtol=0)
+        assert_close(T[:N, N:], torch.zeros(N, N), atol=1e-12, rtol=0)
+        assert_close(T[N:, N:], torch.diag(dv), atol=1e-12, rtol=0)
+
+    def test_dense_entries_matches_to_mat(self):
+        """to_dense(n) must equal the existing to_mat(m, n) helper exactly."""
+        n   = N
+        dv  = torch.arange(1, n + 1, dtype=torch.float)
+        A   = Block(Block.DENSE, torch.diag(dv) + 0.1 * torch.eye(n))
+        B_  = Block(Block.DENSE, 0.3 * torch.eye(n))
+        C   = Block(Block.DENSE, 0.2 * torch.eye(n))
+        D_  = Block(Block.DENSE, torch.diag(dv.flip(0)) + 0.1 * torch.eye(n))
+        M   = Block2x2(A, B_, C, D_)
+        assert_close(M.to_dense(n), to_mat(M, n), atol=0, rtol=0)
+
+    def test_scalar_without_n_raises(self):
+        """SCALAR entries with no n must raise ValueError."""
+        M = make_block2x2_scalar(1.0, 0.0, 0.0, 1.0)
+        with pytest.raises(ValueError, match="n must be provided"):
+            M.to_dense()
+
+    def test_nested_block2x2(self):
+        """Nested Block2x2 entries give (4n, 4n) output; matmul consistent."""
+        n   = N
+        dv  = torch.arange(1, n + 1, dtype=torch.float)
+        A   = Block(Block.DENSE, torch.diag(dv) + 0.1 * torch.eye(n))
+        B_  = Block(Block.DENSE, 0.3 * torch.eye(n))
+        C   = Block(Block.DENSE, 0.2 * torch.eye(n))
+        D_  = Block(Block.DENSE, torch.diag(dv.flip(0)) + 0.1 * torch.eye(n))
+        inner = Block2x2(A, B_, C, D_)
+        # Outer Block2x2 whose entries are themselves Block2x2
+        outer = Block2x2(inner, inner, inner, inner)
+        T = outer.to_dense(n)
+        assert T.shape == (4 * n, 4 * n)
+        # Verify matmul consistency: (outer @ outer).to_dense == T @ T
+        prod_direct = (outer @ outer).to_dense(n)
+        assert_close(prod_direct, T @ T, atol=1e-5, rtol=1e-5)
+
+    def test_batched(self):
+        """Batch dimension is preserved in the output."""
+        B_  = 3
+        mat = torch.eye(N).unsqueeze(0).expand(B_, N, N).contiguous()
+        A   = Block(Block.DENSE, mat)
+        Z   = Block(Block.DENSE, torch.zeros(B_, N, N))
+        M   = Block2x2(A, Z, Z, A)
+        T   = M.to_dense()
+        assert T.shape == (B_, 2 * N, 2 * N)
