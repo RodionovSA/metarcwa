@@ -1,12 +1,12 @@
 # tests/solver/test_isotropic.py
-# Tests for metarcwa.solver.modesolver.isotropic: P and Q operators for
+# Tests for metarcwa.solver.layersolver.isotropic: P and Q operators for
 # isotropic patterned layers — structure, known values, and homogeneous limit.
 
 import pytest
 import torch
 from torch.testing import assert_close
 
-from metarcwa.solver.modesolver.isotropic import (
+from metarcwa.solver.layersolver.isotropic import (
     compute_Q0,
     compute_A,
     compute_Qfact,
@@ -15,7 +15,7 @@ from metarcwa.solver.modesolver.isotropic import (
     compute_isotropic,
 )
 from metarcwa.solver.blockmatrix import Block, Block2x2
-from metarcwa.solver.modesolver.homogeneous import homogeneous_Q
+from metarcwa.solver.layersolver.homogeneous import homogeneous_Q
 
 
 # ---------------------------------------------------------------------------

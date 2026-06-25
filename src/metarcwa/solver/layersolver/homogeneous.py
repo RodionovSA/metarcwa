@@ -1,4 +1,4 @@
-# metarcwa/solver/homogeneous.py
+# metarcwa/solver/layersolver/homogeneous.py
 """
 homogeneous — closed-form modal solver for homogeneous layers
 =============================================================
@@ -30,12 +30,13 @@ import torch
 from typing import Tuple
 import warnings
 
-from src.metarcwa.solver.blockmatrix import Block, Block2x2
+from metarcwa.solver.blockmatrix import Block, Block2x2
+from metarcwa.model.base import _REAL_TO_COMPLEX
 
 
 def homogeneous_kz(epsilon: torch.Tensor,
                    kx: torch.Tensor, ky: torch.Tensor,
-                   forward: str = "positive", tol: float = 1e-12) -> torch.Tensor:
+                   forward: str = "positive", tol: float = 1e-12, delta=1e-30) -> torch.Tensor:
     """
     Compute normalized kz for every Fourier harmonic of a homogeneous layer.
 
@@ -68,6 +69,14 @@ def homogeneous_kz(epsilon: torch.Tensor,
         ``"positive"`` (default) — forward branch; ``"negative"`` — backward branch.
     tol : float, optional
         Threshold below which a mode is treated as propagating. Default ``1e-12``.
+    delta : float, optional
+        Lorentzian regularisation for the square-root gradient.  kz is computed
+        as ``lam2 / sqrt(lam2 + delta)`` instead of ``sqrt(lam2)``, which keeps
+        the gradient ``d(kz)/d(lam2) = delta / (lam2 + delta)^(3/2)`` finite at
+        the grazing singularity (lam2 = 0) where the plain sqrt gradient blows
+        up.  The O(delta) error in kz is negligible for default ``delta = 1e-30``.
+        Set to ``0`` to recover the unregularised sqrt (may give NaN gradients
+        near grazing incidence).
 
     Returns
     -------
@@ -76,12 +85,12 @@ def homogeneous_kz(epsilon: torch.Tensor,
         polarisation blocks. Shape ``[..., 2Nh]``.
     """
     ndim_extra = kx.ndim - epsilon.ndim
-    eps = epsilon.reshape(*epsilon.shape, *([1] * ndim_extra))
+    eps = epsilon.reshape(*epsilon.shape, *([1] * ndim_extra)).to(_REAL_TO_COMPLEX[kx.real.dtype])
 
     lam2_block = kx**2 + ky**2 - eps                          # [..., Nh]
     lam2 = torch.cat([lam2_block, lam2_block], dim=-1)         # [..., 2Nh]
 
-    lam = torch.sqrt(lam2)
+    lam = lam2/torch.sqrt(lam2 + delta)
     kz  = -1j * lam
 
     is_evan = kz.imag.abs() > tol
@@ -131,7 +140,7 @@ def homogeneous_Q(epsilon: torch.Tensor,
         shape ``[..., Nh]``.
     """
     ndim_extra = kx.ndim - epsilon.ndim
-    eps = epsilon.reshape(*epsilon.shape, *([1] * ndim_extra))
+    eps = epsilon.reshape(*epsilon.shape, *([1] * ndim_extra)).to(_REAL_TO_COMPLEX[kx.real.dtype])
 
     Q11 = Block(Block.DIAG, -kx * ky)
     Q12 = Block(Block.DIAG,  kx**2 - eps)

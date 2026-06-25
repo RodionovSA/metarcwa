@@ -1,4 +1,4 @@
-# metarcwa/solver/modesolver/eigsolver.py
+# metarcwa/solver/layersolver/eigsolver.py
 """
 eigsolver — eigenmode decomposition for patterned RCWA layers
 =============================================================
@@ -157,7 +157,7 @@ class Eig(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Compute eigenvalues and eigenvectors; cache inputs on CPU.
+        Compute eigenvalues and eigenvectors; save via ``ctx.save_for_backward``.
 
         Parameters
         ----------
@@ -171,10 +171,9 @@ class Eig(torch.autograd.Function):
         eigvec : torch.Tensor
             Eigenvectors (columns), shape ``(..., n, n)``.
         """
-        ctx.input  = x
         eigval, eigvec = torch.linalg.eig(x)
-        ctx.eigval = eigval.cpu()
-        ctx.eigvec = eigvec.cpu()
+        ctx.save_for_backward(eigval, eigvec)
+        ctx.is_real_input = not torch.is_complex(x)
         return eigval, eigvec
 
     @staticmethod
@@ -201,8 +200,9 @@ class Eig(torch.autograd.Function):
         torch.Tensor
             Gradient w.r.t. the input matrix X, shape ``(..., n, n)``.
         """
-        eigval = ctx.eigval.to(grad_eigval.device).to(grad_eigval.dtype)
-        eigvec = ctx.eigvec.to(grad_eigvec.device).to(grad_eigvec.dtype)
+        eigval, eigvec = ctx.saved_tensors
+        eigval = eigval.to(grad_eigval.dtype)
+        eigvec = eigvec.to(grad_eigvec.dtype)
 
         grad_eigval = torch.diag_embed(grad_eigval)          # [..., n, n]
         s = eigval.unsqueeze(-2) - eigval.unsqueeze(-1)      # [..., n, n]
@@ -224,7 +224,7 @@ class Eig(torch.autograd.Function):
         grad = torch.matmul(
             torch.matmul(torch.linalg.inv(XH), grad_eigval + tmp), XH
         )
-        if not torch.is_complex(ctx.input):
+        if ctx.is_real_input:
             grad = torch.real(grad)
 
         return grad

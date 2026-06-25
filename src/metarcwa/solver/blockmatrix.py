@@ -320,6 +320,14 @@ class Block2x2:
             return e.to(Block.DENSE, n_eff).data
         A, B = _entry(self.a), _entry(self.b)
         C, D = _entry(self.c), _entry(self.d)
+        # Align batch dims: SCALAR entries produce 2-D tensors while batched
+        # DIAG/DENSE entries produce 3-D (or higher).  Unsqueeze to match.
+        max_ndim = max(A.ndim, B.ndim, C.ndim, D.ndim)
+        def _pad(t):
+            while t.ndim < max_ndim:
+                t = t.unsqueeze(0)
+            return t
+        A, B, C, D = _pad(A), _pad(B), _pad(C), _pad(D)
         return torch.cat([torch.cat([A, B], dim=-1),
                           torch.cat([C, D], dim=-1)], dim=-2)
 

@@ -688,6 +688,7 @@ name = "metarcwa"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "pyyaml" },
     { name = "torch" },
 ]
 
@@ -710,6 +711,7 @@ dev = [
 requires-dist = [
     { name = "dispertorch", marker = "extra == 'dispertorch'", git = "https://github.com/RodionovSA/dispertorch.git" },
     { name = "metashapes", marker = "extra == 'metashapes'", git = "https://github.com/RodionovSA/metashapes.git" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "torch", specifier = ">=2.1.0" },
 ]
 provides-extras = ["metashapes", "dispertorch"]

@@ -541,7 +541,7 @@ class TestTVFCompute:
     def test_output_shapes(self, device, method):
         a1, a2 = _rect_lattice(device)
         field = _make_field(device)
-        Tx, Ty = TVF(a1, a2, M=M, N=N, method=method).compute(field, steps=1)
+        Tx, Ty = TVF(a1, a2, M=M, N=N, method=method).compute(field)
         assert Tx.shape == (B, D0, D1), f"Bad Tx shape for method={method}"
         assert Ty.shape == (B, D0, D1), f"Bad Ty shape for method={method}"
 
@@ -549,7 +549,7 @@ class TestTVFCompute:
     def test_output_device(self, device, method):
         a1, a2 = _rect_lattice(device)
         field = _make_field(device)
-        Tx, Ty = TVF(a1, a2, M=M, N=N, method=method).compute(field, steps=1)
+        Tx, Ty = TVF(a1, a2, M=M, N=N, method=method).compute(field)
         assert Tx.device.type == device, f"Tx device wrong for method={method}"
         assert Ty.device.type == device, f"Ty device wrong for method={method}"
 
@@ -557,7 +557,7 @@ class TestTVFCompute:
     def test_output_is_finite(self, device, method):
         a1, a2 = _rect_lattice(device)
         field = _make_field(device)
-        Tx, Ty = TVF(a1, a2, M=M, N=N, method=method).compute(field, steps=1)
+        Tx, Ty = TVF(a1, a2, M=M, N=N, method=method).compute(field)
         assert torch.isfinite(Tx.abs()).all(), f"Tx non-finite for method={method}"
         assert torch.isfinite(Ty.abs()).all(), f"Ty non-finite for method={method}"
 
@@ -568,7 +568,7 @@ class TestTVFCompute:
         """TVF.compute on a hexagonal lattice: shapes, device, finite values."""
         a1, a2 = _hex_lattice(device)
         field = _make_field(device)
-        Tx, Ty = TVF(a1, a2, M=M, N=N, method=method).compute(field, steps=1)
+        Tx, Ty = TVF(a1, a2, M=M, N=N, method=method).compute(field)
         assert Tx.shape == (B, D0, D1), f"Hexagonal Tx shape for method={method}"
         assert Ty.shape == (B, D0, D1), f"Hexagonal Ty shape for method={method}"
         assert Tx.device.type == device

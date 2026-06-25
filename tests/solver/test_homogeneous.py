@@ -7,7 +7,7 @@ import warnings
 import pytest
 import torch
 
-from metarcwa.solver.homogeneous import homogeneous_kz, homogeneous_Q, homogeneous_modes
+from metarcwa.solver.layersolver.homogeneous import homogeneous_kz, homogeneous_Q, homogeneous_modes
 from metarcwa.solver.blockmatrix import Block, Block2x2
 
 # ---------------------------------------------------------------------------

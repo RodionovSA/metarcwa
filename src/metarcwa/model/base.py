@@ -144,7 +144,7 @@ class Model(nn.Module):
         """
         wavelength = self.source.wavelength
         stack_spec = self.stack.spec(wavelength, nx, ny)
-        source_spec = self.source.spec(stack_spec.incidence.refractive_index().real)
+        source_spec = self.source.spec(stack_spec.incidence.refractive_index().real) # Ignore imag part for the incidence
         return ModelSpec(
             layers=stack_spec.layers,
             incidence=stack_spec.incidence,

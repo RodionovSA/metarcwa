@@ -297,7 +297,7 @@ class TVF:
         Ty : torch.Tensor
             y-component of TVF. Shape ``[B, Ny, Nx]``. Same dtype as ``Tx``.
         """
-        optimized = self._optimize(field, self.alpha, self.beta, self.gamma, self.steps)    # [B, Ny, Nx, 2] complex
+        optimized = self._optimize(field)    # [B, Ny, Nx, 2] complex
 
         if self.method == "Jones":
             # Apply Jones normalization to the real part of the optimized field.

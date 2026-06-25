@@ -1,0 +1,16 @@
+dtype: float32
+device: cpu
+nx: 128
+ny: 128
+m: 12
+n: 12
+truncation: circular
+factorization:
+  method: Jones
+  optimizer: newton
+  steps: 1
+  alpha: 1.0
+  beta: 0.05
+  gamma: 0.05
+modesolver: eig
+eigsolver_stable: true

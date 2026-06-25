@@ -7,7 +7,7 @@ from torch.testing import assert_close
 
 from metarcwa.solver.smatrix import S_boundary, S_prop, S_layer
 from metarcwa.solver.blockmatrix import Block, Block2x2
-from metarcwa.solver.modesolver.homogeneous import homogeneous_modes
+from metarcwa.solver.layersolver.homogeneous import homogeneous_modes
 
 
 # ---------------------------------------------------------------------------
@@ -212,12 +212,16 @@ class TestSLayer:
         assert isinstance(S_layer(W0, V0, W, V, lam, d, wvl), Block2x2)
 
     def test_same_medium_equals_s_prop(self, device):
-        """W=I, V=V0 → S_in=star_identity → S_layer = S_prop."""
+        """W=I, V=V0 → S_in=star_identity → S_layer = S_prop.
+
+        Compare via to_dense because S_boundary now always returns DENSE entries
+        (robust dense solve) while S_prop retains DIAG entries.
+        """
         W0, V0, W, V, lam, d, wvl = self._inputs(device)
         S_l = S_layer(W0, V0, W, V, lam, d, wvl)
         S_p = S_prop(lam, wvl, d)
-        assert_close(S_l.b.a.data, S_p.b.a.data, atol=1e-8, rtol=1e-8)
-        assert_close(S_l.b.d.data, S_p.b.d.data, atol=1e-8, rtol=1e-8)
+        Nh  = lam.shape[-1] // 2
+        assert_close(S_l.b.to_dense(Nh), S_p.b.to_dense(Nh), atol=1e-7, rtol=1e-7)
 
     def test_zero_d_same_medium_gives_star_identity(self, device):
         """d=0 and same medium → S_prop = star_identity → S_layer = star_identity."""

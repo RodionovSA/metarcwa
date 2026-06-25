@@ -1,2 +1,0 @@
-# metarcwa/config.py
-# DESCRIPTION

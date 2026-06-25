@@ -1,4 +1,4 @@
-# metarcwa/solver/modesolver/isotropic.py
+# metarcwa/solver/layersolver/isotropic.py
 """
 isotropic — P and Q operators for patterned isotropic layers
 =============================================================
@@ -36,6 +36,7 @@ from typing import Tuple
 from metarcwa.solver.blockmatrix import Block, Block2x2
 from metarcwa.solver.tvf import TVF
 from metarcwa.solver.convolution import convolution_matrix
+from metarcwa.model.base import _REAL_TO_COMPLEX
 
 
 def compute_Q0(Kx: Block, Ky: Block, epsilon_conv: Block) -> Block2x2:
@@ -272,6 +273,7 @@ def compute_isotropic(epsilon_grid: torch.Tensor,
     Q : Block2x2
         Q operator; each entry is a DENSE Block of shape ``[..., Nh, Nh]``.
     """
+    epsilon_grid = epsilon_grid.to(dtype=_REAL_TO_COMPLEX[epsilon_grid.real.dtype])
     epsilon_conv = Block(Block.DENSE, convolution_matrix(epsilon_grid, m_flat, n_flat))
     Kx = Block(Block.DIAG, kx)
     Ky = Block(Block.DIAG, ky)

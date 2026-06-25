@@ -30,6 +30,50 @@ import torch
 from metarcwa.solver.blockmatrix import Block, Block2x2
 
 
+# ---------------------------------------------------------------------------
+# Internal helpers for S_boundary
+# ---------------------------------------------------------------------------
+
+def _find_Nh(*entries) -> int | None:
+    """Return the first non-SCALAR leaf block size from nested Block2x2 entries."""
+    def _scan(e):
+        if not hasattr(e, 'a'):           # leaf Block
+            return e.n                    # None for SCALAR, int for DIAG/DENSE
+        for sub in (e.a, e.b, e.c, e.d):
+            n = _scan(sub)
+            if n is not None:
+                return n
+        return None
+    for e in entries:
+        n = _scan(e)
+        if n is not None:
+            return n
+    return None
+
+
+def _dense_to_nested_block2x2(M: torch.Tensor, Nh: int) -> Block2x2:
+    """Convert a ``[..., 4Nh, 4Nh]`` dense tensor to Block2x2(Block2x2(DENSE, …), …).
+
+    Partitions the 4Nh×4Nh matrix into 4 outer blocks (each 2Nh×2Nh) and then
+    each into 4 inner Nh×Nh DENSE blocks.  This reproduces the two-level nesting
+    that ``Block2x2.solve`` would produce for DIAG/SCALAR inputs.
+    """
+    N2 = 2 * Nh
+    def _inner(sub):
+        return Block2x2(
+            Block(Block.DENSE, sub[..., :Nh, :Nh]),
+            Block(Block.DENSE, sub[..., :Nh, Nh:]),
+            Block(Block.DENSE, sub[..., Nh:, :Nh]),
+            Block(Block.DENSE, sub[..., Nh:, Nh:]),
+        )
+    return Block2x2(
+        _inner(M[..., :N2, :N2]),
+        _inner(M[..., :N2, N2:]),
+        _inner(M[..., N2:, :N2]),
+        _inner(M[..., N2:, N2:]),
+    )
+
+
 def S_boundary(WL: Block2x2, VL: Block2x2,
                WR: Block2x2, VR: Block2x2) -> Block2x2:
     """
@@ -67,7 +111,17 @@ def S_boundary(WL: Block2x2, VL: Block2x2,
     """
     left  = Block2x2(WL, -WR, VL,  VR)
     right = Block2x2(-WL, WR, VL,  VR)
-    return left.solve(right)
+    Nh = _find_Nh(WL, VL, WR, VR)
+    if Nh is None:
+        # All-SCALAR inputs: Schur complement is safe (no singular sub-blocks).
+        return left.solve(right)
+    # Use a direct 4Nh×4Nh dense solve to avoid singular sub-block issues that
+    # arise when DENSE mode matrices (e.g. from eigsolver) have rank-deficient
+    # inner blocks (V.d) as required by the nested Schur complement.
+    L   = left.to_dense(Nh)
+    R   = right.to_dense(Nh)
+    S_d = torch.linalg.solve(L, R)
+    return _dense_to_nested_block2x2(S_d, Nh)
 
 
 def S_prop(lam: torch.Tensor, wvl: torch.Tensor, d: torch.Tensor) -> Block2x2:
