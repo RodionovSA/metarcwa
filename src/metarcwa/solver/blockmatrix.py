@@ -328,6 +328,10 @@ class Block2x2:
                 t = t.unsqueeze(0)
             return t
         A, B, C, D = _pad(A), _pad(B), _pad(C), _pad(D)
+        target = torch.broadcast_shapes(A.shape[:-2], B.shape[:-2], C.shape[:-2], D.shape[:-2])
+        def _expand(t):
+            return t.expand(*target, *t.shape[-2:])
+        A, B, C, D = _expand(A), _expand(B), _expand(C), _expand(D)
         return torch.cat([torch.cat([A, B], dim=-1),
                           torch.cat([C, D], dim=-1)], dim=-2)
 
