@@ -165,7 +165,10 @@ for patterned layers.
 ## Implementation details
 
 The closed-form solution derived above is implemented in
-`src/metarcwa/solver/homogeneous.py` through three public functions.
+`src/metarcwa/solver/layersolver/homogeneous.py` through three public functions.
+All operators are stored as `Block` / `Block2x2` structured types (see
+[Block matrices](blockmatrix.md)) so that the all-diagonal structure of the
+homogeneous layer is never discarded in favour of a full dense matrix.
 
 **Tensor layout.** All wavevectors are $k_0$-normalised. `epsilon` has shape
 `[N_wl, ...]` and `kx`, `ky` have shape `[..., Nh]`, where `Nh` is the number
@@ -174,49 +177,66 @@ backward mode, every output carries `2Nh` modes, organised as two duplicated
 blocks along the last axis.
 
 **`homogeneous_kz` — modal exponents.** Evaluates $\lambda^2 = k_x^2 + k_y^2 - \varepsilon$ per harmonic (equivalently $k_z^2 = \varepsilon - k_x^2 -
-k_y^2$), then sets $\lambda = 1j \cdot k_z$. Under the $exp(−j\omega t)$
+k_y^2$), then sets $\lambda = 1j \cdot k_z$. Under the $\exp(-j\omega t)$
 convention used throughout this module, the branch sign is chosen so that
 
 - **propagating modes** ($|\mathrm{Im}(k_z)| \leq \texttt{tol}$): $\mathrm{Re}(k_z) > 0$,
 - **evanescent modes** ($|\mathrm{Im}(k_z)| > \texttt{tol}$): $\mathrm{Im}(k_z) > 0$ (decaying in $+z$).
 
+The square root is computed with a Lorentzian regularisation rather than plain
+`torch.sqrt`:
+
 ```python
-lam2 = kx**2 + ky**2 - epsilon          # λ² per harmonic, duplicated → [..., 2N]
-lam  = torch.sqrt(lam2)
-kz   = -1j * lam                        # kz (sign adjusted by branch rule)
-# ... branch sign correction ...
-lam  = 1j * kz                          # forward field ∝ exp(+lam·z̃)
+lam2 = kx**2 + ky**2 - eps              # [..., Nh], duplicated → [..., 2Nh]
+lam  = lam2 / torch.sqrt(lam2 + delta)  # Lorentzian: lam2/sqrt(lam2 + δ)
+kz   = -1j * lam
+# ... branch sign correction (propagating: Re(kz)>0; evanescent: Im(kz)>0) ...
 ```
+
+Plain `torch.sqrt` has an infinite derivative at zero ($d\sqrt{x}/dx \to \infty$
+as $x \to 0$), which causes NaN autograd gradients at grazing incidence
+($\lambda^2 = 0$). The Lorentzian form $\lambda^2/\sqrt{\lambda^2 + \delta}$
+approximates $\sqrt{\lambda^2}$ to $O(\delta)$ accuracy while keeping
+$d/d(\lambda^2)$ bounded for all $\delta > 0$ (default $\delta = 10^{-30}$).
 
 Pass `forward="negative"` to select the backward-propagating branch.
 
 **`homogeneous_Q` — the $Q$ matrix.** Assembles the homogeneous block form of
-$Q$ derived above. Since all four $N\times N$ blocks are diagonal, they are
-built with `torch.diag_embed` of the per-harmonic scalar products:
+$Q$ derived above as a `Block2x2`. Since all four $N_h \times N_h$ sub-blocks
+are diagonal, each is stored as a `Block(Block.DIAG, ...)` — no dense matrices
+are allocated:
 
 ```python
-Q11 = torch.diag_embed(-kx * ky)           # block (1,1): -Kx Ky
-Q12 = torch.diag_embed(kx**2 - epsilon)    # block (1,2): Kx² - εI
-Q21 = torch.diag_embed(epsilon - ky**2)    # block (2,1): εI - Ky²
-Q22 = torch.diag_embed(ky * kx)            # block (2,2): Ky Kx
+Q11 = Block(Block.DIAG, -kx * ky)          # block (1,1): −Kx Ky
+Q12 = Block(Block.DIAG,  kx**2 - eps)      # block (1,2): Kx² − εI
+Q21 = Block(Block.DIAG,  eps - ky**2)      # block (2,1): εI − Ky²
+Q22 = Block(Block.DIAG,  ky * kx)          # block (2,2): Ky Kx
+return Block2x2(Q11, Q12, Q21, Q22)
 ```
-
-Output shape `[..., 2N, 2N]`.
 
 **`homogeneous_modes` — full modal decomposition.** Combines the two functions
-above to return $(\lambda,\, W,\, V)$:
+above to return $(\lambda,\, V)$. The E-mode matrix $W = I$ is **not** returned
+— callers obtain it via `V.eye_like()` when needed. $V$ is computed as a
+`Block2x2` matrix product:
 
 ```python
-kz  = homogeneous_kz(epsilon, kx, ky, forward=forward)
-lam = 1j * kz                                     # [..., 2N]
-W   = torch.eye(2N).expand(*batch, 2N, 2N)        # W = I
-Q   = homogeneous_Q(epsilon, kx, ky)              # [..., 2N, 2N]
-V   = Q * (1.0 / lam).unsqueeze(-2)               # V = Q diag(1/λ)
+kz      = homogeneous_kz(epsilon, kx, ky, forward=forward)
+lam     = 1j * kz                                          # [..., 2Nh]
+Q0      = homogeneous_Q(epsilon, kx, ky)                   # Block2x2 of DIAG
+lam_inv = Block2x2(
+    Block(Block.DIAG, 1.0 / lam[..., :Nh]),
+    Block.zeros(...),
+    Block.zeros(...),
+    Block(Block.DIAG, 1.0 / lam[..., Nh:]),
+)
+V = Q0 @ lam_inv    # Block2x2 @ Block2x2 → Block2x2 of DIAG blocks
+return lam, V
 ```
 
-The column scaling `Q * (1/lam).unsqueeze(-2)` is the efficient, allocation-free
-implementation of $V = Q\lambda^{-1}$ without forming the full diagonal matrix.
-The caller is responsible for assembling the gap (boundary-condition) matrix
+Because `Q0` is all-DIAG and `lam_inv` is block-diagonal with DIAG entries, the
+product `Q0 @ lam_inv` stays entirely within the `DIAG` representation — no dense
+allocation occurs. The caller is responsible for assembling the gap
+(boundary-condition) matrix
 
 $$
 \begin{align}
@@ -228,13 +248,10 @@ $$
 $\lambda_{mn} = 0$ and the corresponding column of $V$ is undefined (NaN). A
 `RuntimeWarning` is emitted; avoid exact grazing or handle it upstream.
 
-**Practical properties.** No call to `torch.linalg.eig` is made — $W$, $V$, and
-$\Lambda$ follow in closed form from diagonal arithmetic. All three functions are
-fully autograd-differentiable through `epsilon`, `kx`, and `ky`, and run on both
-CPU and CUDA. The test suite `tests/test_homogeneous.py` pins the dispersion
-relation $k_z^2 = \varepsilon - k_x^2 - k_y^2$, the identity $W = I$, the
-column-scaling relation $V = Q\,\mathrm{diag}(1/\lambda)$, the correct block
-signs in $Q$, and the grazing-mode warning.
+**Practical properties.** No call to `torch.linalg.eig` is made — $V$ and
+$\Lambda$ follow in closed form from diagonal arithmetic on `Block` types. All
+three functions are fully autograd-differentiable through `epsilon`, `kx`, and
+`ky`, and run on both CPU and CUDA.
 
 ---
 

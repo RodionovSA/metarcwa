@@ -265,3 +265,79 @@ S_\text{stack} = S_{b_0} \star S_{l_1} \star S_{b_1} \star S_{l_2} \star \cdots 
 $$
 
 alternating boundary S-matrices $S_{b_i}$ (the boundary matrix $S_b$ derived above) with layer propagation S-matrices $S_{l_i}$ (the propagation matrix $S_l$).
+
+---
+
+## Implementation
+
+The three S-matrix building blocks are implemented in
+`src/metarcwa/solver/smatrix.py`.  All mode matrices are passed and returned as
+`Block2x2` structured operators (see [Block matrices](blockmatrix.md)), so that
+the diagonal structure of homogeneous layers is preserved throughout.
+
+### `S_boundary`
+
+`S_boundary(WL, VL, WR, VR)` takes four `Block2x2` mode matrices and assembles
+the $4N_h \times 4N_h$ boundary system
+
+$$
+\underbrace{\begin{pmatrix} W_L & -W_R \\ V_L & V_R \end{pmatrix}}_{\text{left}}
+\begin{pmatrix} c_L^- \\ c_R^+ \end{pmatrix}
+=
+\underbrace{\begin{pmatrix} -W_L & W_R \\ V_L & V_R \end{pmatrix}}_{\text{right}}
+\begin{pmatrix} c_L^+ \\ c_R^- \end{pmatrix}
+$$
+
+as two `Block2x2` objects `left` and `right`, then solves for the S-matrix.
+Two code paths exist:
+
+- **All-SCALAR path.** When all four mode matrices contain only `SCALAR` leaf
+  blocks — which occurs for the all-vacuum case — the system is solved via
+  `left.solve(right)` using the Schur complement of `Block2x2` (cheap, no dense
+  allocation).
+- **General path.** When any leaf block is `DIAG` or `DENSE`, both `left` and
+  `right` are converted to dense `[..., 4N_h, 4N_h]` tensors via `.to_dense(Nh)`
+  and the system is solved with `torch.linalg.solve`.  The dense result is then
+  partitioned back into a nested `Block2x2(Block2x2(...), ...)` structure.
+  The dense path is necessary because the nested Schur complement in
+  `Block2x2.solve` can encounter rank-deficient inner sub-blocks when the
+  eigenvector matrices from a patterned-layer solve are `DENSE`.
+
+### `S_prop`
+
+`S_prop(lam, wvl, d)` computes the propagation factor
+$X_d = \exp(\lambda k_0 d)$ and returns the propagation S-matrix
+$\bigl(\begin{smallmatrix} 0 & X_d \\ X_d & 0 \end{smallmatrix}\bigr)$.
+$X_d$ is stored as a `Block2x2` with two `DIAG` leaf blocks — one per
+polarisation half of `lam` — and `SCALAR` zero off-diagonals:
+
+```python
+Xd = Block2x2(
+    Block(Block.DIAG, xd[..., :Nh]),
+    Block.zeros(...),
+    Block.zeros(...),
+    Block(Block.DIAG, xd[..., Nh:]),
+)
+return Block2x2(Z, Xd, Xd, Z)   # Z = zeros_like(Xd)
+```
+
+No $2N_h \times 2N_h$ dense matrix is ever formed.
+
+### `S_layer`
+
+`S_layer(W0, V0, W, V, lam, d, wvl)` assembles the full layer S-matrix by
+cascading `S_in ⋆ S_prop ⋆ S_out`.  Because the same background medium fills
+both sides, the right interface S-matrix is obtained for free by block-swapping
+the left one:
+
+```python
+S_in  = S_boundary(W0, V0, W, V)
+S_p   = S_prop(lam, wvl, d)
+S_out = Block2x2(S_in.d, S_in.c, S_in.b, S_in.a)   # mirror: swap (a↔d, b↔c)
+return S_in.star(S_p).star(S_out)
+```
+
+This exploits the mirror symmetry $S_{11} = S_{22}$, $S_{12} = S_{21}$ proven
+above: `S_out` is exactly the port-swapped version of `S_in`, requiring no
+second solve.  The star products are evaluated via `Block2x2.star()` (see
+[Block matrices](blockmatrix.md)).
