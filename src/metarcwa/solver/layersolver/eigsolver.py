@@ -5,7 +5,7 @@ eigsolver — eigenmode decomposition for patterned RCWA layers
 
 Solves the generalised eigenvalue problem
 
-    Ω² = P · Q,   Ω² · w_i = kz_i² · w_i
+    Ω² = P · Q,   Ω² · w_i = λ² · w_i
 
 to extract the E-mode matrix W (eigenvectors) and H-mode matrix V = Q·W·diag(1/λ),
 where λ = 1j·kz are the modal exponents in the convention shared with
@@ -30,6 +30,7 @@ All functions use the exp(−j ω t) time convention.
 
 import torch
 from typing import Tuple
+import warnings
 
 from metarcwa.solver.blockmatrix import Block, Block2x2
 
@@ -42,16 +43,16 @@ def eigsolver(P: Block2x2, Q: Block2x2,
 
     Solves the eigenvalue problem
 
-        P·Q·w_i = kz_i²·w_i
+        P·Q·w_i = λ²·w_i
 
     and returns modal exponents ``lam = 1j·kz``, the E-mode matrix ``W``
     (columns = eigenvectors), and the H-mode matrix ``V = Q·W·diag(1/lam)``.
     The result is fully compatible with :func:`S_layer` and
     :func:`homogeneous_modes` (same ``lam`` sign convention).
 
-    Branch selection for kz:
-      - Propagating modes (|Re(kz)| > tol): Re(kz) > 0
-      - Evanescent  modes (|Re(kz)| ≤ tol): Im(kz) > 0
+    Branch selection for lam = 1j·kz:
+      - Propagating modes (|Im(lam)| > tol): Im(lam) > 0
+      - Evanescent  modes (|Im(lam)| ≤ tol): Re(lam) < 0
 
     Parameters
     ----------
@@ -67,7 +68,7 @@ def eigsolver(P: Block2x2, Q: Block2x2,
         gradients can be NaN near degeneracies).
     tol : float, optional
         Threshold for classifying a mode as evanescent during branch
-        selection (|Re(kz)| < tol).  Default ``1e-12``.
+        selection (|Im(lam)| < tol).  Default ``1e-12``.
 
     Returns
     -------
@@ -93,12 +94,22 @@ def eigsolver(P: Block2x2, Q: Block2x2,
     else:
         lam_sq, W_dense = torch.linalg.eig(Omega2_dense)
 
-    # kz from eigenvalues with branch selection
-    kz    = torch.sqrt(lam_sq)
-    is_ev = kz.real.abs() < tol
-    sign  = torch.where(is_ev, torch.sign(kz.imag), torch.sign(kz.real))
+    # lam = sqrt(lam_sq) with branch selection to match lam = 1j*kz convention
+    lam = torch.sqrt(lam_sq)
+    is_ev = lam.imag.abs() < tol                        # True = evanescent (lam is real)
+    sign  = torch.where(is_ev, -torch.sign(lam.real), torch.sign(lam.imag))
     sign  = torch.where(sign == 0, torch.ones_like(sign), sign)
-    lam   = 1j * kz * sign                           # [..., 2N]
+    lam   = lam * sign                           # [..., 2N]
+    
+    #Fix grazing angle (lam=0) problem
+    zero_mask = lam.abs() < tol
+    if zero_mask.any():
+        warnings.warn(
+            f"homogeneous_modes: {zero_mask.sum().item()} mode(s) have |lam| < {tol} "
+            "(grazing incidence). Corresponding columns of V will be nan.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
     # E-mode matrix: partition 2N×2N eigenvector matrix into four N×N blocks
     W = Block2x2(

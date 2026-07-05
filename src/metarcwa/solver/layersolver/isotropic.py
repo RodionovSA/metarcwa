@@ -113,13 +113,11 @@ def compute_A(epsilon_grid: torch.Tensor, m_flat: torch.Tensor,
         DENSE Block, shape ``[..., Nh, Nh]``. Convolution of |Tx|².
     """
     Tx, Ty = tvf.compute(epsilon_grid)
-    Tx_fft = torch.fft.fft2(Tx, dim=(-2, -1))
-    Ty_fft = torch.fft.fft2(Ty, dim=(-2, -1))
 
-    axx = Ty_fft.abs() ** 2
-    axy = Tx_fft.conj() * Ty_fft
-    ayx = Tx_fft * Ty_fft.conj()
-    ayy = Tx_fft.abs() ** 2
+    axx = Ty.abs() ** 2
+    axy = Tx.conj() * Ty
+    ayx = Tx * Ty.conj()
+    ayy = Tx.abs() ** 2
 
     Axx = Block(Block.DENSE, convolution_matrix(axx, m_flat, n_flat))
     Axy = Block(Block.DENSE, convolution_matrix(axy, m_flat, n_flat))
@@ -129,7 +127,7 @@ def compute_A(epsilon_grid: torch.Tensor, m_flat: torch.Tensor,
     return Axx, Axy, Ayx, Ayy
 
 
-def compute_Qfact(epsilon_conv: Block,
+def compute_Qfact(epsilon_conv: Block, epsilon_inv_conv: Block,
                   Axx: Block, Axy: Block, Ayx: Block, Ayy: Block) -> Block2x2:
     """
     Assemble the TVF factorization correction to the Q matrix.
@@ -138,13 +136,15 @@ def compute_Qfact(epsilon_conv: Block,
     direct-rule Fourier factorizations, weighted by the TVF anisotropy
     blocks.  The four entries are:
 
-        Qfact = [[ -(ε − ε⁻¹)·Ayx,   (ε − ε⁻¹)·Ayy ],
-                 [ -(ε − ε⁻¹)·Axx,   (ε − ε⁻¹)·Axy ]]
+        Qfact = [[ -(ε − (1/ε)⁻¹)·Ayx,   (ε − (1/ε)⁻¹)·Ayy ],
+                 [ -(ε − (1/ε)⁻¹)·Axx,   (ε − (1/ε)⁻¹)·Axy ]]
 
     Parameters
     ----------
     epsilon_conv : Block
         Dense convolution matrix of ε(r), shape ``[..., Nh, Nh]``.
+    epsilon_inv_conv : Block
+        Dense convolution matrix of 1/ε(r), shape ``[..., Nh, Nh]``.
     Axx : Block
         Anisotropy block from :func:`compute_A`, shape ``[..., Nh, Nh]``.
     Axy : Block
@@ -159,16 +159,15 @@ def compute_Qfact(epsilon_conv: Block,
     Qfact : Block2x2
         Factorization correction; add to Q0 to get the full TVF-corrected Q.
     """
-    a_fact = -epsilon_conv @ Ayx + epsilon_conv.solve(Ayx)
-    b_fact =  epsilon_conv @ Ayy - epsilon_conv.solve(Ayy)
-    c_fact = -epsilon_conv @ Axx + epsilon_conv.solve(Axx)
-    d_fact =  epsilon_conv @ Axy - epsilon_conv.solve(Axy)
+    a_fact = -epsilon_conv @ Ayx + epsilon_inv_conv.solve(Ayx)
+    b_fact =  epsilon_conv @ Ayy - epsilon_inv_conv.solve(Ayy)
+    c_fact = -epsilon_conv @ Axx + epsilon_inv_conv.solve(Axx)
+    d_fact =  epsilon_conv @ Axy - epsilon_inv_conv.solve(Axy)
     return Block2x2(a_fact, b_fact, c_fact, d_fact)
 
 
-def compute_Q(Kx: Block, Ky: Block, epsilon_conv: Block,
-              Axx: Block | None = None, Axy: Block | None = None,
-              Ayx: Block | None = None, Ayy: Block | None = None) -> Block2x2:
+def compute_Q(Kx: Block, Ky: Block, epsilon_conv: Block, epsilon_inv_conv: Block,
+              Axx: Block, Axy: Block, Ayx: Block, Ayy: Block) -> Block2x2:
     """
     Assemble the full Q matrix, optionally with TVF factorization correction.
 
@@ -183,19 +182,18 @@ def compute_Q(Kx: Block, Ky: Block, epsilon_conv: Block,
         Diagonal Block of y-wavevector components, shape ``[..., Nh]``.
     epsilon_conv : Block
         Dense convolution matrix of ε(r), shape ``[..., Nh, Nh]``.
+    epsilon_inv_conv : Block
+        Dense convolution matrix of 1/ε(r), shape ``[..., Nh, Nh]``.
     Axx, Axy, Ayx, Ayy : Block or None
-        TVF anisotropy blocks from :func:`compute_A`. Must all be provided
-        or all be ``None``; mixing raises no error but returns Q0.
+        TVF anisotropy blocks from :func:`compute_A`. 
 
     Returns
     -------
     Q : Block2x2
-        Full Q matrix (= Q0 when no A blocks are given).
+        Full Q matrix.
     """
     Q0 = compute_Q0(Kx, Ky, epsilon_conv)
-    if Axx is None or Axy is None or Ayx is None or Ayy is None:
-        return Q0
-    Qfact = compute_Qfact(epsilon_conv, Axx, Axy, Ayx, Ayy)
+    Qfact = compute_Qfact(epsilon_conv, epsilon_inv_conv, Axx, Axy, Ayx, Ayy)
     return Q0 + Qfact
 
 
@@ -280,8 +278,9 @@ def compute_isotropic(epsilon_grid: torch.Tensor,
 
     P = compute_P(Kx, Ky, epsilon_conv)
     if tvf is None:
-        Q = compute_Q(Kx, Ky, epsilon_conv)
+        Q = compute_Q0(Kx, Ky, epsilon_conv)
     else:
+        epsilon_inv_conv = Block(Block.DENSE, convolution_matrix(1.0 / epsilon_grid, m_flat, n_flat))
         Axx, Axy, Ayx, Ayy = compute_A(epsilon_grid, m_flat, n_flat, tvf)
-        Q = compute_Q(Kx, Ky, epsilon_conv, Axx, Axy, Ayx, Ayy)
+        Q = compute_Q(Kx, Ky, epsilon_conv, epsilon_inv_conv, Axx, Axy, Ayx, Ayy)
     return P, Q
