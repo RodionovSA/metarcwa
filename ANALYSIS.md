@@ -390,9 +390,28 @@ memory-bound. Measure `torch.cuda.max_memory_allocated` before/after on a realis
 
 ---
 
-### B2 · MED · `isotropic.py` `compute_Qfact`/`compute_P` · `epsilon_conv` re-factorized up to 8× per patterned layer — ⬜ Open
+### B2 · MED · `isotropic.py` `compute_Qfact`/`compute_P` · `epsilon_conv` re-factorized up to 8× per patterned layer — ✅ Fixed
 
-**What:** `compute_Qfact` (4× `epsilon_inv_conv.solve`) and `compute_P`
+**Status:** ✅ Resolved 2026-07-08. Added `Block.solve_many(*rhs)` (`blockmatrix.py`): promotes
+all `rhs` to DENSE, concatenates them along the column axis (broadcasting mismatched batch
+shapes first — needed since the TVF `A`-blocks can be batch-1 per C1 while `epsilon_conv` is
+fully batched), and issues a **single** `torch.linalg.solve` call, which LAPACK factorizes once
+and reuses across every RHS column; SCALAR/DIAG `self` falls back to a per-rhs elementwise
+inverse (no factorization to share there). `compute_P` and `compute_Qfact` now call
+`epsilon_conv.solve_many(...)` / `epsilon_inv_conv.solve_many(...)` once each instead of 4
+individual `.solve()` calls. Verified: (1) `tests/solver/test_blockmatrix.py::TestSolveMany`
+includes a monkeypatched call-count regression guard (3 separate `.solve()` → 3
+`torch.linalg.solve` calls; one `solve_many(...)` on the same 3 rhs → 1 call); (2)
+`test_isotropic.py::TestComputeP/TestComputeQfact::test_matches_naive_four_solves` assert the
+refactored functions produce bit-identical output to the original 4-solve formulation; (3)
+measured end-to-end on one patterned-layer `prepare()` (checkerboard, `Nh_half=3`): **1**
+`torch.linalg.solve` call for `compute_P` alone (down from 4), and **3** total with TVF on
+(1 `compute_P` + 1 `compute_Qfact` + 1 unrelated TVF-Newton-step solve — down from what would
+have been 9 before this fix). All existing `compute_P`/`compute_Qfact`/`compute_isotropic`
+tests (incl. `test_uniform_eps_Q_matches_homogeneous_Q` and the TVF single-slice equivalence
+test) pass unmodified.
+
+**What (historical):** `compute_Qfact` (4× `epsilon_inv_conv.solve`) and `compute_P`
 (4× `epsilon_conv.solve`) each trigger `Block.solve` → `torch.linalg.solve` → a fresh LU
 factorization of the same DENSE `[..., Nh, Nh]` matrix. LU is `O(Nh³)` — the same order as
 the eig itself. Post-refactor this is once per `prepare()` instead of per `solve()`, but that
@@ -557,7 +576,7 @@ bites someone.
 | E7 | Correctness | MED | ✅ Fixed (S-matrix regression + partition-of-unity tests) | — |
 | E4 | Correctness | MED | ✅ Fixed (gradcheck verified; docstring aligned) | — |
 | C3 | Memory | HIGH | ✅ Fixed (`checkpoint_eig` config flag) | — |
-| B2 | Compute | MED | ⬜ Open | 0.5–1 d |
+| B2 | Compute | MED | ✅ Fixed (`Block.solve_many`) | — |
 | A4/C4 | Arch/Memory | MED | ⬜ Open | ~1 d |
 | A3 | Arch | MED | ✅ Fixed (`_modes.py` helper; E6+B3 folded in) | — |
 | B3 | Compute | LOW-MED (↓) | ✅ Fixed (gated via A3) | — |

@@ -173,6 +173,53 @@ class TestComputeP:
         for entry in (P.a, P.b, P.c, P.d):
             assert entry.data.device.type == device
 
+    def test_matches_naive_four_solves(self, device):
+        """B2: compute_P uses Block.solve_many (one shared factorization of
+        epsilon_conv) instead of four independent Block.solve calls -- the
+        result must be identical to the original per-RHS formulation."""
+        Kx, Ky = _kxy(device=device)
+        eps = _eps_conv(3.0, device=device)
+
+        P = compute_P(Kx, Ky, eps)
+
+        eps_inv_Ky = eps.solve(Ky)
+        eps_inv_Kx = eps.solve(Kx)
+        a_naive = -Kx @ eps_inv_Ky
+        b_naive = -Kx.eye_like() + Kx @ eps_inv_Kx
+        c_naive =  Ky.eye_like() - Ky @ eps_inv_Ky
+        d_naive =  Ky @ eps_inv_Kx
+
+        for got, naive in ((P.a, a_naive), (P.b, b_naive), (P.c, c_naive), (P.d, d_naive)):
+            assert_close(got.to(Block.DENSE, Nh).data, naive.to(Block.DENSE, Nh).data,
+                        atol=1e-10, rtol=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# compute_Qfact
+# ---------------------------------------------------------------------------
+
+class TestComputeQfact:
+
+    def test_matches_naive_four_solves(self, device):
+        """B2: compute_Qfact uses Block.solve_many (one shared factorization
+        of epsilon_inv_conv) instead of four independent Block.solve calls --
+        the result must be identical to the original per-RHS formulation."""
+        eps        = _eps_conv(3.0, device=device)
+        eps_inv    = _eps_conv(0.2, device=device)   # not the true reciprocal -> nonzero Delta
+        A_blk      = Block(Block.DENSE, (0.5 * torch.eye(Nh, dtype=torch.float64)).to(device))
+        B_blk      = Block(Block.DENSE, (0.3 * torch.eye(Nh, dtype=torch.float64)).to(device))
+
+        got = compute_Qfact(eps, eps_inv, Axx=A_blk, Axy=B_blk, Ayx=B_blk, Ayy=A_blk)
+
+        a_naive = -eps @ B_blk + eps_inv.solve(B_blk)
+        b_naive =  eps @ A_blk - eps_inv.solve(A_blk)
+        c_naive = -eps @ A_blk + eps_inv.solve(A_blk)
+        d_naive =  eps @ B_blk - eps_inv.solve(B_blk)
+
+        for gotblk, naive in ((got.a, a_naive), (got.b, b_naive), (got.c, c_naive), (got.d, d_naive)):
+            assert_close(gotblk.to(Block.DENSE, Nh).data, naive.to(Block.DENSE, Nh).data,
+                        atol=1e-10, rtol=1e-10)
+
 
 # ---------------------------------------------------------------------------
 # compute_Q

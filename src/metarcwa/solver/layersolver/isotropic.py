@@ -157,10 +157,11 @@ def compute_Qfact(epsilon_conv: Block, epsilon_inv_conv: Block,
     Qfact : Block2x2
         Factorization correction; add to Q0 to get the full TVF-corrected Q.
     """
-    a_fact = -epsilon_conv @ Ayx + epsilon_inv_conv.solve(Ayx)
-    b_fact =  epsilon_conv @ Ayy - epsilon_inv_conv.solve(Ayy)
-    c_fact = -epsilon_conv @ Axx + epsilon_inv_conv.solve(Axx)
-    d_fact =  epsilon_conv @ Axy - epsilon_inv_conv.solve(Axy)
+    inv_Ayx, inv_Ayy, inv_Axx, inv_Axy = epsilon_inv_conv.solve_many(Ayx, Ayy, Axx, Axy)
+    a_fact = -epsilon_conv @ Ayx + inv_Ayx
+    b_fact =  epsilon_conv @ Ayy - inv_Ayy
+    c_fact = -epsilon_conv @ Axx + inv_Axx
+    d_fact =  epsilon_conv @ Axy - inv_Axy
     return Block2x2(a_fact, b_fact, c_fact, d_fact)
 
 
@@ -225,10 +226,11 @@ def compute_P(Kx: Block, Ky: Block, epsilon_conv: Block) -> Block2x2:
     P : Block2x2
         P matrix. Entry kinds promote to DENSE when epsilon_conv is DENSE.
     """
-    a = -Kx @ epsilon_conv.solve(Ky)
-    b = -Kx.eye_like() + Kx @ epsilon_conv.solve(Kx)
-    c =  Ky.eye_like() - Ky @ epsilon_conv.solve(Ky)
-    d =  Ky @ epsilon_conv.solve(Kx)
+    eps_inv_Ky, eps_inv_Kx = epsilon_conv.solve_many(Ky, Kx)
+    a = -Kx @ eps_inv_Ky
+    b = -Kx.eye_like() + Kx @ eps_inv_Kx
+    c =  Ky.eye_like() - Ky @ eps_inv_Ky
+    d =  Ky @ eps_inv_Kx
     return Block2x2(a, b, c, d)
 
 

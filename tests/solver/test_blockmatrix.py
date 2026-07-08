@@ -323,6 +323,77 @@ class TestSolve:
             lhs.solve(rhs)
 
 
+class TestSolveMany:
+    """`Block.solve_many` (B2): batches multiple RHS solves against the same
+    operator into a single `torch.linalg.solve` call (one factorization
+    shared across RHS) instead of one factorization per RHS."""
+
+    def test_dense_matches_individual_solves(self):
+        lhs = dense()
+        r1, r2, r3 = dense(torch.eye(N) * 2), diag([1., 2., 3., 4.]), Block.eye()
+        got = lhs.solve_many(r1, r2, r3)
+        assert len(got) == 3
+        for g, r in zip(got, (r1, r2, r3)):
+            expected = lhs.solve(r)
+            assert g.kind == Block.DENSE
+            assert_close(g.data, expected.data, atol=1e-5, rtol=1e-5)
+
+    def test_diag_matches_individual_solves(self):
+        lhs = diag([2., 4., 1., 2.])
+        r1, r2 = diag([4., 8., 3., 6.]), diag([1., 1., 1., 1.])
+        g1, g2 = lhs.solve_many(r1, r2)
+        assert_close(g1.data, lhs.solve(r1).data, atol=1e-5, rtol=1e-5)
+        assert_close(g2.data, lhs.solve(r2).data, atol=1e-5, rtol=1e-5)
+
+    def test_broadcasts_mismatched_rhs_batch(self):
+        """rhs Blocks with different batch shapes (e.g. a batch-1 field
+        alongside a fully-batched one, as in the TVF A-blocks) must
+        broadcast to a common batch before the shared solve, and still
+        match per-rhs `.solve()` results."""
+        B = 3
+        mat = torch.diag(torch.tensor([1.0, 2.0, 3.0, 4.0])) + 0.1 * torch.eye(N)
+        lhs = Block(Block.DENSE, mat.unsqueeze(0).expand(B, N, N).clone())
+        r_full  = Block(Block.DENSE, torch.eye(N).unsqueeze(0).expand(B, N, N) * 2.0)
+        r_batch1 = Block(Block.DENSE, torch.eye(N).unsqueeze(0) * 3.0)   # batch=1
+
+        got_full, got_b1 = lhs.solve_many(r_full, r_batch1)
+        assert got_full.data.shape[0] == B
+        assert got_b1.data.shape[0] == B   # broadcast up from batch=1
+        assert_close(got_full.data, lhs.solve(r_full).data, atol=1e-5, rtol=1e-5)
+        assert_close(got_b1.data, lhs.solve(r_batch1).data, atol=1e-5, rtol=1e-5)
+
+    def test_shares_one_factorization(self, monkeypatch):
+        """The whole point of solve_many: N separate `.solve()` calls trigger
+        N calls to torch.linalg.solve, but solve_many(...) on the same N rhs
+        must trigger exactly one -- this is the regression guard that keeps
+        B2 fixed."""
+        lhs = dense()
+        r1, r2, r3 = dense(), diag([1., 2., 3., 4.]), Block.eye()
+
+        calls = {"n": 0}
+        real_solve = torch.linalg.solve
+
+        def counting_solve(a, b):
+            calls["n"] += 1
+            return real_solve(a, b)
+
+        monkeypatch.setattr(torch.linalg, "solve", counting_solve)
+        lhs.solve(r1)
+        lhs.solve(r2)
+        lhs.solve(r3)
+        assert calls["n"] == 3
+
+        calls["n"] = 0
+        lhs.solve_many(r1, r2, r3)
+        assert calls["n"] == 1
+
+    def test_n_mismatch_raises(self):
+        lhs = dense()
+        rhs = Block(Block.DENSE, torch.eye(3))
+        with pytest.raises(ValueError, match="size mismatch"):
+            lhs.solve_many(rhs)
+
+
 # ---- batched -----------------------------------------------------------------
 
 class TestBatch:

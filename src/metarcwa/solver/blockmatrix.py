@@ -173,6 +173,53 @@ class Block:
         r_data = r.data.to(self.data.dtype)
         return Block(Block.DENSE, torch.linalg.solve(self.data, r_data))
 
+    def solve_many(self, *rhs: "Block") -> Tuple["Block", ...]:
+        """Solve ``self^{-1} @ r`` for each ``r`` in ``rhs``, sharing one
+        factorization of ``self`` when it is DENSE.
+
+        All ``rhs`` are promoted to DENSE and concatenated along the column
+        axis into a single ``torch.linalg.solve`` call, so ``self`` is
+        LU-factorized once instead of once per ``rhs`` (LAPACK factorizes
+        the left-hand side once and reuses it across every column of a
+        multi-column right-hand side). No factorization is cached on the
+        instance — it lives only for the duration of this call.
+
+        SCALAR/DIAG ``self`` has no factorization to share (its inverse is
+        already elementwise, O(n)), so each ``rhs`` is solved independently
+        via ``self.inv() @ r``.
+
+        Parameters
+        ----------
+        *rhs : Block
+            Right-hand-side operators; each must share ``self``'s size
+            (SCALAR sizes match anything). Their batch shapes must be
+            mutually broadcastable (they are concatenated together before
+            being broadcast against ``self``).
+
+        Returns
+        -------
+        tuple of Block
+            One solved ``Block`` per input ``rhs``, in the same order.
+        """
+        for r in rhs:
+            self._check_n(r)
+        if self.kind in (Block.SCALAR, Block.DIAG):
+            inv = self.inv()
+            return tuple(inv @ r for r in rhs)
+        n = self.n
+        dense_rhs = [r.to(Block.DENSE, n).data.to(self.data.dtype) for r in rhs]
+        sizes     = [d.shape[-1] for d in dense_rhs]
+        # rhs may carry different batch shapes (e.g. a batch-1 TVF field
+        # alongside a fully-batched one); broadcast them to a common batch
+        # before concatenating along columns (torch.cat needs exact shape
+        # match on non-cat dims, unlike torch.linalg.solve's own A-vs-B
+        # broadcasting, which is applied afterwards against `self.data`).
+        batch = torch.broadcast_shapes(*(d.shape[:-1] for d in dense_rhs))
+        dense_rhs = [d.expand(*batch, d.shape[-1]) for d in dense_rhs]
+        combined  = torch.cat(dense_rhs, dim=-1)          # [..., n, sum(sizes)]
+        solved    = torch.linalg.solve(self.data, combined)
+        return tuple(Block(Block.DENSE, s) for s in torch.split(solved, sizes, dim=-1))
+
     # ---- constructors ----
     @classmethod
     def eye(cls, **kw) -> "Block":
