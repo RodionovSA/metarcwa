@@ -8,6 +8,7 @@ import pytest
 import torch
 
 from metarcwa.solver.layersolver.homogeneous import homogeneous_kz, homogeneous_Q, homogeneous_modes
+from metarcwa.solver.layersolver import _modes
 from metarcwa.solver.blockmatrix import Block, Block2x2
 
 # ---------------------------------------------------------------------------
@@ -202,20 +203,43 @@ class TestHomogeneousModes:
         assert torch.allclose(V.c.data, Q0.c.data / lam_l, atol=1e-10)
         assert torch.allclose(V.d.data, Q0.d.data / lam_r, atol=1e-10)
 
-    def test_grazing_mode_emits_runtime_warning(self, device):
-        """lam = 0 at kx² + ky² == eps (exact grazing) must emit RuntimeWarning."""
+    def test_grazing_mode_emits_runtime_warning(self, device, monkeypatch):
+        """lam = 0 at kx² + ky² == eps (exact grazing) must emit RuntimeWarning
+        when the opt-in WARN_GRAZING gate is enabled (default off, see B3)."""
+        monkeypatch.setattr(_modes, "WARN_GRAZING", True)
         eps = torch.tensor([[1.0 + 0j]], dtype=torch.complex128, device=device)
         kx  = torch.tensor([[1.0]],      dtype=torch.float64,    device=device)
         ky  = torch.zeros(1, 1,          dtype=torch.float64,    device=device)
         with pytest.warns(RuntimeWarning, match="grazing"):
             homogeneous_modes(eps, kx, ky)
 
-    def test_no_warning_for_non_grazing_inputs(self, device):
-        """No RuntimeWarning must be emitted for well-conditioned inputs."""
+    def test_no_warning_when_gate_disabled(self, device):
+        """WARN_GRAZING defaults to False: no warning even at exact grazing."""
+        eps = torch.tensor([[1.0 + 0j]], dtype=torch.complex128, device=device)
+        kx  = torch.tensor([[1.0]],      dtype=torch.float64,    device=device)
+        ky  = torch.zeros(1, 1,          dtype=torch.float64,    device=device)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            homogeneous_modes(eps, kx, ky)  # must not raise
+
+    def test_no_warning_for_non_grazing_inputs(self, device, monkeypatch):
+        """No RuntimeWarning must be emitted for well-conditioned inputs
+        (gate enabled, to exercise the check itself, not just its absence)."""
+        monkeypatch.setattr(_modes, "WARN_GRAZING", True)
         eps, kx, ky = _make_inputs(device)
         with warnings.catch_warnings():
             warnings.simplefilter("error", RuntimeWarning)
             homogeneous_modes(eps, kx, ky)  # must not raise
+
+    def test_grazing_V_is_finite(self, device):
+        """E6: the Lorentzian-regularized 1/lam keeps V finite even at exact
+        grazing incidence (lam = 0), instead of producing nan/inf columns."""
+        eps = torch.tensor([[1.0 + 0j]], dtype=torch.complex128, device=device)
+        kx  = torch.tensor([[1.0]],      dtype=torch.float64,    device=device)
+        ky  = torch.zeros(1, 1,          dtype=torch.float64,    device=device)
+        _, V = homogeneous_modes(eps, kx, ky)
+        for entry in _block2x2_entries(V):
+            assert torch.isfinite(entry.data).all()
 
     def test_outputs_on_correct_device(self, device):
         eps, kx, ky = _make_inputs(device)

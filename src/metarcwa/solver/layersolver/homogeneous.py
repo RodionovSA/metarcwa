@@ -28,10 +28,10 @@ All functions use the exp(−j ω t) time convention.
 
 import torch
 from typing import Tuple
-import warnings
 
 from metarcwa.solver.blockmatrix import Block, Block2x2
 from metarcwa.model.base import _REAL_TO_COMPLEX
+from metarcwa.solver.layersolver._modes import _branch_select, _lam_inv_block, _warn_grazing
 
 
 def homogeneous_kz(epsilon: torch.Tensor,
@@ -90,17 +90,16 @@ def homogeneous_kz(epsilon: torch.Tensor,
     lam2_block = kx**2 + ky**2 - eps                          # [..., Nh]
     lam2 = torch.cat([lam2_block, lam2_block], dim=-1)         # [..., 2Nh]
 
-    lam = lam2/torch.sqrt(lam2 + delta)
-    kz  = -1j * lam
+    # local modal exponent 1j*kz (unbranched); branch-select in this space
+    # (E5 rule, shared with eigsolver) then convert to kz = -1j*lam.
+    lam = _branch_select(lam2 / torch.sqrt(lam2 + delta), tol)
 
-    is_evan = kz.imag.abs() > tol
-    sign    = torch.where(is_evan, torch.sign(kz.imag), torch.sign(kz.real))
     if forward == "negative":
-        sign = -sign
+        lam = -lam
     elif forward != "positive":
         raise ValueError("forward must be 'positive' or 'negative'")
-    sign = torch.where(sign == 0, torch.ones_like(sign), sign)
-    return kz * sign
+
+    return -1j * lam
 
 
 def homogeneous_Q(epsilon: torch.Tensor,
@@ -204,23 +203,10 @@ def homogeneous_modes(epsilon: torch.Tensor,
     kz  = homogeneous_kz(epsilon=epsilon, kx=kx, ky=ky, forward=forward)
     lam = 1j * kz                                              # [..., 2Nh]
 
-    zero_mask = lam.abs() < tol
-    if zero_mask.any():
-        warnings.warn(
-            f"homogeneous_modes: {zero_mask.sum().item()} mode(s) have |lam| < {tol} "
-            "(grazing incidence). Corresponding columns of V will be nan.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
+    _warn_grazing(lam, tol, "homogeneous_modes")
 
     Q0  = homogeneous_Q(epsilon=epsilon, kx=kx, ky=ky)        # Block2x2, all DIAG
     Nh  = kx.shape[-1]
-    kw  = dict(device=lam.device, dtype=lam.dtype)
-    lam_inv = Block2x2(
-        Block(Block.DIAG, 1.0 / lam[..., :Nh]),               # left  column block
-        Block.zeros(**kw),
-        Block.zeros(**kw),
-        Block(Block.DIAG, 1.0 / lam[..., Nh:]),               # right column block
-    )
+    lam_inv = _lam_inv_block(lam, Nh)                          # E6: Lorentzian-regularized
     V = Q0 @ lam_inv                                           # Block2x2 @ Block2x2
     return lam, V

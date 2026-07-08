@@ -30,9 +30,9 @@ All functions use the exp(−j ω t) time convention.
 
 import torch
 from typing import Tuple
-import warnings
 
 from metarcwa.solver.blockmatrix import Block, Block2x2
+from metarcwa.solver.layersolver._modes import _branch_select, _lam_inv_block, _warn_grazing
 
 
 def eigsolver(P: Block2x2, Q: Block2x2,
@@ -95,21 +95,10 @@ def eigsolver(P: Block2x2, Q: Block2x2,
         lam_sq, W_dense = torch.linalg.eig(Omega2_dense)
 
     # lam = sqrt(lam_sq) with branch selection to match lam = 1j*kz convention
-    lam = torch.sqrt(lam_sq)
-    is_ev = lam.imag.abs() < tol                        # True = evanescent (lam is real)
-    sign  = torch.where(is_ev, -torch.sign(lam.real), torch.sign(lam.imag))
-    sign  = torch.where(sign == 0, torch.ones_like(sign), sign)
-    lam   = lam * sign                           # [..., 2N]
-    
-    #Fix grazing angle (lam=0) problem
-    zero_mask = lam.abs() < tol
-    if zero_mask.any():
-        warnings.warn(
-            f"homogeneous_modes: {zero_mask.sum().item()} mode(s) have |lam| < {tol} "
-            "(grazing incidence). Corresponding columns of V will be nan.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
+    lam = _branch_select(torch.sqrt(lam_sq), tol)        # [..., 2N]
+
+    # Fix grazing angle (lam=0) problem (opt-in; see _modes.WARN_GRAZING)
+    _warn_grazing(lam, tol, "eigsolver")
 
     # E-mode matrix: partition 2N×2N eigenvector matrix into four N×N blocks
     W = Block2x2(
@@ -119,14 +108,8 @@ def eigsolver(P: Block2x2, Q: Block2x2,
         Block(Block.DENSE, W_dense[..., N:, N:]),    # bottom-right
     )
 
-    # H-mode matrix: V = Q @ W @ diag(1/lam)
-    kw      = dict(device=lam.device, dtype=lam.dtype)
-    lam_inv = Block2x2(
-        Block(Block.DIAG, 1.0 / lam[..., :N]),
-        Block.zeros(**kw),
-        Block.zeros(**kw),
-        Block(Block.DIAG, 1.0 / lam[..., N:]),
-    )
+    # H-mode matrix: V = Q @ W @ diag(1/lam), Lorentzian-regularized (E6)
+    lam_inv = _lam_inv_block(lam, N)
     V = Q @ W @ lam_inv
 
     return lam, W, V
