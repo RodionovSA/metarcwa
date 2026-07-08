@@ -1,25 +1,35 @@
 # metarcwa/solver/layersolver/base.py
 """
-base — LayerSolver: per-element S-matrix dispatcher
-====================================================
+base — LayerSolver: per-element modal solver and S-matrix assembler
+=====================================================================
 
-``LayerSolver`` is the central mode-solving orchestrator.  It:
+``LayerSolver`` is the central mode-solving orchestrator. It splits work into
+two phases with very different cost:
 
-  - Pre-computes the vacuum background modes (W0, V0) once at construction.
-  - Dispatches each stack element to the appropriate sub-solver via
-    :meth:`solve`.
-  - Returns a ``Block2x2`` S-matrix for each element, ready to be composed
-    with the Redheffer star product.
+  - :meth:`prepare` — EXPENSIVE. Solves the per-element eigenproblem (TVF
+    field, convolution matrices, eigendecomposition for patterned layers;
+    closed-form modes for homogeneous layers/media) and returns a
+    :class:`LayerOperator` — a plain snapshot of the modal solution.
+  - :meth:`smatrix` — CHEAP. Assembles the ``Block2x2`` S-matrix from an
+    already-prepared operator via boundary matching + propagation.
+
+:meth:`solve` composes the two for callers that don't need to reuse the
+prepared operator. The caller owns the operator's lifetime: rebuild it
+whenever the underlying geometry/pattern/source changes (e.g. every
+inverse-design step); reuse it across repeated ``smatrix()`` calls at fixed
+geometry (e.g. a thickness sweep, where only ``op.thickness`` changes).
 
 Supported element types and their solvers:
 
   HomogeneousLayer   → :func:`homogeneous_modes` (closed-form, no eigensolver)
   PatternedLayer     → :func:`compute_isotropic` + :func:`eigsolver`
-  MediumSpec         → :func:`homogeneous_modes` + :func:`S_boundary`
-                       (semi-infinite input/output medium)
+  MediumSpec         → :func:`homogeneous_modes`
+                       (semi-infinite input/output medium; boundary-only,
+                       no propagation)
 """
 
 import torch
+from dataclasses import dataclass
 from typing import Tuple
 
 from metarcwa.model.layer import HomogeneousLayer, PatternedLayer
@@ -32,9 +42,43 @@ from metarcwa.solver.layersolver.eigsolver import eigsolver
 from metarcwa.solver.config import Config
 
 
+@dataclass(frozen=True)
+class LayerOperator:
+    """
+    Precomputed modal solution of one stack element.
+
+    Produced by :meth:`LayerSolver.prepare` (the expensive step: TVF field,
+    convolution matrices, eigendecomposition). Consumed by
+    :meth:`LayerSolver.smatrix` (cheap: boundary matching + propagation).
+
+    The caller owns the lifetime: rebuild when the geometry or source
+    changes (e.g. every inverse-design step); reuse across repeated
+    ``smatrix()`` calls at fixed geometry. ``thickness`` is read at
+    ``smatrix()`` time, so thickness-only changes (e.g. an in-place
+    ``nn.Parameter`` update, or ``dataclasses.replace(op, thickness=...)``)
+    do NOT require re-preparing.
+
+    Attributes
+    ----------
+    lam : torch.Tensor
+        Modal exponents lam = 1j·kz, shape ``[..., 2Nh]``.
+    W : Block2x2
+        E-mode matrix (columns = eigenvectors of the E-field).
+    V : Block2x2
+        H-mode matrix.
+    thickness : torch.Tensor or None
+        Layer thickness. ``None`` marks a semi-infinite medium — a
+        boundary-only element with no propagation.
+    """
+    lam: torch.Tensor
+    W: Block2x2
+    V: Block2x2
+    thickness: torch.Tensor | None = None
+
+
 class LayerSolver:
     """
-    Per-element S-matrix solver for RCWA layer stacks.
+    Per-element modal solver and S-matrix assembler for RCWA layer stacks.
 
     Pre-computes the background (vacuum) mode matrices ``W0`` and ``V0``
     from ``kx``, ``ky`` at construction time; reuses them for every
@@ -104,13 +148,81 @@ class LayerSolver:
         _, V0 = homogeneous_modes(eps, self.kx, self.ky)
         return V0.eye_like(), V0
 
+    def prepare(self, element: HomogeneousLayer | PatternedLayer | MediumSpec
+                ) -> LayerOperator:
+        """
+        Solve the modal eigenproblem for a single stack element (expensive).
+
+        Dispatches to :meth:`_homogeneous`, :meth:`_patterned`, or
+        :meth:`_medium` depending on the element type. The returned
+        :class:`LayerOperator` is pure data — reuse it across multiple
+        :meth:`smatrix` calls (e.g. a thickness sweep) instead of calling
+        ``prepare`` again.
+
+        Parameters
+        ----------
+        element : HomogeneousLayer or PatternedLayer or MediumSpec
+            The layer or medium specification to solve.
+
+        Returns
+        -------
+        op : LayerOperator
+            Precomputed modal solution; pass to :meth:`smatrix` to assemble
+            the S-matrix.
+        """
+        if isinstance(element, HomogeneousLayer):
+            return self._homogeneous(element)
+        elif isinstance(element, PatternedLayer):
+            return self._patterned(element)
+        elif isinstance(element, MediumSpec):
+            return self._medium(element)
+        else:
+            raise TypeError(
+                f"element must be HomogeneousLayer, PatternedLayer, or "
+                f"MediumSpec, but got {type(element)}"
+            )
+
+    def smatrix(self, op: LayerOperator, left: bool = True) -> Block2x2:
+        """
+        Assemble the S-matrix from a prepared operator (cheap).
+
+        For a finite layer (``op.thickness is not None``) this cascades
+        ``S_in ⋆ S_prop ⋆ S_out`` via :func:`S_layer`. For a semi-infinite
+        medium (``op.thickness is None``) it computes a single boundary
+        S-matrix via :func:`S_boundary`.
+
+        Parameters
+        ----------
+        op : LayerOperator
+            Result of :meth:`prepare`.
+        left : bool, optional
+            For semi-infinite media only: ``True`` (default) treats the
+            medium as the left (input) semi-infinite region; ``False``
+            treats it as the right (output) semi-infinite region. Has no
+            effect for finite layers.
+
+        Returns
+        -------
+        S : Block2x2
+            S-matrix of the element; compose successive elements with
+            ``S1.star(S2)`` (Redheffer star product).
+        """
+        if op.thickness is None:
+            if left:
+                return S_boundary(op.W, op.V, self.W0, self.V0)
+            else:
+                return S_boundary(self.W0, self.V0, op.W, op.V)
+        return S_layer(self.W0, self.V0, op.W, op.V, op.lam, op.thickness, self.wvl)
+
     def solve(self, element: HomogeneousLayer | PatternedLayer | MediumSpec,
               left: bool = True) -> Block2x2:
         """
         Compute the S-matrix for a single stack element.
 
-        Dispatches to :meth:`_homogeneous`, :meth:`_patterned`, or
-        :meth:`_medium` depending on the element type.
+        Convenience wrapper equivalent to ``smatrix(prepare(element), left)``.
+        Prefer calling :meth:`prepare` once and :meth:`smatrix` repeatedly
+        when the same element is solved more than once (e.g. spectral sweeps
+        or thickness-only optimization at fixed geometry).
 
         Parameters
         ----------
@@ -128,24 +240,13 @@ class LayerSolver:
             S-matrix of the element; compose successive elements with
             ``S1.star(S2)`` (Redheffer star product).
         """
-        if isinstance(element, HomogeneousLayer):
-            return self._homogeneous(element)
-        elif isinstance(element, PatternedLayer):
-            return self._patterned(element)
-        elif isinstance(element, MediumSpec):
-            return self._medium(element, left)
-        else:
-            raise TypeError(
-                f"element must be HomogeneousLayer, PatternedLayer, or "
-                f"MediumSpec, but got {type(element)}"
-            )
+        return self.smatrix(self.prepare(element), left)
 
-    def _homogeneous(self, layer: HomogeneousLayer) -> Block2x2:
+    def _homogeneous(self, layer: HomogeneousLayer) -> LayerOperator:
         """
-        Compute S-matrix for a homogeneous layer using closed-form modes.
+        Solve the modes of a homogeneous layer using closed-form modes.
         """
         medium = layer.medium
-        d      = layer.thickness
         if isinstance(medium, IsotropicMediumSpec):
             lam, V = homogeneous_modes(medium.eps, self.kx, self.ky)
             W      = V.eye_like()
@@ -153,10 +254,10 @@ class LayerSolver:
             raise NotImplementedError(
                 f"Homogeneous solver not implemented for {type(medium)}"
             )
-        return S_layer(self.W0, self.V0, W, V, lam, d, self.wvl)
+        return LayerOperator(lam, W, V, layer.thickness)
 
-    def _patterned(self, layer: PatternedLayer) -> Block2x2:
-        """Compute S-matrix for a patterned layer via eigensolver.
+    def _patterned(self, layer: PatternedLayer) -> LayerOperator:
+        """Solve the modes of a patterned layer via eigensolver.
 
         Builds the permittivity grid from ``medium_solid`` and ``medium_void``
         weighted by ``pattern``, computes P and Q operators via
@@ -165,7 +266,6 @@ class LayerSolver:
         """
         medium_solid = layer.medium_solid
         medium_void  = layer.medium_void
-        d            = layer.thickness
         pattern      = layer.pattern
 
         if isinstance(medium_solid, IsotropicMediumSpec) and \
@@ -198,33 +298,21 @@ class LayerSolver:
                 f"Patterned solver not implemented for "
                 f"({type(medium_solid)}, {type(medium_void)})"
             )
-        return S_layer(self.W0, self.V0, W, V, lam, d, self.wvl)
+        return LayerOperator(lam, W, V, layer.thickness)
 
-    def _medium(self, medium: MediumSpec, left: bool) -> Block2x2:
-        """Compute the interface S-matrix for a semi-infinite medium.
-
-        Uses :func:`S_boundary` to match the medium modes against the
-        background (vacuum) modes.  The ``left`` flag controls which side
-        of the interface the medium occupies:
-
-          left=True  → medium is on the left  (vacuum on the right)
-          left=False → medium is on the right (vacuum on the left)
+    def _medium(self, medium: MediumSpec) -> LayerOperator:
+        """Solve the modes of a semi-infinite medium.
 
         Parameters
         ----------
         medium : MediumSpec
             The semi-infinite medium specification.
-        left : bool
-            See description above.
         """
         if isinstance(medium, IsotropicMediumSpec):
-            _, V = homogeneous_modes(medium.eps, self.kx, self.ky)
-            W    = V.eye_like()
+            lam, V = homogeneous_modes(medium.eps, self.kx, self.ky)
+            W      = V.eye_like()
         else:
             raise NotImplementedError(
                 f"Medium solver not implemented for {type(medium)}"
             )
-        if left:
-            return S_boundary(W, V, self.W0, self.V0)
-        else:
-            return S_boundary(self.W0, self.V0, W, V)
+        return LayerOperator(lam, W, V, thickness=None)

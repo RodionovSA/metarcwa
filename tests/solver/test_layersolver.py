@@ -6,8 +6,10 @@ import pytest
 import torch
 from torch.testing import assert_close
 
+import dataclasses
+
 from metarcwa.solver.config import Config
-from metarcwa.solver.layersolver.base import LayerSolver
+from metarcwa.solver.layersolver.base import LayerSolver, LayerOperator
 from metarcwa.solver.layersolver.homogeneous import homogeneous_modes
 from metarcwa.solver.layersolver.isotropic import compute_isotropic
 from metarcwa.solver.blockmatrix import Block, Block2x2
@@ -341,11 +343,15 @@ class TestLayerSolverMedium:
         assert M[..., :N, :N].abs().max().item() > 1e-6
 
     def test_left_right_give_different_s_matrices(self, device):
-        """left=True and left=False must yield different S-matrices for ε≠1."""
+        """left=True and left=False must yield different S-matrices for ε≠1.
+
+        Uses one prepared operator for both sides, since `left` is now an
+        smatrix()-time assembly choice, not a prepare()-time one.
+        """
         solver, *_, Nh = _make_solver(device)
-        med = _medium(4.0, device)
-        S_L = solver._medium(med, left=True)
-        S_R = solver._medium(med, left=False)
+        op = solver.prepare(_medium(4.0, device))
+        S_L = solver.smatrix(op, left=True)
+        S_R = solver.smatrix(op, left=False)
         diff = (S_L.to_dense(Nh) - S_R.to_dense(Nh)).abs().max().item()
         assert diff > 1e-6
 
@@ -353,3 +359,60 @@ class TestLayerSolverMedium:
         solver, *_ = _make_solver(device)
         S = solver.solve(_medium(2.5, device))
         assert _get_leaf(S).data.device.type == device
+
+
+# ---------------------------------------------------------------------------
+# prepare() / smatrix() split (LAYERSOLVER_PLAN Step 2, T1-T4)
+# ---------------------------------------------------------------------------
+
+class TestLayerSolverPrepare:
+
+    def test_prepare_returns_operator(self, device):
+        """prepare() on all three element types returns a LayerOperator;
+        thickness is None iff the element is a semi-infinite medium."""
+        solver, *_ = _make_solver(device)
+
+        op_hom = solver.prepare(_hom(2.5, 0.3, device))
+        assert isinstance(op_hom, LayerOperator)
+        assert op_hom.thickness is not None
+
+        op_pat = solver.prepare(_pat(2.5, 1.0, 0.3, _checkerboard(device), device))
+        assert isinstance(op_pat, LayerOperator)
+        assert op_pat.thickness is not None
+
+        op_med = solver.prepare(_medium(2.5, device))
+        assert isinstance(op_med, LayerOperator)
+        assert op_med.thickness is None
+
+    def test_smatrix_prepare_equals_solve(self, device):
+        """smatrix(prepare(x), left) must exactly match solve(x, left)."""
+        solver, *_, Nh = _make_solver(device)
+        elements = [
+            _hom(2.5, 0.3, device),
+            _pat(2.5, 1.0, 0.3, _checkerboard(device), device),
+            _medium(2.5, device),
+        ]
+        for element in elements:
+            for left in (True, False):
+                S_ref = solver.solve(element, left=left)
+                S_got = solver.smatrix(solver.prepare(element), left=left)
+                assert_close(S_got.to_dense(Nh), S_ref.to_dense(Nh))
+
+    def test_operator_reuse_is_deterministic(self, device):
+        """Calling smatrix() twice on one prepared operator gives identical S."""
+        solver, *_, Nh = _make_solver(device)
+        op = solver.prepare(_pat(2.5, 1.0, 0.3, _checkerboard(device), device))
+        S1 = solver.smatrix(op)
+        S2 = solver.smatrix(op)
+        assert_close(S1.to_dense(Nh), S2.to_dense(Nh), atol=0, rtol=0)
+
+    def test_thickness_change_without_reprepare(self, device):
+        """Swapping op.thickness (no re-prepare) must match a fresh solve()
+        of a layer with that thickness — the eigendecomposition is reused."""
+        solver, *_, Nh = _make_solver(device)
+        op = solver.prepare(_hom(2.5, 0.3, device))
+        op2 = dataclasses.replace(op, thickness=_d(0.7, device))
+
+        S_reused = solver.smatrix(op2)
+        S_fresh  = solver.solve(_hom(2.5, 0.7, device))
+        assert_close(S_reused.to_dense(Nh), S_fresh.to_dense(Nh))
