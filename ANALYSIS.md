@@ -247,6 +247,12 @@ transient allocation.
 `compute_A` must broadcast `Tx[0]`/`Ty[0]` to match `eps_grid`'s batch dim.  
 **Effort:** Quick-to-moderate (~2–4 h).
 
+**Status:** Fixed — see `LAYERSOLVER_PLAN.md` Step 1. `compute_A`/`compute_isotropic` now take
+precomputed `(Tx, Ty)` fields instead of a `TVF` instance; `_patterned` calls
+`tvf.compute(pattern[None])` (batch 1) instead of on the full `eps_grid` batch. Verified equal
+to the old per-wavelength-batched result (`tests/solver/test_layersolver.py::TestTVFSingleSliceEquivalence`),
+including at a wavelength with negative solid/void contrast.
+
 ---
 
 ### D3/D4 · MED-HIGH · `solver/base.py:53-75`, `solver/layersolver/base.py:95-105` · Source/lattice invariants fused into `Solver` (full rebuild per inverse-design step)

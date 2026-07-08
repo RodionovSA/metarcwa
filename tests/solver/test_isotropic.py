@@ -179,33 +179,16 @@ class TestComputeP:
 
 class TestComputeQ:
 
-    def test_no_A_returns_Q0(self, device):
-        """compute_Q without A blocks must equal compute_Q0 entry-by-entry."""
-        Kx, Ky = _kxy(device=device)
-        eps = _eps_conv(device=device)
-        Q0 = compute_Q0(Kx, Ky, eps)
-        Q  = compute_Q(Kx, Ky, eps)
-        for ref, got in ((Q0.a, Q.a), (Q0.b, Q.b), (Q0.c, Q.c), (Q0.d, Q.d)):
-            assert_close(ref.to(Block.DENSE, Nh).data,
-                         got.to(Block.DENSE, Nh).data, atol=1e-12, rtol=0)
-
-    def test_partial_none_returns_Q0(self, device):
-        """If any A block is None, the result must still equal Q0."""
-        Kx, Ky = _kxy(device=device)
-        eps = _eps_conv(device=device)
-        dummy = _eps_conv(device=device)
-        Q0 = compute_Q0(Kx, Ky, eps)
-        Q  = compute_Q(Kx, Ky, eps, Axx=dummy, Axy=None, Ayx=dummy, Ayy=dummy)
-        assert_close(Q0.a.to(Block.DENSE, Nh).data,
-                     Q.a.to(Block.DENSE, Nh).data, atol=1e-12, rtol=0)
-
     def test_with_A_blocks_differs_from_Q0(self, device):
         """Non-trivial A blocks must produce a result that differs from Q0."""
-        Kx, Ky = _kxy(device=device)
-        eps    = _eps_conv(3.0, device=device)
-        A_blk  = Block(Block.DENSE, (0.5 * torch.eye(Nh, dtype=torch.float64)).to(device))
-        Q0     = compute_Q0(Kx, Ky, eps)
-        Q      = compute_Q(Kx, Ky, eps, Axx=A_blk, Axy=A_blk, Ayx=A_blk, Ayy=A_blk)
+        Kx, Ky     = _kxy(device=device)
+        eps        = _eps_conv(3.0, device=device)
+        # Not the exact reciprocal of eps (as for a genuine grating [[eps]]^-1 != [[1/eps]]^-1)
+        # so the Li correction delta = eps_conv - eps_inv_conv.inv() is nonzero.
+        eps_inv    = _eps_conv(0.2, device=device)
+        A_blk      = Block(Block.DENSE, (0.5 * torch.eye(Nh, dtype=torch.float64)).to(device))
+        Q0         = compute_Q0(Kx, Ky, eps)
+        Q          = compute_Q(Kx, Ky, eps, eps_inv, Axx=A_blk, Axy=A_blk, Ayx=A_blk, Ayy=A_blk)
         # At least one entry should differ
         diff = (Q.a.to(Block.DENSE, Nh).data - Q0.a.to(Block.DENSE, Nh).data).abs().max()
         assert diff > 1e-10
@@ -220,14 +203,16 @@ class TestComputeA:
     def test_returns_four_blocks(self, device):
         grid = _uniform_grid(device=device)
         m, n = _harmonic_indices(device=device)
-        result = compute_A(grid, m, n, MockTVF())
+        Tx, Ty = MockTVF().compute(grid)
+        result = compute_A(Tx, Ty, m, n)
         assert len(result) == 4
         assert all(isinstance(b, Block) for b in result)
 
     def test_blocks_are_dense(self, device):
         grid = _uniform_grid(device=device)
         m, n = _harmonic_indices(device=device)
-        for b in compute_A(grid, m, n, MockTVF()):
+        Tx, Ty = MockTVF().compute(grid)
+        for b in compute_A(Tx, Ty, m, n):
             assert b.kind == Block.DENSE
 
     def test_shape(self, device):
@@ -235,14 +220,16 @@ class TestComputeA:
         grid = _uniform_grid(device=device)
         m, n = _harmonic_indices(Nh_half=1, device=device)
         Nh_actual = m.shape[0]
-        for b in compute_A(grid, m, n, MockTVF()):
+        Tx, Ty = MockTVF().compute(grid)
+        for b in compute_A(Tx, Ty, m, n):
             assert b.data.shape[-2:] == (Nh_actual, Nh_actual)
 
     def test_mock_tvf_tx_ones_ty_zeros(self, device):
         """With MockTVF (Tx=1, Ty=0): axx component = |Ty|² = 0 → Axx is all-zero."""
         grid = _uniform_grid(device=device)
         m, n = _harmonic_indices(Nh_half=1, device=device)
-        Axx, Axy, Ayx, Ayy = compute_A(grid, m, n, MockTVF())
+        Tx, Ty = MockTVF().compute(grid)
+        Axx, Axy, Ayx, Ayy = compute_A(Tx, Ty, m, n)
         # Ty = zeros → Ty_fft = zeros → axx = |Ty_fft|² = 0 → Axx all-zero
         assert_close(Axx.data.abs().max(),
                      torch.tensor(0.0, dtype=torch.float64, device=device),
@@ -327,8 +314,8 @@ class TestComputeIsotropic:
         # Use a non-uniform grid so the A blocks are non-trivial
         grid = (torch.rand(1, 8, 8, dtype=torch.float64, generator=g) + 1.0).to(device)
 
-        _, Q_plain = compute_isotropic(grid, m, n, kx, ky, tvf=None)
-        _, Q_tvf   = compute_isotropic(grid, m, n, kx, ky, tvf=MockTVF())
+        _, Q_plain = compute_isotropic(grid, m, n, kx, ky, tvf_fields=None)
+        _, Q_tvf   = compute_isotropic(grid, m, n, kx, ky, tvf_fields=MockTVF().compute(grid))
         # MockTVF has Tx=1, Ty=0 → Ayy≠0, so Qfact.b = eps@Ayy - eps⁻¹@Ayy ≠ 0
         diff = (Q_tvf.b.to(Block.DENSE, Nh_actual).data
                 - Q_plain.b.to(Block.DENSE, Nh_actual).data).abs().max()

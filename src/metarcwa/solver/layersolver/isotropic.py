@@ -12,8 +12,8 @@ Four internal builders, one combiner, and one top-level entry point:
   compute_Q0(Kx, Ky, epsilon_conv)            → Block2x2
       Base Q matrix without TVF correction.
 
-  compute_A(epsilon_grid, m_flat, n_flat, tvf) → (Axx, Axy, Ayx, Ayy)
-      TVF anisotropy blocks from the tangent vector field.
+  compute_A(Tx, Ty, m_flat, n_flat) → (Axx, Axy, Ayx, Ayy)
+      TVF anisotropy blocks from precomputed tangent vector field components.
 
   compute_Qfact(epsilon_conv, Axx, Axy, Ayx, Ayy) → Block2x2
       Factorization correction to Q0 derived from the A blocks.
@@ -24,8 +24,11 @@ Four internal builders, one combiner, and one top-level entry point:
   compute_P(Kx, Ky, epsilon_conv)              → Block2x2
       P matrix; ε⁻¹ factored into every term via Block.solve().
 
-  compute_isotropic(epsilon_grid, m_flat, n_flat, kx, ky, tvf=None) → (P, Q)
+  compute_isotropic(epsilon_grid, m_flat, n_flat, kx, ky, tvf_fields=None) → (P, Q)
       Top-level entry: builds ε_conv once and returns both operators.
+      ``tvf_fields`` is a precomputed ``(Tx, Ty)`` pair, not a ``TVF``
+      instance — callers compute the field once (see ``LayerSolver._patterned``)
+      and may pass a batch-1 field that broadcasts against a batched ε_conv.
 
 All functions use the exp(−j ω t) time convention.
 """
@@ -34,7 +37,6 @@ import torch
 from typing import Tuple
 
 from metarcwa.solver.blockmatrix import Block, Block2x2
-from metarcwa.solver.tvf import TVF
 from metarcwa.solver.convolution import convolution_matrix
 from metarcwa.model.base import _REAL_TO_COMPLEX
 
@@ -77,8 +79,8 @@ def compute_Q0(Kx: Block, Ky: Block, epsilon_conv: Block) -> Block2x2:
     return Block2x2(a, b, c, d)
 
 
-def compute_A(epsilon_grid: torch.Tensor, m_flat: torch.Tensor,
-              n_flat: torch.Tensor, tvf: TVF) -> Tuple[Block, Block, Block, Block]:
+def compute_A(Tx: torch.Tensor, Ty: torch.Tensor, 
+              m_flat: torch.Tensor, n_flat: torch.Tensor) -> Tuple[Block, Block, Block, Block]:
     """
     Compute the TVF anisotropy correction blocks for the Li factorization.
 
@@ -91,15 +93,13 @@ def compute_A(epsilon_grid: torch.Tensor, m_flat: torch.Tensor,
 
     Parameters
     ----------
-    epsilon_grid : torch.Tensor
-        Permittivity sampled on the real-space grid, shape ``[..., Ny, Nx]``.
-        Passed to ``tvf.compute()`` to derive the tangent vector field.
+    Tx, Ty : tangent vector field components, shape [B, Ny, Nx].
+             B may be 1 (wavelength-independent field, broadcast downstream)
+             or match the batch of epsilon_conv.
     m_flat : torch.Tensor
         Integer harmonic indices along x, shape ``[Nh]``.
     n_flat : torch.Tensor
         Integer harmonic indices along y, shape ``[Nh]``.
-    tvf : TVF
-        Configured TVF instance used to compute the tangent vector field.
 
     Returns
     -------
@@ -112,8 +112,6 @@ def compute_A(epsilon_grid: torch.Tensor, m_flat: torch.Tensor,
     Ayy : Block
         DENSE Block, shape ``[..., Nh, Nh]``. Convolution of |Tx|².
     """
-    Tx, Ty = tvf.compute(epsilon_grid)
-
     axx = Ty.abs() ** 2
     axy = Tx.conj() * Ty
     ayx = Tx * Ty.conj()
@@ -169,10 +167,11 @@ def compute_Qfact(epsilon_conv: Block, epsilon_inv_conv: Block,
 def compute_Q(Kx: Block, Ky: Block, epsilon_conv: Block, epsilon_inv_conv: Block,
               Axx: Block, Axy: Block, Ayx: Block, Ayy: Block) -> Block2x2:
     """
-    Assemble the full Q matrix, optionally with TVF factorization correction.
+    Assemble the full TVF-corrected Q matrix: ``Q0 + Qfact``.
 
-    Returns ``Q0`` when all A blocks are ``None`` (homogeneous or no TVF).
-    Returns ``Q0 + Qfact`` when all four A blocks are provided.
+    Callers that want the plain Laurent rule (no TVF correction) should call
+    :func:`compute_Q0` directly instead — see :func:`compute_isotropic`,
+    which dispatches between the two based on whether a TVF field is given.
 
     Parameters
     ----------
@@ -184,8 +183,8 @@ def compute_Q(Kx: Block, Ky: Block, epsilon_conv: Block, epsilon_inv_conv: Block
         Dense convolution matrix of ε(r), shape ``[..., Nh, Nh]``.
     epsilon_inv_conv : Block
         Dense convolution matrix of 1/ε(r), shape ``[..., Nh, Nh]``.
-    Axx, Axy, Ayx, Ayy : Block or None
-        TVF anisotropy blocks from :func:`compute_A`. 
+    Axx, Axy, Ayx, Ayy : Block
+        TVF anisotropy blocks from :func:`compute_A`.
 
     Returns
     -------
@@ -236,7 +235,8 @@ def compute_P(Kx: Block, Ky: Block, epsilon_conv: Block) -> Block2x2:
 def compute_isotropic(epsilon_grid: torch.Tensor,
                       m_flat: torch.Tensor, n_flat: torch.Tensor,
                       kx: torch.Tensor, ky: torch.Tensor,
-                      tvf: TVF | None = None) -> Tuple[Block2x2, Block2x2]:
+                      tvf_fields: tuple[torch.Tensor, torch.Tensor] | None = None,
+                      ) -> Tuple[Block2x2, Block2x2]:
     """
     Build the P and Q operators for an isotropic patterned layer.
 
@@ -260,9 +260,10 @@ def compute_isotropic(epsilon_grid: torch.Tensor,
     ky : torch.Tensor
         y-components of the in-plane wavevectors, normalised by k0,
         shape ``[..., Nh]``.
-    tvf : TVF or None, optional
-        Configured TVF instance for Li factorization. ``None`` (default)
-        uses the plain Laurent rule (no correction).
+    tvf_fields: Tx, Ty tangent vector field components, shape [B, Ny, Nx].
+             B may be 1 (wavelength-independent field, broadcast downstream)
+             or match the batch of epsilon_conv. ``None`` (default) uses the plain 
+             Laurent rule (no correction).
 
     Returns
     -------
@@ -277,10 +278,12 @@ def compute_isotropic(epsilon_grid: torch.Tensor,
     Ky = Block(Block.DIAG, ky)
 
     P = compute_P(Kx, Ky, epsilon_conv)
-    if tvf is None:
+    if tvf_fields is None:
         Q = compute_Q0(Kx, Ky, epsilon_conv)
     else:
-        epsilon_inv_conv = Block(Block.DENSE, convolution_matrix(1.0 / epsilon_grid, m_flat, n_flat))
-        Axx, Axy, Ayx, Ayy = compute_A(epsilon_grid, m_flat, n_flat, tvf)
+        Tx, Ty = tvf_fields
+        epsilon_inv_conv = Block(Block.DENSE,
+                                 convolution_matrix(1.0 / epsilon_grid, m_flat, n_flat))
+        Axx, Axy, Ayx, Ayy = compute_A(Tx, Ty, m_flat, n_flat)
         Q = compute_Q(Kx, Ky, epsilon_conv, epsilon_inv_conv, Axx, Axy, Ayx, Ayy)
     return P, Q

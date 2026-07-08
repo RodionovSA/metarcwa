@@ -9,9 +9,11 @@ from torch.testing import assert_close
 from metarcwa.solver.config import Config
 from metarcwa.solver.layersolver.base import LayerSolver
 from metarcwa.solver.layersolver.homogeneous import homogeneous_modes
+from metarcwa.solver.layersolver.isotropic import compute_isotropic
 from metarcwa.solver.blockmatrix import Block, Block2x2
 from metarcwa.solver.smatrix import S_prop
 from metarcwa.solver.harmonics import harmonic_index_map, compute_kxy
+from metarcwa.solver.tvf import TVF
 from metarcwa.model.layer import HomogeneousLayer, PatternedLayer
 from metarcwa.model.medium import MediumSpec, IsotropicMediumSpec
 
@@ -63,6 +65,10 @@ def _make_solver(device: str):
 
 def _eps(val: float, device: str) -> torch.Tensor:
     return torch.tensor([val + 0j], dtype=torch.complex128, device=device)
+
+
+def _eps_batch(vals: list, device: str) -> torch.Tensor:
+    return torch.tensor([v + 0j for v in vals], dtype=torch.complex128, device=device)
 
 
 def _d(val: float, device: str) -> torch.Tensor:
@@ -262,6 +268,48 @@ class TestLayerSolverPatterned:
         solver, *_ = _make_solver(device)
         S = solver.solve(_pat(2.5, 1.0, 0.3, _checkerboard(device), device))
         assert _get_leaf(S).data.device.type == device
+
+
+# ---------------------------------------------------------------------------
+# TVF single-slice vs per-wavelength-batched equivalence (LAYERSOLVER_PLAN T5)
+# ---------------------------------------------------------------------------
+
+class TestTVFSingleSliceEquivalence:
+    """`_patterned` computes the TVF field once from the pattern mask
+    (batch=1) instead of once per wavelength from eps_grid. The A-blocks are
+    quadratic in (Tx, Ty), and TVF.compute() normalizes away both the overall
+    scale and (jointly, since target/initial field share the same gradient
+    sign) the sign of the field it is fed — so the mask-derived field must
+    give the same P, Q operators as the eps_grid-derived field, even at a
+    wavelength where the solid/void contrast is negative.
+    """
+
+    def test_tvf_single_slice_matches_batched(self, device):
+        a1 = torch.tensor([1.0, 0.0], dtype=torch.float64, device=device)
+        a2 = torch.tensor([0.0, 1.0], dtype=torch.float64, device=device)
+        kx0 = torch.tensor([0.0, 0.0], dtype=torch.float64, device=device)
+        ky0 = torch.tensor([0.0, 0.0], dtype=torch.float64, device=device)
+        m_flat, n_flat = harmonic_index_map(Nh_half, Nh_half, device=device)
+        kx, ky = compute_kxy(kx0, ky0, a1, a2, m_flat, n_flat)   # [2, Nh]
+        Nh = m_flat.shape[0]
+
+        tvf = TVF(a1, a2, Nh_half, Nh_half, method="Jones")
+        pattern = _checkerboard(device)
+        eps_void  = _eps_batch([2.0, 2.0], device)
+        eps_solid = _eps_batch([1.0, 3.0], device)   # negative, then positive contrast
+        eps_grid = (eps_solid[:, None, None] * pattern[None, ...]
+                   + (1 - pattern[None, ...]) * eps_void[:, None, None])
+
+        # New path: single-slice TVF field from the pattern mask (batch=1).
+        tvf_fields_new = tvf.compute(pattern[None])
+        P_new, Q_new = compute_isotropic(eps_grid, m_flat, n_flat, kx, ky, tvf_fields_new)
+
+        # Old path: TVF field computed per-wavelength from the full eps_grid batch.
+        tvf_fields_old = tvf.compute(eps_grid)
+        P_old, Q_old = compute_isotropic(eps_grid, m_flat, n_flat, kx, ky, tvf_fields_old)
+
+        assert_close(P_new.to_dense(Nh), P_old.to_dense(Nh), atol=1e-8, rtol=1e-6)
+        assert_close(Q_new.to_dense(Nh), Q_old.to_dense(Nh), atol=1e-8, rtol=1e-6)
 
 
 # ---------------------------------------------------------------------------

@@ -175,9 +175,16 @@ class LayerSolver:
             eps_grid  = (eps_solid[:, None, None] * pattern[None, ...]
                          + (1 - pattern[None, ...]) * eps_void[:, None, None])
 
+            if self.tvf is not None:
+                # TVF is geometry-only (detached, sign/scale-invariant in the A-blocks):
+                # compute once from the pattern mask, [1, Ny, Nx], not per wavelength.
+                tvf_fields = self.tvf.compute(pattern[None])
+            else:
+                tvf_fields = None
+
             P, Q = compute_isotropic(
                 eps_grid, self.m_flat, self.n_flat,
-                self.kx, self.ky, self.tvf,
+                self.kx, self.ky, tvf_fields,
             )
             if self.config.modesolver == "eig":
                 lam, W, V = eigsolver(P, Q, self.config.eigsolver_stable)
