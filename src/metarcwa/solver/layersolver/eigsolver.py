@@ -221,7 +221,7 @@ class Eig(torch.autograd.Function):
         tmp = torch.conj(F) * torch.matmul(XH, grad_eigvec)
 
         grad = torch.matmul(
-            torch.matmul(torch.linalg.inv(XH), grad_eigval + tmp), XH
+            torch.linalg.solve(XH, grad_eigval + tmp), XH
         )
         if ctx.is_real_input:
             grad = torch.real(grad)

@@ -30,7 +30,7 @@ import torch
 from typing import Tuple
 
 from metarcwa.solver.blockmatrix import Block, Block2x2
-from metarcwa.model.base import _REAL_TO_COMPLEX
+from metarcwa._dtypes import _REAL_TO_COMPLEX
 from metarcwa.solver.layersolver._modes import _branch_select, _lam_inv_block, _warn_grazing
 
 

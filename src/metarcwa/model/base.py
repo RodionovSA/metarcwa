@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from .stack import Stack
 from .source import Source
-from .utils import _REAL_TO_COMPLEX  
+from .._dtypes import _REAL_TO_COMPLEX
 from .medium import MediumSpec
 from .layer import PatternedLayer, HomogeneousLayer
 

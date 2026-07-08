@@ -468,12 +468,13 @@ Implement inside the shared A3 helper so it's one gate, not four.
 
 ---
 
-### B5 · LOW · `eigsolver.py:236` · `inv(XH)` in `Eig.backward` — use `solve` — ⬜ Open
+### B5 · LOW · `eigsolver.py:236` · `inv(XH)` in `Eig.backward` — use `solve` — ✅ Fixed
 
-Unchanged: replace `torch.linalg.inv(XH) @ (grad_eigval + tmp)` with
-`torch.linalg.solve(XH, grad_eigval + tmp)` — avoids materializing the inverse, better
-conditioned. (Line moved from 225 → 236 after the E1 fix.)
-**Effort:** ~15 min.
+**Status:** ✅ Resolved 2026-07-08. `Eig.backward` now computes
+`torch.linalg.solve(XH, grad_eigval + tmp)` instead of
+`torch.linalg.inv(XH) @ (grad_eigval + tmp)` — same result, no explicit inverse materialized.
+No new test needed: `tests/solver/test_eigsolver.py`'s three gradcheck tests already exercise
+this exact line end-to-end and continue to pass.
 
 ---
 
@@ -518,20 +519,28 @@ inverse), and the gated grazing warning (B3). Call from both solvers.
 
 ---
 
-### A1 · MED · `isotropic.py:41`, `homogeneous.py:34` import `_REAL_TO_COMPLEX` from `model.base` — ⬜ Open
+### A1 · MED · `isotropic.py:41`, `homogeneous.py:34` import `_REAL_TO_COMPLEX` from `model.base` — ✅ Fixed
 
-Unchanged (verified still present): the solver layer imports from the model package, breaking
-the one-way model→solver rule. Move `_REAL_TO_COMPLEX` (+ `to_complex`/`to_real` from
-`model/utils.py`) into a shared `metarcwa/_dtypes.py`.
-**Effort:** ~1 h.
+**Status:** ✅ Resolved 2026-07-08. Added `metarcwa/_dtypes.py` holding `_REAL_TO_COMPLEX`,
+`to_complex`, `to_real` (moved from `model/utils.py`, which now re-exports them for existing
+importers — `model/medium.py`, `tests/model/test_utils.py` — unchanged). `model/base.py`
+imports `_REAL_TO_COMPLEX` from `.._dtypes` directly. `solver/layersolver/isotropic.py` and
+`homogeneous.py` now import it from `metarcwa._dtypes` instead of `metarcwa.model.base` — the
+solver package no longer imports from `model` anywhere except the legitimate, documented
+`ModelSpec`/`Layer`/`Medium` type consumption in `solver/base.py` and
+`solver/layersolver/base.py` (the one-way `model → solver` data-flow boundary itself, not a
+dtype-utility leak). Verified by new `tests/test_dtypes.py`, including a direct check
+(`TestNoModelSolverCoupling`) that neither `isotropic.py` nor `homogeneous.py`'s source
+contains `metarcwa.model`; full suite (563 tests) and a fresh-interpreter import sanity check
+both pass.
 
 ---
 
-### A5 · LOW · `solver/utils.py` · `matrix_solve` stub returns `None` — ⬜ Open
+### A5 · LOW · `solver/utils.py` · `matrix_solve` stub returns `None` — ✅ Fixed
 
-Unchanged (verified still present): full docstring, body does nothing, no callers.
-Delete the file.
-**Effort:** ~10 min.
+**Status:** ✅ Resolved 2026-07-08. File deleted (confirmed zero callers in `src/`/`tests/`
+before removal; `solver/__init__.py` never referenced it). Superseded in spirit by
+`Block.solve`/`Block.solve_many` (see B2).
 
 ---
 
@@ -580,9 +589,9 @@ bites someone.
 | A4/C4 | Arch/Memory | MED | ⬜ Open | ~1 d |
 | A3 | Arch | MED | ✅ Fixed (`_modes.py` helper; E6+B3 folded in) | — |
 | B3 | Compute | LOW-MED (↓) | ✅ Fixed (gated via A3) | — |
-| B5 | Compute | LOW | ⬜ Open | ~15 min |
-| A1 | Arch | MED | ⬜ Open | ~1 h |
-| A5 | Arch | LOW | ⬜ Open | ~10 min |
+| B5 | Compute | LOW | ✅ Fixed (`inv`→`solve`) | — |
+| A1 | Arch | MED | ✅ Fixed (`metarcwa/_dtypes.py`) | — |
+| A5 | Arch | LOW | ✅ Fixed (file deleted) | — |
 | A2 | Arch | LOW | ⬜ Open | ~1–2 h |
 | A6 | Arch | LOW | ⬜ Open | ~0.5 d |
 | A7 | Arch | LOW | ⬜ Open | quick |

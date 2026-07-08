@@ -38,7 +38,7 @@ from typing import Tuple
 
 from metarcwa.solver.blockmatrix import Block, Block2x2
 from metarcwa.solver.convolution import convolution_matrix
-from metarcwa.model.base import _REAL_TO_COMPLEX
+from metarcwa._dtypes import _REAL_TO_COMPLEX
 
 
 def compute_Q0(Kx: Block, Ky: Block, epsilon_conv: Block) -> Block2x2:
