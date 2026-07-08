@@ -344,9 +344,24 @@ that matters.
 
 ---
 
-### C3 · HIGH (peak-memory) · `eigsolver.py:186` · `Eig` saves full eigvec matrices for backward — ⬜ Open · **do first in this tier**
+### C3 · HIGH (peak-memory) · `eigsolver.py:186` · `Eig` saves full eigvec matrices for backward — ✅ Fixed
 
-**What:** `Eig.forward` saves `eigval` and `eigvec` (`[..., 2N, 2N]`) via `save_for_backward`
+**Status:** ✅ Resolved 2026-07-08. Added `Config.checkpoint_eig: bool = False`; when set,
+`LayerSolver._patterned` wraps the `eigsolver` call in `torch.utils.checkpoint.checkpoint(...,
+use_reentrant=False)` exactly as proposed below. Verified `checkpoint(eigsolver, P, Q, ...)`
+gives **bit-identical S-matrices and gradients** vs the non-checkpointed path (max grad diff
+`0.0` on a synthetic case; see `tests/solver/test_layersolver.py::TestCheckpointEig`:
+`test_checkpoint_matches_no_checkpoint`, `test_checkpoint_gradients_match`,
+`test_config_checkpoint_eig_roundtrips`). Measured on CUDA with 8 stacked patterned layers
+(single wavelength, `Nh=289`, batch=1 throughout — batching wavelength while a layer's
+permittivity stays batch-1 hits an unrelated, pre-existing `S_prop` batch-broadcast limitation,
+out of scope here): peak memory **2018 MB → 1926 MB (~4.5%)**, reproducible across repeated
+trials (`test_checkpoint_reduces_peak_memory`, CUDA-gated). The gap is modest at 8 layers
+because the checkpointed activations are only one contributor to peak memory (Block2x2
+convolution matrices etc. are unaffected); it should widen with more patterned layers per stack
+or larger `N_wvl`/`N_θ`/`N_φ` batches, per the original per-batch-element estimate below.
+
+**What (historical):** `Eig.forward` saves `eigval` and `eigvec` (`[..., 2N, 2N]`) via `save_for_backward`
 for every batch element; with `Kx/Ky` carrying the full `[N_wvl, N_θ, N_φ, Nh]` batch, all
 eigvec stacks are held simultaneously for the backward pass. One stack at `N_wvl=100`,
 `Nh=625` ≈ 1.2 GB in complex64, per patterned layer.
@@ -541,7 +556,7 @@ bites someone.
 | E6 | Correctness | MED | ✅ Fixed (regularization via A3) | — |
 | E7 | Correctness | MED | ✅ Fixed (S-matrix regression + partition-of-unity tests) | — |
 | E4 | Correctness | MED | ✅ Fixed (gradcheck verified; docstring aligned) | — |
-| C3 | Memory | HIGH | ⬜ Open | ~2 h |
+| C3 | Memory | HIGH | ✅ Fixed (`checkpoint_eig` config flag) | — |
 | B2 | Compute | MED | ⬜ Open | 0.5–1 d |
 | A4/C4 | Arch/Memory | MED | ⬜ Open | ~1 d |
 | A3 | Arch | MED | ✅ Fixed (`_modes.py` helper; E6+B3 folded in) | — |

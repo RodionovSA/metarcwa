@@ -120,6 +120,15 @@ class Config:
         gradients for stability near degenerate eigenvalues.  Set to
         ``False`` to use ``torch.linalg.eig`` directly (faster but
         gradients can be NaN near degeneracies).
+    checkpoint_eig : bool
+        If ``True``, gradient-checkpoint the patterned-layer eigendecomposition
+        (:func:`eigsolver`) instead of keeping its saved-for-backward tensors
+        alive for the whole solve. Cuts peak memory (the eigenvector stack is
+        recomputed once per patterned layer during backward instead of held
+        from construction to backward) at the cost of one extra eigensolver
+        forward pass per patterned layer in backward. Default ``False`` —
+        leave off for compute-bound / small-batch runs where the recompute
+        cost isn't worth it.
     """
 
     dtype:            torch.dtype         = torch.float32
@@ -132,6 +141,7 @@ class Config:
     factorization:    Factorization|None  = field(default_factory=Factorization)
     modesolver:       str                 = "eig"         # "eig"
     eigsolver_stable: bool                = True
+    checkpoint_eig:   bool                = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.device, torch.device):
@@ -149,6 +159,7 @@ class Config:
             "factorization": self.factorization.to_dict() if self.factorization is not None else None,
             "modesolver": self.modesolver,
             "eigsolver_stable": self.eigsolver_stable,
+            "checkpoint_eig": self.checkpoint_eig,
         }
 
     @classmethod

@@ -29,6 +29,7 @@ Supported element types and their solvers:
 """
 
 import torch
+from torch.utils.checkpoint import checkpoint
 from dataclasses import dataclass
 from typing import Tuple
 
@@ -287,7 +288,13 @@ class LayerSolver:
                 self.kx, self.ky, tvf_fields,
             )
             if self.config.modesolver == "eig":
-                lam, W, V = eigsolver(P, Q, self.config.eigsolver_stable)
+                if self.config.checkpoint_eig:
+                    lam, W, V = checkpoint(
+                        eigsolver, P, Q, self.config.eigsolver_stable,
+                        use_reentrant=False,
+                    )
+                else:
+                    lam, W, V = eigsolver(P, Q, self.config.eigsolver_stable)
             else:
                 raise NotImplementedError(
                     f"modesolver '{self.config.modesolver}' is not supported. "

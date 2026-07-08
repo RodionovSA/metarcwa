@@ -81,6 +81,20 @@ def _make_solver_tvf(device: str):
     return solver, kx, ky, m_flat, wvl, Nh
 
 
+def _make_solver_cfg(device: str, config: Config):
+    """Same as `_make_solver` but with a caller-supplied `Config`."""
+    a1 = torch.tensor([1.0, 0.0], dtype=torch.float64, device=device)
+    a2 = torch.tensor([0.0, 1.0], dtype=torch.float64, device=device)
+    kx0 = torch.tensor([0.0], dtype=torch.float64, device=device)
+    ky0 = torch.tensor([0.0], dtype=torch.float64, device=device)
+    m_flat, n_flat = harmonic_index_map(Nh_half, Nh_half, device=device)
+    kx, ky = compute_kxy(kx0, ky0, a1, a2, m_flat, n_flat)   # [1, Nh]
+    wvl    = torch.tensor([1.0], dtype=torch.float64, device=device)
+    solver = LayerSolver(config, wvl, kx, ky, m_flat, n_flat, tvf=None)
+    Nh = m_flat.shape[0]
+    return solver, kx, ky, m_flat, wvl, Nh
+
+
 def _eps(val: float, device: str) -> torch.Tensor:
     return torch.tensor([val + 0j], dtype=torch.complex128, device=device)
 
@@ -357,6 +371,91 @@ class TestPatternedEqualsHomogeneous:
         S_hom = solver.solve(_hom(eps_val, d_val, device))
 
         assert_close(S_pat.to_dense(Nh), S_hom.to_dense(Nh), atol=1e-5, rtol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# C3: gradient checkpointing for the patterned-layer eigensolver
+# ---------------------------------------------------------------------------
+
+class TestCheckpointEig:
+    """`Config.checkpoint_eig` gates `torch.utils.checkpoint` around the
+    `eigsolver` call in `LayerSolver._patterned` (ANALYSIS.md C3).
+    Checkpointing must be exactly equivalent -- same S-matrix, same
+    gradients -- just trading memory for a recomputed forward pass in
+    backward, and must actually reduce peak memory when it matters (CUDA,
+    several patterned layers)."""
+
+    def test_checkpoint_matches_no_checkpoint(self, device):
+        pattern = _checkerboard(device)
+        layer = _pat(2.5, 1.0, 0.3, pattern, device)
+
+        solver_off, *_, Nh = _make_solver_cfg(device, Config())
+        solver_on,  *_      = _make_solver_cfg(device, Config(checkpoint_eig=True))
+
+        S_off = solver_off.solve(layer)
+        S_on  = solver_on.solve(layer)
+        assert_close(S_on.to_dense(Nh), S_off.to_dense(Nh), atol=0, rtol=0)
+
+    def test_checkpoint_gradients_match(self, device):
+        base_pattern = _checkerboard(device)
+
+        def _run(config: Config):
+            pattern = base_pattern.clone().requires_grad_(True)
+            layer = _pat(2.5, 1.0, 0.3, pattern, device)
+            solver, *_, Nh = _make_solver_cfg(device, config)
+            S = solver.solve(layer)
+            loss = S.to_dense(Nh).abs().sum()
+            loss.backward()
+            return pattern.grad
+
+        grad_off = _run(Config())
+        grad_on  = _run(Config(checkpoint_eig=True))
+        assert_close(grad_on, grad_off, atol=1e-10, rtol=1e-8)
+
+    def test_config_checkpoint_eig_roundtrips(self):
+        cfg  = Config(checkpoint_eig=True)
+        cfg2 = Config.from_dict(cfg.to_dict())
+        assert cfg2.checkpoint_eig is True
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+    def test_checkpoint_reduces_peak_memory(self):
+        """Several patterned layers in one backward pass: without
+        checkpointing, every layer's saved eigvec stack is held
+        simultaneously; with checkpointing, backward recomputes one layer
+        at a time instead. Single wavelength (batch=1 throughout, matching
+        kx/ky/eps) with enough harmonics + repeated layers to make the
+        saved-activation memory dominate.
+        """
+        dev = "cuda"
+        Nh_half_local = 8   # (2*8+1)^2 = 289 harmonics
+        a1 = torch.tensor([1.0, 0.0], dtype=torch.float64, device=dev)
+        a2 = torch.tensor([0.0, 1.0], dtype=torch.float64, device=dev)
+        kx0 = torch.tensor([0.0], dtype=torch.float64, device=dev)
+        ky0 = torch.tensor([0.0], dtype=torch.float64, device=dev)
+        m_flat, n_flat = harmonic_index_map(Nh_half_local, Nh_half_local, device=dev)
+        kx, ky = compute_kxy(kx0, ky0, a1, a2, m_flat, n_flat)
+        wvl = torch.tensor([1.0], dtype=torch.float64, device=dev)
+        Nh = m_flat.shape[0]
+        n_layers = 8
+
+        def measure(checkpoint_eig: bool) -> float:
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
+            config  = Config(checkpoint_eig=checkpoint_eig)
+            solver  = LayerSolver(config, wvl, kx, ky, m_flat, n_flat, tvf=None)
+            pattern = torch.rand(32, 32, dtype=torch.float64, device=dev,
+                                 requires_grad=True)
+            total = 0.0
+            for _ in range(n_layers):
+                layer = _pat(4.0, 1.0, 0.3, pattern, dev)
+                S = solver.solve(layer)
+                total = total + S.to_dense(Nh).abs().sum()
+            total.backward()
+            return torch.cuda.max_memory_allocated() / 1e6
+
+        peak_off = measure(False)
+        peak_on  = measure(True)
+        assert peak_on < peak_off
 
 
 # ---------------------------------------------------------------------------
