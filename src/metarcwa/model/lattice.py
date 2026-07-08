@@ -5,7 +5,7 @@ import math
 import torch
 import torch.nn as nn
 
-from .utils import register
+from .nn_helpers import register
 
 class Lattice(nn.Module):
     """In-plane periodicity of the unit cell.

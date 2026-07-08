@@ -573,29 +573,52 @@ before removal; `solver/__init__.py` never referenced it). Superseded in spirit 
 
 ---
 
-### A2 · LOW · `model/utils.py` grab-bag — ⬜ Open
+### A2 · LOW · `model/utils.py` grab-bag — ✅ Fixed
 
-Unchanged: split into `_dtypes.py` (with A1), `nn_helpers.py`, `adapters.py`. Wait until A1
-is done since they share `_dtypes.py`.
-**Effort:** ~1–2 h.
+**Status:** ✅ Resolved 2026-07-08. Split as suggested: `register()`/`CallableModule` moved to
+new `model/nn_helpers.py`; `from_metashapes()`/`from_dispertorch()` moved to new
+`model/adapters.py` (imports `CallableModule` from `.nn_helpers`); `_REAL_TO_COMPLEX`/
+`to_complex`/`to_real` already lived in `metarcwa/_dtypes.py` (A1). `model/utils.py` is now a
+thin re-export shim (`# noqa: F401` imports from all three) so every existing
+`from metarcwa.model.utils import ...` importer keeps working unchanged. In-package consumers
+(`model/layer.py`, `model/source.py`, `model/lattice.py`, `model/medium.py`) now import directly
+from `.nn_helpers`/`.._dtypes` instead of via the shim, matching the A1 precedent. New
+`tests/model/test_nn_helpers.py` and `tests/model/test_adapters.py` lock in the new import
+paths (full behavioral coverage remains in `tests/model/test_utils.py` via the re-export).
+Verified: fresh-interpreter import check confirms the re-exported symbols are the same objects
+as the new source-of-truth modules (no accidental copies/circular imports).
 
 ---
 
-### A6 · LOW · `ModelSpec` manually re-aggregates sub-spec fields — ⬜ Open
+### A6 · LOW · `ModelSpec` manually re-aggregates sub-spec fields — ✅ Fixed (auto-generate, not nested store)
 
-Unchanged: `model/base.py:148–159` copies 5+5 fields into a flat frozen dataclass; every new
-field threads through three places. Store `stack_spec`/`source_spec` directly, or
-auto-generate. Lower priority than Tiers 1–3; becomes relevant when `results/` grows the spec.
-**Effort:** ~half day.
+**Status:** ✅ Resolved 2026-07-08, via the **auto-generate** option (not the nested-store
+option) — a scope decision: nesting `stack_spec`/`source_spec` directly would have rippled into
+`solver/base.py`'s 8 flat-field accesses (`.kx0/.ky0/.a1/.a2/.wavelength/.incidence/.layers
+/.transmission`) and 5 test call sites in `tests/solver/test_solver.py`, matching this item's
+own "~half day" estimate rather than a quick win; auto-generate fixes the actual named pain
+point with zero consumer/test ripple. `Model.spec()` (`model/base.py`) now merges `ModelSpec`'s
+fields automatically via `dataclasses.fields(ModelSpec)`, pulling each by name from whichever of
+`stack_spec`/`source_spec` declares it (raises `AttributeError` if neither does) — instead of
+the old field-by-field constructor call. `ModelSpec`'s own field declarations (and every
+downstream consumer's flat-attribute access) are unchanged; adding a field now only means adding
+it to the sub-spec and to `ModelSpec` itself (two places, not three). Verified by new
+`tests/model/test_model.py`: the merge logic tested in isolation against small dummy dataclasses
+(decoupled from `ModelSpec`'s real field set, including a "missing-field raises" and a
+"first-matching-sub-wins" case), plus an end-to-end check that `Model.spec()` still produces a
+`ModelSpec` with every field sourced from the correct sub-spec for a real model.
 
 ---
 
-### A7 · LOW · `Solver.__init__` mutates caller's `Model` in place — ⬜ Open
+### A7 · LOW · `Solver.__init__` mutates caller's `Model` in place — ✅ Fixed (doc)
 
-Unchanged (`solver/base.py`, `model.to(...)` in `__init__`). Minimum: document the in-place
-mutation in the `Solver.__init__` docstring. Structural option (operate on a copy) only if it
-bites someone.
-**Effort:** quick (doc).
+**Status:** ✅ Resolved 2026-07-08. Added an explicit `Notes` section to `Solver.__init__`'s
+docstring (`solver/base.py`) spelling out the caller-visible consequence: `Model.to()` is backed
+by `nn.Module._apply`, which mutates and returns `self`, so `self.model = model.to(...)` does
+not copy — the caller's own `model` reference is silently cast to `config.dtype`/`config.device`
+as a side effect of constructing a `Solver`. Documents the workaround (`copy.deepcopy(model)`
+before constructing, if the original must be preserved). Doc-only, no behavior change, no test
+needed.
 
 ---
 
@@ -621,9 +644,9 @@ bites someone.
 | B5 | Compute | LOW | ✅ Fixed (`inv`→`solve`) | — |
 | A1 | Arch | MED | ✅ Fixed (`metarcwa/_dtypes.py`) | — |
 | A5 | Arch | LOW | ✅ Fixed (file deleted) | — |
-| A2 | Arch | LOW | ⬜ Open | ~1–2 h |
-| A6 | Arch | LOW | ⬜ Open | ~0.5 d |
-| A7 | Arch | LOW | ⬜ Open | quick |
+| A2 | Arch | LOW | ✅ Fixed (`nn_helpers.py`/`adapters.py` split) | — |
+| A6 | Arch | LOW | ✅ Fixed (auto-generate merge, not nested store) | — |
+| A7 | Arch | LOW | ✅ Fixed (docstring) | — |
 | D2 | Interface | LOW (↓) | ⬜ Open (downgraded) | ~1 h |
 | D3/D4 | Interface | LOW (↓ from MED-HIGH) | 💤 Deferred — revisit at `results/`/`matrixexp` | 2–3 d when triggered |
 | B4 | Compute | LOW | 💤 Wait for profiling | — |

@@ -6,7 +6,7 @@ import torch.nn as nn
 from dataclasses import dataclass
 from typing import Optional
 
-from .utils import register, CallableModule
+from .nn_helpers import register, CallableModule
 from .medium import Medium, MediumSpec
 from .lattice import Lattice
 

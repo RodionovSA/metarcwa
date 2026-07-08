@@ -3,6 +3,7 @@
 
 import torch
 import torch.nn as nn
+import dataclasses
 from dataclasses import dataclass
 
 from .stack import Stack
@@ -141,19 +142,28 @@ class Model(nn.Module):
         -------
         ModelSpec
             Immutable spec container ready for the Solver.
+
+        Notes
+        -----
+        Each ``ModelSpec`` field is pulled automatically from whichever of
+        ``stack_spec``/``source_spec`` declares it (matched by name via
+        ``dataclasses.fields``), instead of being copied field-by-field by
+        hand — adding a field only means adding it to the sub-spec and to
+        ``ModelSpec`` itself, not also updating this method
+        (ANALYSIS.md A6).
         """
         wavelength = self.source.wavelength
         stack_spec = self.stack.spec(wavelength, nx, ny)
         source_spec = self.source.spec(stack_spec.incidence.refractive_index().real) # Ignore imag part for the incidence
-        return ModelSpec(
-            layers=stack_spec.layers,
-            incidence=stack_spec.incidence,
-            transmission=stack_spec.transmission,
-            a1=stack_spec.a1,
-            a2=stack_spec.a2,
-            wavelength=source_spec.wavelength,
-            kx0=source_spec.kx0,
-            ky0=source_spec.ky0,
-            s=source_spec.s,
-            p=source_spec.p,
-        )
+        sub_specs = (stack_spec, source_spec)
+        kwargs = {}
+        for f in dataclasses.fields(ModelSpec):
+            for sub in sub_specs:
+                if hasattr(sub, f.name):
+                    kwargs[f.name] = getattr(sub, f.name)
+                    break
+            else:
+                raise AttributeError(
+                    f"ModelSpec.{f.name!r} not found on stack_spec or source_spec"
+                )
+        return ModelSpec(**kwargs)

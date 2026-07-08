@@ -63,6 +63,17 @@ class Solver:
         config : Config
             Solver hyperparameters (grid resolution, harmonic truncation,
             TVF factorization, eigensolver settings).
+
+        Notes
+        -----
+        ``model`` is mutated in place, not copied: ``nn.Module._apply``
+        (which backs ``Model.to()``) mutates and returns ``self``, so the
+        caller's own ``model`` reference is silently cast to
+        ``config.dtype``/``config.device`` as a side effect of constructing
+        a ``Solver`` — ``self.model`` is the *same object*, not a clone. If
+        the caller needs to preserve the original (e.g. to build a second
+        ``Solver`` at a different dtype/device from the same source model),
+        pass a copy (``copy.deepcopy(model)``) instead of the original.
         """
         self.model = model.to(dtype=config.dtype, device=config.device)
         self.config = config

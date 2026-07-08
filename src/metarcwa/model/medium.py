@@ -5,7 +5,8 @@ import torch
 import torch.nn as nn
 from dataclasses import dataclass
 
-from .utils import CallableModule, to_complex
+from .nn_helpers import CallableModule
+from .._dtypes import to_complex
 
 @dataclass(frozen=True)
 class MediumSpec:
