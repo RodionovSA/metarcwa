@@ -119,17 +119,21 @@ class Eig(torch.autograd.Function):
     """
     Eigendecomposition with Lorentzian-broadened gradients.
 
-    Standard ``torch.linalg.eig`` gradients involve differences of eigenvalues
-    in the denominator:  F_ij = 1 / (λ_j − λ_i).  Near degenerate eigenvalues
-    (λ_j ≈ λ_i) these blow up, causing NaN gradients during optimisation.
+    Standard ``torch.linalg.eig`` gradients involve a divided difference of
+    eigenvalues in the denominator, ``1 / (λ_j − λ_i)``.  Near degenerate
+    eigenvalues (λ_j ≈ λ_i) this blows up, causing NaN gradients during
+    optimisation.
 
-    This class replaces the singular 1/(λ_j − λ_i) terms with a Lorentzian
-    regularisation::
-
-        F_ij = conj(λ_j − λ_i) / (|λ_j − λ_i|² + ε)
-
-    where ε = ``broadening_parameter``.  This introduces a small controlled
-    error in the gradient but prevents numerical blow-up.
+    ``backward`` regularizes it with a Lorentzian in two steps: it first
+    forms ``F_ij = conj(s_ij) / (|s_ij|² + ε)`` with ``s_ij = λ_j − λ_i``,
+    then applies ``conj(F)`` when weighting the eigenvector term — so the
+    factor actually multiplying ``Xᴴ·grad_eigvec`` is
+    ``s_ij / (|s_ij|² + ε)``, the Lorentzian-regularized reciprocal of
+    ``s_ij`` (ε = ``broadening_parameter``). This introduces a small
+    controlled error in the gradient but prevents numerical blow-up.
+    Verified against finite differences and against ``torch.linalg.eig``'s
+    own gradient on a well-separated spectrum
+    (``tests/solver/test_eigsolver.py``).
 
     .. note::
         Inspired by the eigendecomposition utility in TORCWA
@@ -178,9 +182,10 @@ class Eig(torch.autograd.Function):
         Lorentzian-regularised gradient of the eigendecomposition.
 
         Uses the analytic formula for d(eigvec)/dX with the singular
-        denominator replaced by a Lorentzian:
-
-            F_ij = conj(s_ij) / (|s_ij|² + ε),   s_ij = λ_j − λ_i
+        divided difference replaced by a Lorentzian. ``F = conj(s) / (|s|² + ε)``
+        is formed first (``s_ij = λ_j − λ_i``), then ``conj(F)`` is applied
+        when weighting the eigenvector term, so the net factor is
+        ``s / (|s|² + ε)`` — see the class docstring.
 
         Parameters
         ----------

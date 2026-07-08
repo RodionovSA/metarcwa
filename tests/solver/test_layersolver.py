@@ -65,6 +65,22 @@ def _make_solver(device: str):
     return solver, kx, ky, m_flat, wvl, Nh
 
 
+def _make_solver_tvf(device: str):
+    """Same as `_make_solver` but with a real TVF instance wired in (not `None`),
+    so patterned-layer solves exercise the Li factorization correction path."""
+    a1 = torch.tensor([1.0, 0.0], dtype=torch.float64, device=device)
+    a2 = torch.tensor([0.0, 1.0], dtype=torch.float64, device=device)
+    kx0 = torch.tensor([0.0], dtype=torch.float64, device=device)
+    ky0 = torch.tensor([0.0], dtype=torch.float64, device=device)
+    m_flat, n_flat = harmonic_index_map(Nh_half, Nh_half, device=device)
+    kx, ky = compute_kxy(kx0, ky0, a1, a2, m_flat, n_flat)   # [1, Nh]
+    wvl    = torch.tensor([1.0], dtype=torch.float64, device=device)
+    tvf    = TVF(a1, a2, Nh_half, Nh_half, method="Jones")
+    solver = LayerSolver(Config(), wvl, kx, ky, m_flat, n_flat, tvf=tvf)
+    Nh = m_flat.shape[0]
+    return solver, kx, ky, m_flat, wvl, Nh
+
+
 def _eps(val: float, device: str) -> torch.Tensor:
     return torch.tensor([val + 0j], dtype=torch.complex128, device=device)
 
@@ -312,6 +328,35 @@ class TestTVFSingleSliceEquivalence:
 
         assert_close(P_new.to_dense(Nh), P_old.to_dense(Nh), atol=1e-8, rtol=1e-6)
         assert_close(Q_new.to_dense(Nh), Q_old.to_dense(Nh), atol=1e-8, rtol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# E7: end-to-end S-matrix identity — patterned(eps_solid==eps_void) == homogeneous
+# ---------------------------------------------------------------------------
+
+class TestPatternedEqualsHomogeneous:
+    """A checkerboard pattern with eps_solid == eps_void is physically a
+    homogeneous layer: the Li correction Delta = [[eps]] - [[1/eps]]^-1 must
+    vanish exactly, since [[eps]] and [[1/eps]] are both eps*I / (1/eps)*I
+    (well-defined constants, not degenerate/zero-gradient like a *constant*
+    TVF target would be, because the TVF field itself is still computed from
+    a non-trivial checkerboard mask). The S-matrix (basis/permutation
+    invariant, unlike raw eig-derived lam/W/V) must then match the
+    closed-form homogeneous solve, with TVF on and off. This is an
+    end-to-end regression for E1-E3 (E1 in particular lives downstream of Q,
+    so an operator-level Q-only test would not have caught it).
+    """
+
+    @pytest.mark.parametrize("eps_val", [1.0, 2.5])
+    @pytest.mark.parametrize("use_tvf", [False, True])
+    def test_uniform_pattern_equals_homogeneous(self, device, use_tvf, eps_val):
+        solver, *_, Nh = (_make_solver_tvf(device) if use_tvf else _make_solver(device))
+        d_val = 0.3
+
+        S_pat = solver.solve(_pat(eps_val, eps_val, d_val, _checkerboard(device), device))
+        S_hom = solver.solve(_hom(eps_val, d_val, device))
+
+        assert_close(S_pat.to_dense(Nh), S_hom.to_dense(Nh), atol=1e-5, rtol=1e-5)
 
 
 # ---------------------------------------------------------------------------

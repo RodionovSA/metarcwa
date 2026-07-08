@@ -73,9 +73,20 @@ Li's rule. For uniform ε=4 the code added a large spurious `Δ = 3.75I` where `
 
 ---
 
-### E4 · MED · `solver/layersolver/eigsolver.py:214–241` · `Eig.backward` uses `conj(F)` — gradcheck still needed — ⬜ Open
+### E4 · MED · `solver/layersolver/eigsolver.py:214–241` · `Eig.backward` uses `conj(F)` — ✅ Fixed (verified + docstring aligned)
 
-**What:** Standard non-symmetric-eig adjoint uses `F_ij = 1/(λ_j − λ_i)`. The docstring says the
+**Status:** ✅ Resolved 2026-07-08. `tests/solver/test_eigsolver.py` gradchecks the eigenvalue
+branch (`test_eigval_gradcheck`), gradchecks a gauge-invariant matrix function built from
+`(lam, W)` that exercises the eigenvector branch (`test_matrix_func_gradcheck`), and compares
+the resulting gradient directly against `torch.linalg.eig`'s own backward on the same
+well-separated-spectrum input (`test_backward_matches_torch_linalg_eig`) — all three pass.
+The double-`conj(F)` application is therefore correct as-is (no code change); the class and
+`backward` docstrings in `eigsolver.py` were rewritten to state the two-step formula the code
+actually computes (`F = conj(s)/(|s|²+ε)`, then `conj(F)` applied ⇒ net factor
+`s/(|s|²+ε)`) instead of the previous inaccurate single-step description, with no uncertainty
+hedging per Sergei's instruction.
+
+**What (historical):** Standard non-symmetric-eig adjoint uses `F_ij = 1/(λ_j − λ_i)`. The docstring said the
 Lorentzian replaces this with `conj(λ_j−λ_i)/(|λ_j−λ_i|²+ε)`. Line 233 applies `conj(F)` a
 *second* time to the already-conjugated `F`, effectively using `(λ_j−λ_i)/(|.|²+ε)` — may be
 intentional for complex eigenvalues (Boeddeker et al. 2020) but is unverified. The implementation
@@ -143,16 +154,21 @@ accuracy-degrading at true grazing (same caveat as before).
 
 ---
 
-### E7 · MED · `tests/` · No patterned==homogeneous S-matrix regression test — 🔶 Partially covered
+### E7 · MED · `tests/` · No patterned==homogeneous S-matrix regression test — ✅ Fixed
 
-**Status:** 🔶 Partial coverage exists:
-- `test_isotropic.py::test_uniform_eps_Q_matches_homogeneous_Q` — uniform grid ⇒ `Q_iso == Q_hom`
-  at the **operator** level, TVF off.
-- `test_layersolver.py::TestTVFSingleSliceEquivalence` — mask-derived batch-1 TVF field ≡
-  per-wavelength batched field (guards the C1 optimization).
+**Status:** ✅ Resolved 2026-07-08. Added:
+- `test_layersolver.py::TestPatternedEqualsHomogeneous::test_uniform_pattern_equals_homogeneous`
+  — checkerboard `eps_solid == eps_void`, parametrized over `tvf ∈ {off, on}` and
+  `eps ∈ {1.0, 2.5}`; asserts the full `LayerSolver.solve(...)` S-matrix (not just Q) matches
+  the closed-form homogeneous solve. The `eps=1.0` case covers "patterned-vacuum == homogeneous-
+  vacuum" (item 2's intent) at the S-matrix level directly, so a separate eigsolver-only variant
+  wasn't needed. All 8 combinations (2 tvf × 2 eps, ×2 devices when CUDA is present) pass.
+- `test_isotropic.py::TestAPartitionOfUnity::test_A_blocks_partition_of_unity` — real TVF field
+  on a checkerboard mask, asserts `[[Axx]] + [[Ayy]] ≈ I` to `atol=1e-6` (item 3).
+- `tests/solver/test_eigsolver.py` (new) — E4's gradcheck (item 4; see E4 for detail).
 
-Still missing: an **end-to-end S-matrix** identity (would have caught E1–E3, which the operator
-test alone would not — E1 lives downstream of Q), and the gradcheck.
+Previously existing coverage (`test_isotropic.py::test_uniform_eps_Q_matches_homogeneous_Q`,
+`test_layersolver.py::TestTVFSingleSliceEquivalence`) is unchanged and still passes.
 
 **Better fix (sharper than the original):**
 1. `test_uniform_pattern_equals_homogeneous` — use a **checkerboard pattern with
@@ -523,8 +539,8 @@ bites someone.
 | C1 | Memory | HIGH | ✅ Fixed (single-slice TVF) | — |
 | D5 | Interface/Perf | MED | ✅ Fixed (via D1/C2) | — |
 | E6 | Correctness | MED | ✅ Fixed (regularization via A3) | — |
-| E7 | Correctness | MED | 🔶 Operator-level + TVF tests exist; S-matrix tests pending | ~2 h |
-| E4 | Correctness | MED | ⬜ Open (gradcheck) | ~1 h |
+| E7 | Correctness | MED | ✅ Fixed (S-matrix regression + partition-of-unity tests) | — |
+| E4 | Correctness | MED | ✅ Fixed (gradcheck verified; docstring aligned) | — |
 | C3 | Memory | HIGH | ⬜ Open | ~2 h |
 | B2 | Compute | MED | ⬜ Open | 0.5–1 d |
 | A4/C4 | Arch/Memory | MED | ⬜ Open | ~1 d |

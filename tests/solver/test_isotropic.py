@@ -16,6 +16,7 @@ from metarcwa.solver.layersolver.isotropic import (
 )
 from metarcwa.solver.blockmatrix import Block, Block2x2
 from metarcwa.solver.layersolver.homogeneous import homogeneous_Q
+from metarcwa.solver.tvf import TVF
 
 
 # ---------------------------------------------------------------------------
@@ -320,3 +321,34 @@ class TestComputeIsotropic:
         diff = (Q_tvf.b.to(Block.DENSE, Nh_actual).data
                 - Q_plain.b.to(Block.DENSE, Nh_actual).data).abs().max()
         assert diff > 1e-10
+
+
+# ---------------------------------------------------------------------------
+# E7: TVF partition-of-unity constraint ([[Axx]] + [[Ayy]] == I)
+# ---------------------------------------------------------------------------
+
+class TestAPartitionOfUnity:
+    """factorization.md requires [[Axx]] + [[Ayy]] = I for the Li correction
+    to be a valid factorization. This directly localizes E2-class bugs (the
+    historical double-FFT produced an autocorrelation of Ty instead of the
+    Fourier coefficients of |Ty|^2, badly violating this identity)."""
+
+    def test_A_blocks_partition_of_unity(self, device):
+        Nh_half = 1
+        m, n = _harmonic_indices(Nh_half, device=device)
+        Nh_actual = m.shape[0]
+
+        a1 = torch.tensor([1.0, 0.0], dtype=torch.float64, device=device)
+        a2 = torch.tensor([0.0, 1.0], dtype=torch.float64, device=device)
+        tvf = TVF(a1, a2, Nh_half, Nh_half, method="Jones")
+
+        pattern = torch.zeros(8, 8, dtype=torch.float64, device=device)
+        pattern[::2, ::2]   = 1.0
+        pattern[1::2, 1::2] = 1.0
+
+        Tx, Ty = tvf.compute(pattern[None])
+        Axx, _, _, Ayy = compute_A(Tx, Ty, m, n)
+
+        eye = torch.eye(Nh_actual, dtype=Axx.data.dtype, device=device)
+        total = Axx.data.squeeze(0) + Ayy.data.squeeze(0)
+        assert_close(total, eye, atol=1e-6, rtol=1e-6)
