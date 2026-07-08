@@ -178,3 +178,46 @@ class TestSolverSolve:
         M  = solver.solve().to_dense(Nh)
         N  = M.shape[-1] // 2
         assert M[..., :N, :N].abs().max().item() > 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Operator precompute (LAYERSOLVER_PLAN Step 3, T6)
+# ---------------------------------------------------------------------------
+
+class TestSolverPrecompute:
+
+    def test_ops_precomputed_at_init(self, device):
+        """__init__ prepares one LayerOperator per stack element: incidence,
+        each finite layer, transmission — boundaries have thickness=None,
+        the finite layer does not."""
+        solver = Solver(_make_model(device), Config(m=1, n=1))
+        n_layers = len(solver.model_spec.layers)
+        assert len(solver._ops) == n_layers + 2
+        assert solver._ops[0].thickness is None          # incidence
+        assert solver._ops[-1].thickness is None          # transmission
+        for op in solver._ops[1:-1]:
+            assert op.thickness is not None
+
+    def test_solve_matches_manual_layersolver_composition(self, device):
+        """solve() (star-composing precomputed operators) must exactly match
+        the old-style composition built directly from LayerSolver.solve()."""
+        solver = Solver(_make_model(device), Config(m=1, n=1))
+        Nh = _nh(solver)
+
+        ls = solver.layersolver
+        S_manual = ls.solve(solver.model_spec.incidence, left=True)
+        for layer in solver.model_spec.layers:
+            S_manual = S_manual.star(ls.solve(layer))
+        S_manual = S_manual.star(ls.solve(solver.model_spec.transmission, left=False))
+
+        S_new = solver.solve()
+        assert torch.allclose(S_new.to_dense(Nh), S_manual.to_dense(Nh))
+
+    def test_solve_is_deterministic_across_calls(self, device):
+        """Repeated solve() calls reuse the precomputed operators and must
+        return bit-identical results (no re-solving of the eigenproblem)."""
+        solver = Solver(_make_model(device), Config(m=1, n=1))
+        Nh = _nh(solver)
+        S1 = solver.solve().to_dense(Nh)
+        S2 = solver.solve().to_dense(Nh)
+        assert torch.equal(S1, S2)

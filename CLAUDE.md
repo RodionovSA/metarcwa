@@ -43,11 +43,18 @@ config = Config.from_yaml("config.yaml")
 Model (structure + source)
   └─ .spec(nx, ny) ──► ModelSpec  (immutable snapshot)
        └─ Solver(model, config)
-            └─ .solve() ──► Block2x2  (full-stack S-matrix)
+            └─ LayerSolver.prepare(element) ──► LayerOperator  (one per stack element)
+                 └─ .solve() / LayerSolver.smatrix(op) ──► Block2x2  (full-stack S-matrix)
 ```
 
-`Solver.__init__` is the expensive step: it precomputes harmonics and the TVF.
-`Solver.solve()` is cheap (stack traversal + S-matrix assembly).
+`Solver.__init__` is the expensive step: it precomputes harmonics, the TVF, and
+solves the modal eigenproblem for every stack element (`LayerSolver.prepare`),
+caching the result as a `LayerOperator` per element. `Solver.solve()` is cheap:
+pure Redheffer star-product composition of the cached operators via
+`LayerSolver.smatrix`, no eigendecomposition. Rebuild the `Solver` whenever the
+pattern/geometry changes (already required, since `model.spec()` resolves the
+pattern in `__init__`); a `LayerOperator`'s `thickness` is read at `smatrix()`
+time, so thickness-only changes don't require rebuilding.
 
 ### `src/metarcwa/model/` — problem description
 
@@ -64,13 +71,13 @@ Model (structure + source)
 
 | File/pkg | Responsibility |
 |----------|----------------|
-| `base.py` | `Solver`: top-level driver; precomputes harmonics + TVF; assembles S-matrix |
+| `base.py` | `Solver`: top-level driver; precomputes harmonics + TVF + one `LayerOperator` per stack element; `solve()` only star-composes |
 | `config.py` | `Config` + `Factorization` dataclasses; grid/truncation/dtype/device/solver switches |
 | `harmonics.py` | Harmonic index map `(m,n)`, truncation, in-plane wavevectors `kx`/`ky` |
 | `smatrix.py` | `S_boundary`, `S_prop`, `S_layer`: per-interface/layer S-matrix builders |
 | `blockmatrix.py` | `Block` / `Block2x2`: structured operator algebra + Redheffer star product |
 | `convolution.py` | Fourier convolution matrix helpers |
-| `layersolver/base.py` | `LayerSolver`: per-element dispatcher; precomputes vacuum modes `W0`/`V0` |
+| `layersolver/base.py` | `LayerSolver` + `LayerOperator`: `.prepare(element)` solves the modal eigenproblem (expensive); `.smatrix(op)` assembles the S-matrix (cheap); `.solve()` = both; precomputes vacuum modes `W0`/`V0` |
 | `layersolver/homogeneous.py` | `homogeneous_modes`: closed-form modes (no eigensolver) |
 | `layersolver/isotropic.py` | `compute_isotropic`: builds patterned-layer eigenproblem matrices |
 | `layersolver/eigsolver.py` | `eigsolver`: numerical eigendecomp with stable autograd gradient |
@@ -105,6 +112,8 @@ Model (structure + source)
 - **Two interchangeable layer paths** (same return signature → drop-in for `S_layer`):
   - `homogeneous_modes` — closed form, no eig, used for uniform layers/half-spaces.
   - `eigsolver` — numerical eig for patterned layers; stable autograd variant default.
+  - Both are wrapped identically as a `LayerOperator(lam, W, V, thickness)` by
+    `LayerSolver.prepare()`; `thickness=None` marks a semi-infinite medium (boundary only).
 - **S-matrix composition**: Redheffer star product `Block2x2.star()`. **Not matrix multiply.**
   Associative, not commutative. Convention: `S11/S22` = reflection, `S12/S21` = transmission.
 - **TVF / FFF**: Tangent Vector Field gives the anisotropic Fourier-space factorization of

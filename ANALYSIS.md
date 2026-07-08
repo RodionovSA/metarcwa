@@ -227,6 +227,19 @@ recompute (but then fix the documentation to be honest about cost).
 much less than the per-call Newton Hessian allocation for large wavelength batches.  
 **Effort:** Structural (~1–2 days for full caching + invalidation).
 
+**Status:** Fixed — see `LAYERSOLVER_PLAN.md` Steps 1–3. Took the explicit-operator route
+instead of an `id(layer)`-keyed cache (rejected in the plan: a hidden cache would retain
+autograd graphs from a stale optimizer step). `LayerSolver.prepare(element)` now does the
+expensive work (TVF, `epsilon_conv`, eigendecomposition) and returns a `LayerOperator`;
+`LayerSolver.smatrix(op)` is the cheap S-matrix assembly. `Solver.__init__` calls `prepare()`
+once per stack element and `Solver.solve()` only calls `smatrix()` — the CLAUDE.md claim
+"`__init__` expensive, `solve()` cheap" is now actually true, verified by
+`tests/solver/test_solver.py::TestSolverPrecompute::test_solve_is_deterministic_across_calls`
+and `test_ops_precomputed_at_init`. The caller (an inverse-design loop) still rebuilds
+`Solver` every step when the pattern changes, same as before this fix — geometry-dependent
+recompute was never eliminated, only the *redundant re-computation across repeated `solve()`
+calls at fixed geometry* was.
+
 ---
 
 ### C1 · HIGH · `solver/tvf/optimizers.py:196` + `isotropic.py:285` · TVF Hessian materialized for full wavelength batch (N_wvl-fold redundant)
@@ -311,6 +324,14 @@ must be invalidated (same logic as TVF cache).
 layer. Shares the lifecycle with the A-block cache (D1). If geometry changes per step (optimization),
 both must re-run — the value is in spectral sweeps at fixed geometry.  
 **Effort:** Structural (folds into D1/D3 refactor).
+
+**Status:** Fixed via the D1/C2 fix — `epsilon_conv` (and `eps_inv_conv`) are built once inside
+`LayerSolver.prepare()`, called once per element in `Solver.__init__`; `Solver.solve()` never
+re-enters `_patterned`, so `epsilon_conv` is not rebuilt across repeated `solve()` calls at fixed
+geometry. Note `LayerSolver.solve()` (the low-level `prepare()+smatrix()` convenience wrapper,
+distinct from `Solver.solve()`) still rebuilds it on every call by design — callers who want reuse
+should call `LayerSolver.prepare()` once and `LayerSolver.smatrix()` repeatedly, same as `Solver`
+does internally.
 
 ---
 
