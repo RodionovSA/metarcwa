@@ -437,17 +437,46 @@ layer per step.
 
 ---
 
-### A4/C4 · MED · `solver/smatrix.py:121–124` · `S_boundary` force-densifies all inputs — ⬜ Open
+### A4/C4 · MED · `solver/smatrix.py:121–124` · `S_boundary` force-densifies all inputs — ✅ Fixed (corrected fix, not the literal suggestion)
 
-**What:** unchanged — every boundary (including all-DIAG homogeneous/vacuum ones) pays a dense
-`[..., 4Nh, 4Nh]` `torch.linalg.solve`, bypassing the cheap `Block2x2.solve` Schur path, because
-eig-derived DENSE mode matrices can have singular inner sub-blocks. Post-refactor this runs
-inside `smatrix()` — i.e. on **every `Solver.solve()` call**, making it the largest per-solve
-cost for stacks dominated by homogeneous layers.
+**Status:** ✅ Resolved 2026-07-08 — but with a **different, corrected algorithm** than the fix
+text below, because the literal suggestion is unsound. Verified directly: at **normal
+incidence** (`kx0=ky0=0`) on a square lattice, many harmonics have `kx=0` or `ky=0`, making
+`Q22 = kx·ky = 0` for those harmonics — so `V.d` (a DIAG block) has **exact-zero diagonal
+entries**. The generic `Block2x2.solve()` Schur-complement path requires its `d` sub-block
+invertible at every recursion level; with zero entries in a DIAG `d`, the elementwise inverse is
+`inf` and the naive "just call `Block2x2.solve()` on DIAG blocks" fix returns **NaN** — exactly
+the scenario `tests/solver/test_layersolver.py::_make_solver` already deliberately routes
+around ("normal incidence creates harmonics with kx*ky=0, which makes V.d singular"). Taking the
+literal fix would have silently reintroduced a normal-incidence correctness bug.
 
-**Fix (unchanged):** branch on input structure — if all leaf blocks are SCALAR/DIAG, use the
-Schur path (full-rank by construction for DIAG mode matrices); fall through to the dense solve
-only for DENSE eig-mode blocks.
+**Actual fix:** when every leaf block of `WL, VL, WR, VR` is SCALAR/DIAG, the `4Nh×4Nh` boundary
+system has no cross-harmonic coupling, so it decouples exactly into `Nh` independent `4×4`
+systems (one per Fourier harmonic, mixing only the two polarizations within that harmonic).
+`smatrix.py` now has:
+- `_boundary_dense(left, right, Nh)` — the old dense-path body, factored out unchanged (still
+  used whenever any leaf is DENSE, e.g. eig-derived patterned-layer modes).
+- `_all_diag_leaves(WL, VL, WR, VR)` — structure check (`kind != Block.DENSE` for all 16 leaves).
+- `_boundary_diag_fast(WL, VL, WR, VR, Nh)` — builds the per-harmonic `[..., Nh, 4, 4]` system
+  and solves all `Nh` of them in **one batched** `torch.linalg.solve` call (`O(Nh)`, not
+  `O(Nh³)`) — a **direct** solve of the true per-harmonic system, not a Schur-complement
+  decomposition, so it has no singular-sub-block failure mode. `S_boundary` is now a thin
+  3-way dispatcher (`Nh is None` → unchanged all-SCALAR Schur path; all-DIAG → new fast path;
+  else → unchanged dense fallback).
+
+**Verified:** exact match (`atol=1e-8`) against `_boundary_dense` at **both** normal incidence
+(the case that breaks the naive Schur path) and oblique incidence, with no `nan`/`inf`;
+identical gradients; a mixed DIAG/DENSE boundary (homogeneous↔patterned) correctly falls through
+to the unchanged dense path; a `torch.linalg.solve` shape-capture regression guard confirms the
+fast path's call operates on `(4,4)` matrices, not `(4Nh,4Nh)`
+(`tests/solver/test_smatrix.py::TestBoundaryDiagFastPath`, 6 tests × device). Measured speedup:
+**193×** at `Nh=169, batch=10` and **476×** at `Nh=289, batch=20` (roughly `Nh²`, as expected
+from `O(Nh³) → O(Nh)`). Full suite (575 tests) passes with no numeric drift — the fast path is
+exact, not approximate.
+
+**Fix (historical, unsound as literally stated):** branch on input structure — if all leaf
+blocks are SCALAR/DIAG, use the Schur path (full-rank by construction for DIAG mode matrices);
+fall through to the dense solve only for DENSE eig-mode blocks.
 **Tradeoff:** branching logic + validation that the DIAG Schur path is non-singular.
 **Effort:** ~1 day + careful testing.
 
@@ -586,7 +615,7 @@ bites someone.
 | E4 | Correctness | MED | ✅ Fixed (gradcheck verified; docstring aligned) | — |
 | C3 | Memory | HIGH | ✅ Fixed (`checkpoint_eig` config flag) | — |
 | B2 | Compute | MED | ✅ Fixed (`Block.solve_many`) | — |
-| A4/C4 | Arch/Memory | MED | ⬜ Open | ~1 d |
+| A4/C4 | Arch/Memory | MED | ✅ Fixed (corrected: per-harmonic batched solve, not literal Schur path) | — |
 | A3 | Arch | MED | ✅ Fixed (`_modes.py` helper; E6+B3 folded in) | — |
 | B3 | Compute | LOW-MED (↓) | ✅ Fixed (gated via A3) | — |
 | B5 | Compute | LOW | ✅ Fixed (`inv`→`solve`) | — |

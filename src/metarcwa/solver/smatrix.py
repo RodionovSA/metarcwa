@@ -74,6 +74,94 @@ def _dense_to_nested_block2x2(M: torch.Tensor, Nh: int) -> Block2x2:
     )
 
 
+def _boundary_dense(left: Block2x2, right: Block2x2, Nh: int) -> Block2x2:
+    """Direct dense solve of the boundary system (safe for DENSE mode matrices).
+
+    Densifies ``left``/``right`` to ``[..., 4Nh, 4Nh]`` and solves once. Used
+    whenever any leaf block is DENSE (eig-derived patterned-layer modes),
+    where nested Schur-complement solves can hit singular inner sub-blocks
+    (see :func:`S_boundary`).
+    """
+    L   = left.to_dense(Nh)
+    R   = right.to_dense(Nh)
+    S_d = torch.linalg.solve(L, R)
+    return _dense_to_nested_block2x2(S_d, Nh)
+
+
+def _all_diag_leaves(WL: Block2x2, VL: Block2x2, WR: Block2x2, VR: Block2x2) -> bool:
+    """True iff every leaf Block of WL, VL, WR, VR is SCALAR or DIAG (no DENSE)."""
+    return all(
+        entry.kind != Block.DENSE
+        for op in (WL, VL, WR, VR)
+        for entry in (op.a, op.b, op.c, op.d)
+    )
+
+
+def _boundary_diag_fast(WL: Block2x2, VL: Block2x2, WR: Block2x2, VR: Block2x2,
+                        Nh: int) -> Block2x2:
+    """Exact O(Nh) boundary solve when every leaf block is SCALAR/DIAG.
+
+    With no DENSE leaves anywhere, none of WL/VL/WR/VR mixes harmonics, so
+    the full ``4Nh×4Nh`` boundary system decouples into ``Nh`` independent
+    ``4×4`` systems — one per Fourier harmonic, mixing only the two
+    polarizations within that harmonic. Solving all ``Nh`` systems as one
+    batched ``torch.linalg.solve`` (over an added ``Nh`` axis) is O(Nh)
+    instead of O(Nh³), and — unlike a nested Schur-complement decomposition —
+    is a direct solve of the true per-harmonic system, so it has no
+    singular-sub-block failure mode (verified: this matches
+    :func:`_boundary_dense` exactly, including at normal incidence where
+    ``V.d`` has exact-zero diagonal entries and a naive
+    ``Block2x2.solve()`` on DIAG blocks would return NaN).
+
+    Row/column layout of each per-harmonic 4×4 block (from the boundary
+    continuity condition in :func:`S_boundary`'s docstring):
+    rows = [E-TE, E-TM, H-TE, H-TM], cols(left/right, matching) =
+    [c⁻_L-TE, c⁻_L-TM, c⁺_R-TE, c⁺_R-TM] resp. [c⁺_L-TE, c⁺_L-TM, c⁻_R-TE, c⁻_R-TM].
+    The solved result stays block-diagonal by harmonic (product of two
+    block-diagonal matrices), so it is reassembled directly as a nested
+    ``Block2x2(Block2x2(DIAG, ...), ...)`` — the same two-level nesting
+    ``S_prop``/``_dense_to_nested_block2x2`` already use, so it composes
+    via ``star()`` unchanged.
+    """
+    def d(blk: Block) -> torch.Tensor:
+        return blk.to(Block.DIAG, Nh).data
+
+    left_rows = [
+        [ d(WL.a),  d(WL.b), -d(WR.a), -d(WR.b)],
+        [ d(WL.c),  d(WL.d), -d(WR.c), -d(WR.d)],
+        [ d(VL.a),  d(VL.b),  d(VR.a),  d(VR.b)],
+        [ d(VL.c),  d(VL.d),  d(VR.c),  d(VR.d)],
+    ]
+    right_rows = [
+        [-d(WL.a), -d(WL.b),  d(WR.a),  d(WR.b)],
+        [-d(WL.c), -d(WL.d),  d(WR.c),  d(WR.d)],
+        [ d(VL.a),  d(VL.b),  d(VR.a),  d(VR.b)],
+        [ d(VL.c),  d(VL.d),  d(VR.c),  d(VR.d)],
+    ]
+
+    def _assemble(rows: list[list[torch.Tensor]]) -> torch.Tensor:
+        batch = torch.broadcast_shapes(*(t.shape for r in rows for t in r))
+        rows = [[t.expand(batch) for t in r] for r in rows]
+        return torch.stack([torch.stack(r, dim=-1) for r in rows], dim=-2)  # [..., Nh, 4, 4]
+
+    L4 = _assemble(left_rows)
+    R4 = _assemble(right_rows)
+    X4 = torch.linalg.solve(L4, R4)          # batched over Nh: O(Nh), not O(Nh^3)
+
+    def leaf(i: int, j: int) -> Block:
+        return Block(Block.DIAG, X4[..., i, j])
+
+    def inner(r0: int, r1: int, c0: int, c1: int) -> Block2x2:
+        return Block2x2(leaf(r0, c0), leaf(r0, c1), leaf(r1, c0), leaf(r1, c1))
+
+    return Block2x2(
+        inner(0, 1, 0, 1),   # S11
+        inner(0, 1, 2, 3),   # S12
+        inner(2, 3, 0, 1),   # S21
+        inner(2, 3, 2, 3),   # S22
+    )
+
+
 def S_boundary(WL: Block2x2, VL: Block2x2,
                WR: Block2x2, VR: Block2x2) -> Block2x2:
     """
@@ -115,13 +203,18 @@ def S_boundary(WL: Block2x2, VL: Block2x2,
     if Nh is None:
         # All-SCALAR inputs: Schur complement is safe (no singular sub-blocks).
         return left.solve(right)
+    if _all_diag_leaves(WL, VL, WR, VR):
+        # All-DIAG/SCALAR (e.g. homogeneous/vacuum boundary): the system
+        # decouples per harmonic -- solve it as Nh independent 4x4 systems,
+        # O(Nh) instead of O(Nh^3). See _boundary_diag_fast for why this is
+        # exact (unlike a naive Block2x2.solve() Schur path on DIAG blocks,
+        # which returns NaN at normal incidence -- V.d has exact-zero
+        # diagonal entries there).
+        return _boundary_diag_fast(WL, VL, WR, VR, Nh)
     # Use a direct 4Nh×4Nh dense solve to avoid singular sub-block issues that
     # arise when DENSE mode matrices (e.g. from eigsolver) have rank-deficient
     # inner blocks (V.d) as required by the nested Schur complement.
-    L   = left.to_dense(Nh)
-    R   = right.to_dense(Nh)
-    S_d = torch.linalg.solve(L, R)
-    return _dense_to_nested_block2x2(S_d, Nh)
+    return _boundary_dense(left, right, Nh)
 
 
 def S_prop(lam: torch.Tensor, wvl: torch.Tensor, d: torch.Tensor) -> Block2x2:
