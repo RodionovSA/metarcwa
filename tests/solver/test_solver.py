@@ -5,6 +5,8 @@
 import pytest
 import torch
 
+import torch.nn as nn
+
 from metarcwa.model.base import Model
 from metarcwa.model.stack import Stack
 from metarcwa.model.layer import Layer
@@ -12,7 +14,8 @@ from metarcwa.model.medium import IsotropicMedium
 from metarcwa.model.lattice import Lattice
 from metarcwa.model.source import PlaneWave
 from metarcwa.model.utils import CallableModule
-from metarcwa.solver.base import Solver
+from metarcwa.solver.base import Solver, prepare, solve, reprepare, PreparedStack
+from metarcwa.solver.layersolver.base import LayerSolver
 from metarcwa.solver.config import Config
 from metarcwa.solver.blockmatrix import Block
 
@@ -96,6 +99,43 @@ def _dense_is_star_id(M: torch.Tensor, atol: float = 1e-5) -> bool:
 
 def _nh(solver: Solver) -> int:
     return solver.layersolver.m_flat.shape[0]
+
+
+def _circle_mask_fn(radius: torch.Tensor, softness: float = 0.02):
+    """Smooth circular mask centered on the unit cell, differentiable in radius."""
+    def fn(lattice, nx, ny):
+        fx = torch.linspace(0, 1, nx, device=lattice.device, dtype=lattice.dtype)
+        fy = torch.linspace(0, 1, ny, device=lattice.device, dtype=lattice.dtype)
+        FY, FX = torch.meshgrid(fy, fx, indexing="ij")
+        X, Y = lattice.to_cartesian(FX, FY)
+        cx = 0.5 * (lattice.a1[0] + lattice.a2[0])
+        cy = 0.5 * (lattice.a1[1] + lattice.a2[1])
+        dist = torch.sqrt((X - cx) ** 2 + (Y - cy) ** 2 + 1e-12)
+        return torch.sigmoid((radius - dist) / softness)
+    return fn
+
+
+def _make_two_layer_model(device: str, radius: nn.Parameter) -> Model:
+    """Homogeneous layer + a patterned (circle) layer whose radius is an
+    ``nn.Parameter``, so mutating it in place changes the pattern.
+
+    Layer order: [homogeneous ε=2.5, patterned ε_solid=4/ε_void=1 circle].
+    """
+    incidence    = IsotropicMedium(_const_eps(1.0 + 0j))
+    transmission = IsotropicMedium(_const_eps(1.0 + 0j))
+    layer0       = Layer(IsotropicMedium(_const_eps(2.5 + 0j)), thickness=0.1)
+    shape_fn     = CallableModule(_circle_mask_fn(radius), radius)
+    layer1       = Layer(
+        IsotropicMedium(_const_eps(4.0 + 0j)), thickness=0.15,
+        medium_void=IsotropicMedium(_const_eps(1.0 + 0j)), shape_fn=shape_fn,
+    )
+    lattice = Lattice.rectangular(1.0, 1.0)
+    stack   = Stack(incidence, [layer0, layer1], transmission, lattice)
+    # Patterned-layer eps blending indexes wavelength as [N_wl, ...], so it
+    # must be at least 1-D (unlike the scalar-float form used for
+    # homogeneous-only fixtures elsewhere in this file).
+    source  = PlaneWave(wavelength=torch.tensor([1.0]), s_amp=1.0, p_amp=0.0)
+    return Model(stack, source).to(dtype=torch.float64, device=device)
 
 
 # ---------------------------------------------------------------------------
@@ -221,3 +261,116 @@ class TestSolverPrecompute:
         S1 = solver.solve().to_dense(Nh)
         S2 = solver.solve().to_dense(Nh)
         assert torch.equal(S1, S2)
+
+
+# ---------------------------------------------------------------------------
+# Functional core (prepare / solve / reprepare)
+# ---------------------------------------------------------------------------
+
+class TestFunctionalCore:
+
+    def test_prepare_solve_matches_class(self, device):
+        """The functional core must match the Solver class wrapper exactly
+        (the class is a thin wrapper around prepare()/solve())."""
+        model = _make_model(device)
+        config = Config(m=1, n=1)
+        prepared = prepare(model, config)
+        assert isinstance(prepared, PreparedStack)
+        Nh = prepared.layersolver.m_flat.shape[0]
+
+        solver = Solver(_make_model(device), config)
+        assert torch.allclose(solve(prepared).to_dense(Nh), solver.solve().to_dense(Nh))
+
+
+class TestReprepare:
+
+    def test_reprepare_matches_full_rebuild(self, device):
+        """reprepare() on the changed layer must give the exact same S-matrix
+        as building a fresh Solver from a model with the same new pattern."""
+        radius = nn.Parameter(torch.tensor(0.2, dtype=torch.float64))
+        model = _make_two_layer_model(device, radius)
+        config = Config(m=2, n=2, factorization=None, truncation="rectangular")
+
+        solver = Solver(model, config)
+        Nh = _nh(solver)
+
+        with torch.no_grad():
+            radius.copy_(torch.tensor(0.35, dtype=radius.dtype, device=radius.device))
+
+        S_reprepared = solver.reprepare([1]).solve().to_dense(Nh)
+
+        radius_fresh = nn.Parameter(torch.tensor(0.35, dtype=torch.float64))
+        model_fresh = _make_two_layer_model(device, radius_fresh)
+        S_fresh = Solver(model_fresh, config).solve().to_dense(Nh)
+
+        assert torch.allclose(S_reprepared, S_fresh, atol=1e-8)
+
+    def test_reprepare_reuses_unchanged_ops_by_identity(self, device):
+        """Only the targeted layer's operator is rebuilt; every other
+        operator (and the layersolver context) is reused by reference."""
+        radius = nn.Parameter(torch.tensor(0.2, dtype=torch.float64))
+        model = _make_two_layer_model(device, radius)
+        config = Config(m=1, n=1, factorization=None, truncation="rectangular")
+
+        solver = Solver(model, config)
+        old_ls = solver.layersolver
+        old_ops = solver._ops
+
+        with torch.no_grad():
+            radius.copy_(torch.tensor(0.3, dtype=radius.dtype, device=radius.device))
+        solver.reprepare([1])
+
+        assert solver.layersolver is old_ls
+        assert solver._ops[0] is old_ops[0]   # incidence, unchanged
+        assert solver._ops[1] is old_ops[1]   # homogeneous layer 0, unchanged
+        assert solver._ops[2] is not old_ops[2]  # patterned layer 1, rebuilt
+        assert solver._ops[3] is old_ops[3]   # transmission, unchanged
+
+    def test_reprepare_calls_prepare_once(self, device, monkeypatch):
+        """reprepare([1]) on a 2-layer stack must call LayerSolver.prepare
+        exactly once (only for the targeted layer)."""
+        radius = nn.Parameter(torch.tensor(0.2, dtype=torch.float64))
+        model = _make_two_layer_model(device, radius)
+        config = Config(m=1, n=1, factorization=None, truncation="rectangular")
+        solver = Solver(model, config)
+
+        calls = []
+        orig_prepare = LayerSolver.prepare
+
+        def counting_prepare(self, element):
+            calls.append(element)
+            return orig_prepare(self, element)
+
+        monkeypatch.setattr(LayerSolver, "prepare", counting_prepare)
+
+        with torch.no_grad():
+            radius.copy_(torch.tensor(0.3, dtype=radius.dtype, device=radius.device))
+        solver.reprepare([1])
+
+        assert len(calls) == 1
+
+    def test_single_layer_optimization_loop(self, device):
+        """End-to-end smoke test: reprepare() drives a single-layer geometry
+        optimization loop, backprop reaches the changed layer's parameter,
+        and the loss decreases."""
+        radius = nn.Parameter(torch.tensor(0.15, dtype=torch.float64))
+        model = _make_two_layer_model(device, radius)
+        config = Config(m=1, n=1, factorization=None, truncation="rectangular")
+        solver = Solver(model, config)
+        Nh = _nh(solver)
+        N = Nh  # half-size of the 2Nh x 2Nh dense S-matrix
+
+        opt = torch.optim.Adam([radius], lr=1e-3)
+        losses = []
+        for _ in range(5):
+            opt.zero_grad()
+            solver.reprepare([1])
+            S = solver.solve()
+            M = S.to_dense(Nh)
+            loss = M[..., :N, N:].abs().pow(2).sum()
+            loss.backward()
+            losses.append(loss.item())
+            opt.step()
+
+        assert radius.grad is not None
+        assert losses[-1] < losses[0]
