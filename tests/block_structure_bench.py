@@ -4,21 +4,36 @@ Empirical benchmark: does the Block/Block2x2 structured-matrix design
 (src/metarcwa/solver/blockmatrix.py -- SCALAR/DIAG/DENSE storage, promoted
 only when unavoidable) give a real memory/speed win on a full RCWA solve?
 
-A homogeneous layer's mode matrices (W, V) are DIAG/SCALAR (closed-form
-homogeneous_modes -- no eigendecomposition); a patterned layer's are always
-DENSE (eigsolver's eigenvectors have no structure to exploit). Every
-S_boundary call between two DIAG/SCALAR-mode layers hits the O(Nh)
-per-harmonic fast path (ANALYSIS.md A4/C4); any boundary touching a
-patterned layer falls to the O(Nh^3) dense solve. So sweeping the number of
-patterned layers (0 -> 3) in an otherwise-fixed 3-layer stack is the natural
-on/off switch for the Block optimizations end-to-end -- no need for a
-parallel "always-dense" reimplementation to compare against.
+Controlled A/B design: every layer in this benchmark has the *same*
+physical medium (uniform eps=4.0). The `n_patterned` layers are still built
+via Layer(shape_fn=..., medium_void=...) -- the mask is just literally
+uniform (all ones), so medium_void never contributes -- which forces them
+through the PatternedLayer / compute_isotropic / eigsolver code path (DENSE
+mode matrices, real eigendecomposition even though Q/P happen to be
+diagonal for a uniform grid). The remaining layers are real
+HomogeneousLayer specs, going through the closed-form homogeneous_modes
+path (DIAG/SCALAR, no eigendecomposition at all). So sweeping n_patterned
+compares two code paths solving the *identical* physics problem -- any
+speed/memory difference is a pure structural-representation effect, not a
+confound from different materials or genuine spatial patterning. TVF is
+off by default: for a uniform mask the Li correction Delta = [[eps]] -
+[[1/eps]]^-1 is exactly zero (see test_uniform_pattern_equals_homogeneous
+in tests/solver/test_layersolver.py), so it cannot change the result here,
+only add unrelated cost.
 
-This also cleanly separates two different costs as n_patterned increases:
-  - the *inherent* physics cost of solving a patterned layer's eigenproblem
-    (unavoidable, not a Block-structure deficiency), and
-  - the *avoidable* cost of a homogeneous/vacuum boundary, which the current
-    code already skips via the DIAG fast path.
+Since both code paths solve the same physics, their S-matrices must agree
+-- this is checked explicitly at the end (not just assumed): every
+n_patterned configuration's S-matrix is compared against the n_patterned=0
+(fully homogeneous) reference.
+
+Every DIAG/SCALAR-mode boundary (i.e. every boundary in the n_patterned=0
+row) hits S_boundary's O(Nh) per-harmonic fast path (ANALYSIS.md A4/C4);
+any boundary touching a patterned-path layer falls to the O(Nh^3) dense
+solve, and that layer's own prepare() pays for a real eigendecomposition
+instead of a closed-form solve. Both of these are the same underlying
+"exploit the Block structure where it exists" idea, just applied at two
+different pipeline stages (mode-solving vs. boundary-matching) -- this
+benchmark's construct/solve split reports them separately.
 
 Not in scope here: gradient/backward cost (see the C3 gradient-checkpointing
 benchmark in ANALYSIS.md for that) -- this measures pure forward S-matrix
@@ -68,26 +83,31 @@ def _const_eps(val: complex):
     return CallableModule(lambda wvl: torch.full_like(wvl, val, dtype=torch.complex128))
 
 
-def _checkerboard(lattice, nx: int, ny: int) -> torch.Tensor:
-    """shape_fn(lattice, nx, ny) -> mask, a checkerboard pattern (matches the
-    pattern used throughout tests/solver/test_layersolver.py, adapted to
-    Layer's shape_fn signature). Built on `lattice`'s device/dtype since
-    shape_fn receives no explicit device argument (Layer.spec() does not
-    move the returned mask itself -- CallableModule only moves registered
-    buffers/parameters, not ad hoc tensors built inside the wrapped call)."""
-    pat = torch.ones(ny, nx, dtype=lattice.dtype, device=lattice.device)
-    # pat[::2, ::2] = 1.0
-    # pat[1::2, 1::2] = 1.0
-    return pat
+def _uniform_map(lattice, nx: int, ny: int) -> torch.Tensor:
+    """shape_fn(lattice, nx, ny) -> mask, all-ones -- i.e. no real spatial
+    pattern at all. This deliberately forces the "patterned" layers through
+    the PatternedLayer/eigsolver code path while keeping the physical
+    medium identical to the homogeneous layers (see module docstring): a
+    controlled A/B test of the two code paths on the same physics, not a
+    comparison confounded by different materials or genuine patterning.
+    Built on `lattice`'s device/dtype since shape_fn receives no explicit
+    device argument (Layer.spec() does not move the returned mask itself --
+    CallableModule only moves registered buffers/parameters, not ad hoc
+    tensors built inside the wrapped call)."""
+    return torch.ones(ny, nx, dtype=lattice.dtype, device=lattice.device)
 
 
 def _make_model(n_patterned: int, n_wvl: int, device: str) -> Model:
-    """3-layer stack: the first `n_patterned` layers are patterned
-    (eps_solid=4, eps_void=1, checkerboard), the rest homogeneous (eps=2.5).
-    Vacuum incidence/transmission. Oblique incidence (theta, phi != 0) --
-    matching tests/solver/test_layersolver.py::_make_solver's convention --
-    so no configuration accidentally hits the degenerate kx*ky=0 grazing
-    case; that isn't what this benchmark is about.
+    """3-layer stack, every layer physically eps=4.0 (see module docstring
+    for why): the first `n_patterned` layers go through the patterned code
+    path (shape_fn=_uniform_map, medium_solid=eps4 -- medium_void=eps1 is
+    passed only because Layer requires it when shape_fn is given, but it
+    never contributes since the mask is all-ones), the rest are real
+    HomogeneousLayer specs (medium_solid=eps4, no shape_fn). Vacuum
+    incidence/transmission. Oblique incidence (theta, phi != 0) -- matching
+    tests/solver/test_layersolver.py::_make_solver's convention -- so no
+    configuration accidentally hits the degenerate kx*ky=0 grazing case;
+    that isn't what this benchmark is about.
     """
     incidence    = IsotropicMedium(_const_eps(1.0 + 0j))
     transmission = IsotropicMedium(_const_eps(1.0 + 0j))
@@ -98,7 +118,7 @@ def _make_model(n_patterned: int, n_wvl: int, device: str) -> Model:
             layer = Layer(
                 medium_solid=IsotropicMedium(_const_eps(4.0 + 0j)),
                 medium_void=IsotropicMedium(_const_eps(1.0 + 0j)),
-                shape_fn=CallableModule(_checkerboard),
+                shape_fn=CallableModule(_uniform_map),
                 thickness=0.3,
             )
         else:
@@ -148,7 +168,7 @@ def _peak_memory_mb(device: str, before_reset: bool = False) -> tuple[float | No
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024, True
 
 
-def run_one(n_patterned: int, config: Config, args) -> dict:
+def run_one(n_patterned: int, config: Config, args, Nh: int) -> dict:
     device = args.device
 
     def _one_pass():
@@ -169,8 +189,9 @@ def run_one(n_patterned: int, config: Config, args) -> dict:
     _peak_memory_mb(device, before_reset=True)
 
     construct_ms, solve_ms = [], []
+    S_last = None
     for _ in range(args.repeats):
-        c_ms, s_ms, _ = _one_pass()
+        c_ms, s_ms, S_last = _one_pass()
         construct_ms.append(c_ms)
         solve_ms.append(s_ms)
 
@@ -185,6 +206,10 @@ def run_one(n_patterned: int, config: Config, args) -> dict:
         "total_mean": sum(construct_ms) / len(construct_ms) + sum(solve_ms) / len(solve_ms),
         "peak_mb": peak_mb,
         "peak_approx": peak_approx,
+        # detached/CPU snapshot for the end-of-run correctness check (S_last
+        # is whichever repeat happened to run last; the model/config are
+        # identical across repeats so any repeat's S is equally valid).
+        "S_dense": S_last.to_dense(Nh).detach().to("cpu"),
     }
 
 
@@ -217,7 +242,7 @@ def main():
 
     rows = []
     for n_patterned in (0, 1, 2, 3):
-        r = run_one(n_patterned, config, args)
+        r = run_one(n_patterned, config, args, Nh)
         rows.append(r)
         peak_str = f"{r['peak_mb']:10.1f}" if r["peak_mb"] is not None else "n/a"
         print(f"{r['n_patterned']:>11} | "
@@ -238,11 +263,34 @@ def main():
         mem_ratio = last["peak_mb"] / first["peak_mb"]
         print(f"                    peak memory {mem_ratio:.1f}x "
               f"({first['peak_mb']:.1f} MB -> {last['peak_mb']:.1f} MB)")
-    print("\n(n_patterned=0: every boundary hits the O(Nh) DIAG fast path (A4/C4) and every\n"
-          " layer uses closed-form homogeneous_modes -- no eigendecomposition at all.\n"
-          " n_patterned=3: every boundary is DENSE and every layer needs a real eig solve.\n"
-          " The gap between the two rows is the Block-structure win, isolated from the\n"
-          " inherent eigenproblem cost that any RCWA solver must pay for patterned layers.)")
+    print("\n(Every layer is physically eps=4.0 uniform (see module docstring) -- the\n"
+          " n_patterned=0 row solves it via closed-form homogeneous_modes (DIAG/SCALAR,\n"
+          " no eigendecomposition) with every S_boundary call hitting the O(Nh) DIAG fast\n"
+          " path (A4/C4); the n_patterned=3 row solves the *same physics* via eigsolver\n"
+          " (DENSE) with every S_boundary call falling to the O(Nh^3) dense solve. The gap\n"
+          " between the two rows is therefore a pure structural-representation effect --\n"
+          " confirmed below by comparing their S-matrices, not assumed.)")
+
+    # --- Correctness check: same physics -> same S-matrix ---------------------
+    print("\n" + "=" * 92)
+    print("Correctness check: S-matrix agreement vs. n_patterned=0 (all rows solve the")
+    print("same eps=4.0 uniform 3-layer stack; differences should be at most numerical)")
+    print("-" * 92)
+    tol_atol, tol_rtol = 1e-6, 1e-6
+    ref = rows[0]["S_dense"]
+    all_ok = True
+    for r in rows:
+        diff = (r["S_dense"] - ref)
+        max_abs = diff.abs().max().item()
+        denom = ref.abs()
+        max_rel = (diff.abs() / denom.clamp_min(1e-300)).max().item()
+        ok = torch.allclose(r["S_dense"], ref, atol=tol_atol, rtol=tol_rtol)
+        all_ok &= ok
+        print(f"  n_patterned={r['n_patterned']}: max|diff|={max_abs:.3e}  "
+              f"max relative={max_rel:.3e}  -> {'PASS' if ok else 'FAIL'}")
+    print("-" * 92)
+    print(f"Overall: {'ALL S-matrices agree' if all_ok else 'MISMATCH DETECTED'} "
+          f"(atol={tol_atol:g}, rtol={tol_rtol:g})")
 
 
 if __name__ == "__main__":
