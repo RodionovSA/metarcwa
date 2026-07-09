@@ -56,7 +56,7 @@ from metarcwa.model.stack import Stack
 from metarcwa.model.layer import Layer
 from metarcwa.model.medium import IsotropicMedium
 from metarcwa.model.lattice import Lattice
-from metarcwa.model.source import PlaneWave
+from metarcwa.model.source import Source
 from metarcwa.model.nn_helpers import CallableModule
 from metarcwa.solver.base import Solver
 from metarcwa.solver.config import Config, Factorization
@@ -130,9 +130,8 @@ def _make_model(n_patterned: int, n_wvl: int, device: str) -> Model:
 
     lattice = Lattice.rectangular(1.0, 1.0)
     stack   = Stack(incidence, layers, transmission, lattice)
-    source  = PlaneWave(
+    source  = Source(
         wavelength=torch.linspace(1.0, 1.2, n_wvl),
-        s_amp=1.0, p_amp=0.3,
         theta=0.2, phi=0.1,     # oblique: avoids kx*ky=0 grazing harmonics
     )
     return Model(stack, source).to(dtype=torch.float64, device=device)

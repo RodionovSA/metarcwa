@@ -18,7 +18,7 @@ from metarcwa.model.stack import Stack
 from metarcwa.model.layer import Layer
 from metarcwa.model.medium import IsotropicMedium
 from metarcwa.model.lattice import Lattice
-from metarcwa.model.source import PlaneWave
+from metarcwa.model.source import Source
 from metarcwa.model.nn_helpers import CallableModule
 
 
@@ -95,7 +95,7 @@ def _make_model() -> Model:
     layer        = Layer(IsotropicMedium(_const_eps(2.5 + 0j)), thickness=0.3)
     lattice      = Lattice.rectangular(1.0, 1.0)
     stack        = Stack(incidence, [layer], transmission, lattice)
-    source       = PlaneWave(wavelength=1.0, s_amp=1.0, p_amp=0.0)
+    source       = Source(wavelength=1.0)
     return Model(stack, source).to(dtype=torch.float64)
 
 
@@ -122,8 +122,6 @@ class TestModelSpecEndToEnd:
         assert torch.equal(spec.wavelength, source_spec.wavelength)
         assert torch.equal(spec.kx0, source_spec.kx0)
         assert torch.equal(spec.ky0, source_spec.ky0)
-        assert torch.equal(spec.s, source_spec.s)
-        assert torch.equal(spec.p, source_spec.p)
 
     def test_all_model_spec_fields_populated(self):
         """Every declared ModelSpec field must have been resolved (guards

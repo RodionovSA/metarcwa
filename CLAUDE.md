@@ -64,7 +64,7 @@ time, so thickness-only changes don't require rebuilding.
 | `stack.py` | `Stack` + `StackSpec`: ordered layer sequence + incidence/transmission media |
 | `layer.py` | `Layer`, `HomogeneousLayer`, `PatternedLayer`: per-layer permittivity + thickness |
 | `medium.py` | `Medium`, `IsotropicMedium`: material / permittivity definitions for half-spaces |
-| `source.py` | `Source` / `PlaneWave`: wavelength, incidence angles, s/p polarization |
+| `source.py` | `Source`: wavelength, incidence angles (theta/phi). No polarization — s/p amplitudes are applied downstream to the computed S-matrix, in the future `results` layer, not needed for the S-matrix itself |
 | `lattice.py` | `Lattice`: 2D Bravais lattice vectors `a1`, `a2` |
 
 ### `src/metarcwa/solver/` — numerics

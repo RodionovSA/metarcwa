@@ -37,8 +37,6 @@ class ModelSpec:
         physical scale — k0 = 2*pi/wavelength is reconstructed downstream.
     kx0, ky0 : Tensor | nn.Parameter
         k0-normalized in-plane wavevector, shape ``[N_wl, N_theta, N_phi]``.
-    s, p : Tensor | nn.Parameter
-        Complex s/p polarization amplitudes.
     """
 
     # structure (source-independent)
@@ -47,12 +45,10 @@ class ModelSpec:
     transmission: MediumSpec
     a1: torch.Tensor
     a2: torch.Tensor
-    # illumination (PlaneWave-specific — see note in base.py header)
+    # illumination (Source-specific — see note in base.py header)
     wavelength: torch.Tensor
     kx0: torch.Tensor
     ky0: torch.Tensor
-    s: torch.Tensor
-    p: torch.Tensor
 
 class Model(nn.Module):
     """

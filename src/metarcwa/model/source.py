@@ -9,53 +9,16 @@ from .nn_helpers import register
 
 @dataclass(frozen=True)
 class SourceSpec:
-    """Abstract base for the solver-facing illumination description.
+    """Solver-facing plane-wave illumination description.
 
-    A SourceSpec carries the *physical*, pre-expansion description of the
-    illumination. Expansion onto Fourier harmonics is the Solver's job, so
-    nothing solver-side (e.g. the harmonic count) appears here. Concrete
-    variants — PlaneWaveSpec, and beam specs in future — subclass this.
-
-    Attributes
-    ----------
-    wavelength : Tensor | nn.Parameter
-        Free-space wavelength. May be batched.
-    """
-
-    wavelength: torch.Tensor
-
-class Source(nn.Module):
-    """Abstract base class for all illumination sources.
-
-    A Source describes the physical excitation of the stack. Subclasses
-    implement spec() to produce a SourceSpec — the solver-facing,
-    pre-expansion description of the illumination. Concrete sources include
-    PlaneWave; beam or multi-mode sources may be added as further
-    subclasses without changing this base class or downstream code.
-
-    The conversion from a physical description to per-harmonic amplitudes
-    is the Solver's job; SourceSpec stays physical so that nothing
-    solver-side (e.g. the harmonic count) leaks into the Model layer.
-    """
-
-    def spec(self, eps_incidence) -> SourceSpec:
-        """Build the solver-facing source description.
-
-        Parameters
-        ----------
-        eps_incidence
-            Epsilon of the incidence medium, needed to convert
-            angles to an in-plane wavevector.
-        """
-        raise NotImplementedError
-    
-@dataclass(frozen=True)
-class PlaneWaveSpec(SourceSpec):
-    """Plane-wave illumination.
+    An immutable snapshot after angle-to-wavevector resolution. Polarization
+    is deliberately not carried here: the solver only needs wavelength and
+    in-plane wavevector to build the S-matrix — polarization amplitudes are
+    applied afterward, downstream in ``results``, to the computed S-matrix.
 
     All batch axes follow the outer-product sweep convention set by
-    ``PlaneWave.spec()``: ``[N_wl, N_theta, N_phi]``, with singleton axes
-    for scalar parameters.
+    ``Source.spec()``: ``[N_wl, N_theta, N_phi]``, with singleton axes for
+    scalar parameters.
 
     Attributes
     ----------
@@ -72,34 +35,29 @@ class PlaneWaveSpec(SourceSpec):
         where a physical (1/length) wavevector is required (e.g. final
         propagation phases). Already resolved using the incidence-medium
         index. Shape ``[N_wl, N_theta, N_phi]``.
-    s, p : Tensor | nn.Parameter
-        Complex s- and p-polarization amplitudes.
     """
 
+    wavelength: torch.Tensor
     kx0: torch.Tensor
     ky0: torch.Tensor
-    s: torch.Tensor
-    p: torch.Tensor
-    
-class PlaneWave(Source):
-    """A monochromatic plane wave illuminating the stack.
 
-    Polarization is given as complex s- and p-amplitudes, each stored as
-    two real fields so any component may independently be an nn.Parameter.
+
+class Source(nn.Module):
+    """A monochromatic plane wave illuminating the stack.
 
     ``wavelength``, ``theta``, and ``phi`` are **independent sweep axes**.
     Pass each as a 1-D tensor (or scalar) of any length; ``spec()`` forms the
     full outer-product grid with axis order ``[N_wl, N_theta, N_phi]``.
     Scalar (0-d) parameters collapse to a singleton axis and cost nothing.
 
+    Polarization is not part of ``Source``: the solver's S-matrix does not
+    depend on it, so s/p amplitudes are applied later, downstream in
+    ``results``, to the computed S-matrix.
+
     Parameters
     ----------
     wavelength : float | Tensor | nn.Parameter
         Free-space wavelength(s). Becomes axis 0 of the sweep grid.
-    s_amp : complex | Tensor | nn.Parameter
-        Complex amplitude of the s-polarized (TE) component.
-    p_amp : complex | Tensor | nn.Parameter
-        Complex amplitude of the p-polarized (TM) component.
     theta : float | Tensor | nn.Parameter
         Polar angle of incidence in rad, from the normal. Becomes axis 1.
         Default 0 (normal incidence).
@@ -107,31 +65,21 @@ class PlaneWave(Source):
         Azimuthal angle in rad. Becomes axis 2. Default 0.
     """
 
-    def __init__(self, wavelength, s_amp, p_amp, theta=0.0, phi=0.0):
+    def __init__(self, wavelength, theta=0.0, phi=0.0):
         super().__init__()
         register(self, "wavelength", wavelength)
         register(self, "theta", theta)
         register(self, "phi", phi)
-        self._register_complex("s", s_amp)
-        self._register_complex("p", p_amp)
-
-    def _register_complex(self, name, value):
-        """Store a complex amplitude as two real fields: <name>_real, <name>_imag."""
-        t = torch.as_tensor(value)
-        real = t.real if t.is_complex() else t
-        imag = t.imag if t.is_complex() else torch.zeros_like(t)
-        register(self, f"{name}_real", real)
-        register(self, f"{name}_imag", imag)
-
-    @property
-    def s(self) -> torch.Tensor:
-        return torch.complex(self.s_real, self.s_imag)
-
-    @property
-    def p(self) -> torch.Tensor:
-        return torch.complex(self.p_real, self.p_imag)
 
     def spec(self, n_incidence: torch.Tensor) -> SourceSpec:
+        """Build the solver-facing source description.
+
+        Parameters
+        ----------
+        n_incidence : Tensor
+            Real refractive index of the incidence medium, needed to convert
+            angles to an in-plane wavevector.
+        """
         # Place each swept parameter on its own broadcast axis:
         #   axis 0 — wavelength   [N_wl, 1,     1    ]
         #   axis 1 — theta        [1,    N_theta, 1    ]
@@ -152,10 +100,8 @@ class PlaneWave(Source):
         kx0 = kt * torch.cos(ph)         # [N_wl, N_theta, N_phi]
         ky0 = kt * torch.sin(ph)
 
-        return PlaneWaveSpec(
+        return SourceSpec(
             wavelength=self.wavelength,
             kx0=kx0,
             ky0=ky0,
-            s=self.s,
-            p=self.p,
         )

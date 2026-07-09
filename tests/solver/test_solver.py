@@ -12,7 +12,7 @@ from metarcwa.model.stack import Stack
 from metarcwa.model.layer import Layer
 from metarcwa.model.medium import IsotropicMedium
 from metarcwa.model.lattice import Lattice
-from metarcwa.model.source import PlaneWave
+from metarcwa.model.source import Source
 from metarcwa.model.utils import CallableModule
 from metarcwa.solver.base import Solver, prepare, solve, reprepare, PreparedStack
 from metarcwa.solver.layersolver.base import LayerSolver
@@ -55,7 +55,7 @@ def _make_model(device: str) -> Model:
     layer        = Layer(IsotropicMedium(_const_eps(2.5 + 0j)), thickness=0.3)
     lattice      = Lattice.rectangular(1.0, 1.0)
     stack        = Stack(incidence, [layer], transmission, lattice)
-    source       = PlaneWave(wavelength=1.0, s_amp=1.0, p_amp=0.0)
+    source       = Source(wavelength=1.0)
     return Model(stack, source).to(dtype=torch.float64, device=device)
 
 
@@ -70,7 +70,7 @@ def _make_vacuum_model(device: str) -> Model:
     layer        = Layer(IsotropicMedium(_const_eps(1.0 + 0j)), thickness=0.0)
     lattice      = Lattice.rectangular(1.0, 1.0)
     stack        = Stack(incidence, [layer], transmission, lattice)
-    source       = PlaneWave(wavelength=1.0, s_amp=1.0, p_amp=0.0)
+    source       = Source(wavelength=1.0)
     return Model(stack, source).to(dtype=torch.float64, device=device)
 
 
@@ -134,7 +134,7 @@ def _make_two_layer_model(device: str, radius: nn.Parameter) -> Model:
     # Patterned-layer eps blending indexes wavelength as [N_wl, ...], so it
     # must be at least 1-D (unlike the scalar-float form used for
     # homogeneous-only fixtures elsewhere in this file).
-    source  = PlaneWave(wavelength=torch.tensor([1.0]), s_amp=1.0, p_amp=0.0)
+    source  = Source(wavelength=torch.tensor([1.0]))
     return Model(stack, source).to(dtype=torch.float64, device=device)
 
 
