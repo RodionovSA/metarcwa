@@ -1,6 +1,6 @@
 # tests/solver/test_solver.py
 # Integration tests for Solver: construction, TVF dispatch, truncation,
-# and end-to-end solve() correctness.
+# and end-to-end run() correctness.
 
 import pytest
 import torch
@@ -14,7 +14,7 @@ from metarcwa.model.medium import IsotropicMedium
 from metarcwa.model.lattice import Lattice
 from metarcwa.model.source import Source
 from metarcwa.model.utils import CallableModule
-from metarcwa.solver.base import Solver, prepare, solve, reprepare, PreparedStack
+from metarcwa.solver.base import Solver, prepare, run, reprepare, PreparedStack
 from metarcwa.solver.layersolver.base import LayerSolver
 from metarcwa.solver.config import Config
 from metarcwa.solver.blockmatrix import Block
@@ -175,39 +175,39 @@ class TestSolverInit:
 
 
 # ---------------------------------------------------------------------------
-# solve()
+# run()
 # ---------------------------------------------------------------------------
 
-class TestSolverSolve:
+class TestSolverRun:
 
     def test_returns_block2x2_like(self, device):
         solver = Solver(_make_model(device), Config(m=1, n=1))
-        assert _is_block2x2_like(solver.solve())
+        assert _is_block2x2_like(solver.run())
 
     def test_no_nan(self, device):
         solver = Solver(_make_model(device), Config(m=1, n=1))
         Nh = _nh(solver)
-        M  = solver.solve().to_dense(Nh)
+        M  = solver.run().to_dense(Nh)
         assert not torch.isnan(M).any()
 
     def test_vacuum_stack_is_star_identity(self, device):
         """All-vacuum stack → S = star-product identity [[0, I], [I, 0]]."""
         solver = Solver(_make_vacuum_model(device), Config(m=1, n=1))
         Nh = _nh(solver)
-        M  = solver.solve().to_dense(Nh)
+        M  = solver.run().to_dense(Nh)
         assert _dense_is_star_id(M, atol=1e-6)
 
     def test_output_on_correct_device(self, device):
         solver = Solver(_make_model(device), Config(m=1, n=1, device=device))
         Nh = _nh(solver)
-        M  = solver.solve().to_dense(Nh)
+        M  = solver.run().to_dense(Nh)
         assert M.device.type == device
 
     def test_slab_has_nonzero_transmission(self, device):
         """ε=2.5 slab must have non-zero transmission block."""
         solver = Solver(_make_model(device), Config(m=1, n=1))
         Nh = _nh(solver)
-        M  = solver.solve().to_dense(Nh)
+        M  = solver.run().to_dense(Nh)
         N  = M.shape[-1] // 2
         assert M[..., :N, N:].abs().max().item() > 1e-6
 
@@ -215,7 +215,7 @@ class TestSolverSolve:
         """ε=2.5 slab must have non-zero reflection block."""
         solver = Solver(_make_model(device), Config(m=1, n=1))
         Nh = _nh(solver)
-        M  = solver.solve().to_dense(Nh)
+        M  = solver.run().to_dense(Nh)
         N  = M.shape[-1] // 2
         assert M[..., :N, :N].abs().max().item() > 1e-6
 
@@ -238,40 +238,40 @@ class TestSolverPrecompute:
         for op in solver._ops[1:-1]:
             assert op.thickness is not None
 
-    def test_solve_matches_manual_layersolver_composition(self, device):
-        """solve() (star-composing precomputed operators) must exactly match
-        the old-style composition built directly from LayerSolver.solve()."""
+    def test_run_matches_manual_layersolver_composition(self, device):
+        """run() (star-composing precomputed operators) must exactly match
+        the composition built directly from LayerSolver.run()."""
         solver = Solver(_make_model(device), Config(m=1, n=1))
         Nh = _nh(solver)
 
         ls = solver.layersolver
-        S_manual = ls.solve(solver.model_spec.incidence, left=True)
+        S_manual = ls.run(solver.model_spec.incidence, left=True)
         for layer in solver.model_spec.layers:
-            S_manual = S_manual.star(ls.solve(layer))
-        S_manual = S_manual.star(ls.solve(solver.model_spec.transmission, left=False))
+            S_manual = S_manual.star(ls.run(layer))
+        S_manual = S_manual.star(ls.run(solver.model_spec.transmission, left=False))
 
-        S_new = solver.solve()
+        S_new = solver.run()
         assert torch.allclose(S_new.to_dense(Nh), S_manual.to_dense(Nh))
 
-    def test_solve_is_deterministic_across_calls(self, device):
-        """Repeated solve() calls reuse the precomputed operators and must
+    def test_run_is_deterministic_across_calls(self, device):
+        """Repeated run() calls reuse the precomputed operators and must
         return bit-identical results (no re-solving of the eigenproblem)."""
         solver = Solver(_make_model(device), Config(m=1, n=1))
         Nh = _nh(solver)
-        S1 = solver.solve().to_dense(Nh)
-        S2 = solver.solve().to_dense(Nh)
+        S1 = solver.run().to_dense(Nh)
+        S2 = solver.run().to_dense(Nh)
         assert torch.equal(S1, S2)
 
 
 # ---------------------------------------------------------------------------
-# Functional core (prepare / solve / reprepare)
+# Functional core (prepare / run / reprepare)
 # ---------------------------------------------------------------------------
 
 class TestFunctionalCore:
 
-    def test_prepare_solve_matches_class(self, device):
+    def test_prepare_run_matches_class(self, device):
         """The functional core must match the Solver class wrapper exactly
-        (the class is a thin wrapper around prepare()/solve())."""
+        (the class is a thin wrapper around prepare()/run())."""
         model = _make_model(device)
         config = Config(m=1, n=1)
         prepared = prepare(model, config)
@@ -279,7 +279,7 @@ class TestFunctionalCore:
         Nh = prepared.layersolver.m_flat.shape[0]
 
         solver = Solver(_make_model(device), config)
-        assert torch.allclose(solve(prepared).to_dense(Nh), solver.solve().to_dense(Nh))
+        assert torch.allclose(run(prepared).to_dense(Nh), solver.run().to_dense(Nh))
 
 
 class TestReprepare:
@@ -297,11 +297,11 @@ class TestReprepare:
         with torch.no_grad():
             radius.copy_(torch.tensor(0.35, dtype=radius.dtype, device=radius.device))
 
-        S_reprepared = solver.reprepare([1]).solve().to_dense(Nh)
+        S_reprepared = solver.reprepare([1]).run().to_dense(Nh)
 
         radius_fresh = nn.Parameter(torch.tensor(0.35, dtype=torch.float64))
         model_fresh = _make_two_layer_model(device, radius_fresh)
-        S_fresh = Solver(model_fresh, config).solve().to_dense(Nh)
+        S_fresh = Solver(model_fresh, config).run().to_dense(Nh)
 
         assert torch.allclose(S_reprepared, S_fresh, atol=1e-8)
 
@@ -365,7 +365,7 @@ class TestReprepare:
         for _ in range(5):
             opt.zero_grad()
             solver.reprepare([1])
-            S = solver.solve()
+            S = solver.run()
             M = S.to_dense(Nh)
             loss = M[..., :N, N:].abs().pow(2).sum()
             loss.backward()

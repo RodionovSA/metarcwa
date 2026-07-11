@@ -3,7 +3,7 @@
 Solver — top-level RCWA solver
 ==============================
 
-Functional core (:func:`build_layersolver`, :func:`prepare`, :func:`solve`,
+Functional core (:func:`build_layersolver`, :func:`prepare`, :func:`run`,
 :func:`reprepare`) plus a thin :class:`Solver` class wrapper for convenience.
 
 Binds a :class:`~metarcwa.model.base.Model` and a :class:`Config` into a
@@ -11,7 +11,7 @@ ready-to-run simulation. :func:`prepare` does the expensive work: the model
 is moved to the requested device/dtype, harmonics and the optional TVF are
 pre-computed (:func:`build_layersolver`), and every stack element's modal
 eigenproblem is solved once via :meth:`LayerSolver.prepare`. The result is a
-frozen :class:`PreparedStack` snapshot. :func:`solve` is then genuinely
+frozen :class:`PreparedStack` snapshot. :func:`run` is then genuinely
 cheap: pure Redheffer star-product composition of the precomputed
 :class:`~metarcwa.solver.layersolver.base.LayerOperator` objects, with no
 TVF, convolution, or eigendecomposition work.
@@ -152,7 +152,7 @@ def prepare(model: Model, config: Config) -> PreparedStack:
     layersolver = build_layersolver(model_spec, config)
 
     # Solve the modal eigenproblem for every stack element once, here.
-    # solve() then only does cheap Redheffer star-product composition.
+    # run() then only does cheap Redheffer star-product composition.
     ops = (
         layersolver.prepare(model_spec.incidence),
         *(layersolver.prepare(layer) for layer in model_spec.layers),
@@ -223,7 +223,7 @@ def reprepare(prepared: PreparedStack, model: Model, config: Config,
     return replace(prepared, ops=tuple(ops), model_spec=model_spec)
 
 
-def solve(prepared: PreparedStack) -> Block2x2:
+def run(prepared: PreparedStack) -> Block2x2:
     """Compute the full-stack S-matrix from a prepared snapshot.
 
     Assembles the S-matrix by star-multiplying the incidence boundary,
@@ -251,7 +251,7 @@ def solve(prepared: PreparedStack) -> Block2x2:
 
 class Solver:
     """Top-level RCWA solver — thin convenience wrapper over the functional
-    core (:func:`prepare`, :func:`solve`, :func:`reprepare`).
+    core (:func:`prepare`, :func:`run`, :func:`reprepare`).
 
     Holds a fully-resolved model snapshot, a pre-initialised
     :class:`LayerSolver`, and the precomputed
@@ -259,7 +259,7 @@ class Solver:
     element (incidence boundary, each finite layer, transmission boundary).
     Constructing a ``Solver`` is the expensive step (device transfer,
     harmonic pre-computation, TVF setup, and one modal eigensolve per
-    element); calling :meth:`solve` is then genuinely cheap — pure
+    element); calling :meth:`run` is then genuinely cheap — pure
     Redheffer star-product composition, no eigendecomposition.
 
     For single-layer (or few-layer) inverse design at fixed source/lattice,
@@ -318,7 +318,7 @@ class Solver:
     def _ops(self):
         return self._prepared.ops
 
-    def solve(self) -> Block2x2:
+    def run(self) -> Block2x2:
         """Compute the full-stack S-matrix.
 
         Returns
@@ -327,7 +327,7 @@ class Solver:
             Full-stack scattering matrix. Off-diagonal blocks carry
             transmission amplitudes; diagonal blocks carry reflection.
         """
-        return solve(self._prepared)
+        return run(self._prepared)
 
     def reprepare(self, layer_indices) -> "Solver":
         """Re-solve only the named layers in place; reuse everything else.
@@ -346,7 +346,7 @@ class Solver:
         -------
         Solver
             ``self``, updated in place, for chaining
-            (``solver.reprepare([i]).solve()``).
+            (``solver.reprepare([i]).run()``).
         """
         self._prepared = reprepare(self._prepared, self.model, self.config, layer_indices)
         return self

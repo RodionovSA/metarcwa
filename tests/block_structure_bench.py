@@ -177,7 +177,7 @@ def run_one(n_patterned: int, config: Config, args, Nh: int) -> dict:
         solver = Solver(model, config)
         _sync(device)
         t1 = time.perf_counter()
-        S = solver.solve()
+        S = solver.run()
         _sync(device)
         t2 = time.perf_counter()
         return (t1 - t0) * 1e3, (t2 - t1) * 1e3, S

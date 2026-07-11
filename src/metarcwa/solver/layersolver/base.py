@@ -215,14 +215,14 @@ class LayerSolver:
                 return S_boundary(self.W0, self.V0, op.W, op.V)
         return S_layer(self.W0, self.V0, op.W, op.V, op.lam, op.thickness, self.wvl)
 
-    def solve(self, element: HomogeneousLayer | PatternedLayer | MediumSpec,
-              left: bool = True) -> Block2x2:
+    def run(self, element: HomogeneousLayer | PatternedLayer | MediumSpec,
+            left: bool = True) -> Block2x2:
         """
         Compute the S-matrix for a single stack element.
 
         Convenience wrapper equivalent to ``smatrix(prepare(element), left)``.
         Prefer calling :meth:`prepare` once and :meth:`smatrix` repeatedly
-        when the same element is solved more than once (e.g. spectral sweeps
+        when the same element is run more than once (e.g. spectral sweeps
         or thickness-only optimization at fixed geometry).
 
         Parameters

@@ -192,29 +192,29 @@ class TestLayerSolverInit:
 
 
 # ---------------------------------------------------------------------------
-# solve() dispatch
+# run() dispatch
 # ---------------------------------------------------------------------------
 
 class TestLayerSolverDispatch:
 
     def test_dispatches_homogeneous(self, device):
         solver, *_, Nh = _make_solver(device)
-        S = solver.solve(_hom(2.5, 0.3, device))
+        S = solver.run(_hom(2.5, 0.3, device))
         assert _is_block2x2_like(S)
 
     def test_dispatches_patterned(self, device):
         solver, *_ = _make_solver(device)
-        S = solver.solve(_pat(2.5, 1.0, 0.3, _checkerboard(device), device))
+        S = solver.run(_pat(2.5, 1.0, 0.3, _checkerboard(device), device))
         assert _is_block2x2_like(S)
 
     def test_dispatches_medium(self, device):
         solver, *_ = _make_solver(device)
-        assert _is_block2x2_like(solver.solve(_medium(2.5, device)))
+        assert _is_block2x2_like(solver.run(_medium(2.5, device)))
 
     def test_unknown_element_type_raises(self, device):
         solver, *_ = _make_solver(device)
         with pytest.raises(TypeError):
-            solver.solve("not_an_element")
+            solver.run("not_an_element")
 
 
 # ---------------------------------------------------------------------------
@@ -225,11 +225,11 @@ class TestLayerSolverHomogeneous:
 
     def test_returns_block2x2_like(self, device):
         solver, *_ = _make_solver(device)
-        assert _is_block2x2_like(solver.solve(_hom(2.5, 0.3, device)))
+        assert _is_block2x2_like(solver.run(_hom(2.5, 0.3, device)))
 
     def test_no_nan(self, device):
         solver, *_, Nh = _make_solver(device)
-        M = solver.solve(_hom(2.5, 0.3, device)).to_dense(Nh)
+        M = solver.run(_hom(2.5, 0.3, device)).to_dense(Nh)
         assert not torch.isnan(M).any()
 
     def test_vacuum_layer_equals_s_prop(self, device):
@@ -241,7 +241,7 @@ class TestLayerSolverHomogeneous:
         lam_vac, _ = homogeneous_modes(eps_vac, kx, ky)
         d_val = 0.3
 
-        S_hom = solver.solve(_hom(1.0, d_val, device))
+        S_hom = solver.run(_hom(1.0, d_val, device))
         S_ref = S_prop(lam_vac, wvl, _d(d_val, device))
 
         assert_close(S_hom.to_dense(Nh), S_ref.to_dense(Nh), atol=1e-5, rtol=1e-5)
@@ -249,20 +249,20 @@ class TestLayerSolverHomogeneous:
     def test_vacuum_zero_thickness_is_star_identity(self, device):
         """HomogeneousLayer(ε=1, d=0) → S_p = star_identity (exp(0)=I)."""
         solver, *_, Nh = _make_solver(device)
-        S = solver.solve(_hom(1.0, 0.0, device))
+        S = solver.run(_hom(1.0, 0.0, device))
         assert _dense_is_star_id(S.to_dense(Nh))
 
     def test_non_vacuum_has_transmission(self, device):
         """For ε≠1 and d>0, both off-diagonal S blocks must be non-zero."""
         solver, *_, Nh = _make_solver(device)
-        M = solver.solve(_hom(2.5, 0.3, device)).to_dense(Nh)
+        M = solver.run(_hom(2.5, 0.3, device)).to_dense(Nh)
         N = M.shape[-1] // 2
         assert M[..., :N, N:].abs().max().item() > 1e-6
         assert M[..., N:, :N].abs().max().item() > 1e-6
 
     def test_output_device(self, device):
         solver, *_ = _make_solver(device)
-        S = solver.solve(_hom(2.5, 0.3, device))
+        S = solver.run(_hom(2.5, 0.3, device))
         assert _get_leaf(S).data.device.type == device
 
 
@@ -274,31 +274,31 @@ class TestLayerSolverPatterned:
 
     def test_returns_block2x2_like(self, device):
         solver, *_ = _make_solver(device)
-        S = solver.solve(_pat(2.5, 1.0, 0.3, _checkerboard(device), device))
+        S = solver.run(_pat(2.5, 1.0, 0.3, _checkerboard(device), device))
         assert _is_block2x2_like(S)
 
     def test_no_nan(self, device):
         solver, *_, Nh = _make_solver(device)
-        S = solver.solve(_pat(2.5, 1.0, 0.3, _checkerboard(device), device))
+        S = solver.run(_pat(2.5, 1.0, 0.3, _checkerboard(device), device))
         assert not torch.isnan(S.to_dense(Nh)).any()
 
     def test_non_vacuum_has_transmission(self, device):
         """For ε≠1 and d>0, the transmission block must be non-zero."""
         solver, *_, Nh = _make_solver(device)
-        M = solver.solve(_pat(4.0, 1.0, 0.3, _checkerboard(device), device)).to_dense(Nh)
+        M = solver.run(_pat(4.0, 1.0, 0.3, _checkerboard(device), device)).to_dense(Nh)
         N = M.shape[-1] // 2
         assert M[..., :N, N:].abs().max().item() > 1e-6
 
     def test_non_vacuum_has_reflection(self, device):
         """For ε≠1, the reflection block must be non-zero."""
         solver, *_, Nh = _make_solver(device)
-        M = solver.solve(_pat(4.0, 1.0, 0.3, _checkerboard(device), device)).to_dense(Nh)
+        M = solver.run(_pat(4.0, 1.0, 0.3, _checkerboard(device), device)).to_dense(Nh)
         N = M.shape[-1] // 2
         assert M[..., :N, :N].abs().max().item() > 1e-6
 
     def test_output_device(self, device):
         solver, *_ = _make_solver(device)
-        S = solver.solve(_pat(2.5, 1.0, 0.3, _checkerboard(device), device))
+        S = solver.run(_pat(2.5, 1.0, 0.3, _checkerboard(device), device))
         assert _get_leaf(S).data.device.type == device
 
 
@@ -367,8 +367,8 @@ class TestPatternedEqualsHomogeneous:
         solver, *_, Nh = (_make_solver_tvf(device) if use_tvf else _make_solver(device))
         d_val = 0.3
 
-        S_pat = solver.solve(_pat(eps_val, eps_val, d_val, _checkerboard(device), device))
-        S_hom = solver.solve(_hom(eps_val, d_val, device))
+        S_pat = solver.run(_pat(eps_val, eps_val, d_val, _checkerboard(device), device))
+        S_hom = solver.run(_hom(eps_val, d_val, device))
 
         assert_close(S_pat.to_dense(Nh), S_hom.to_dense(Nh), atol=1e-5, rtol=1e-5)
 
@@ -392,8 +392,8 @@ class TestCheckpointEig:
         solver_off, *_, Nh = _make_solver_cfg(device, Config())
         solver_on,  *_      = _make_solver_cfg(device, Config(checkpoint_eig=True))
 
-        S_off = solver_off.solve(layer)
-        S_on  = solver_on.solve(layer)
+        S_off = solver_off.run(layer)
+        S_on  = solver_on.run(layer)
         assert_close(S_on.to_dense(Nh), S_off.to_dense(Nh), atol=0, rtol=0)
 
     def test_checkpoint_gradients_match(self, device):
@@ -403,7 +403,7 @@ class TestCheckpointEig:
             pattern = base_pattern.clone().requires_grad_(True)
             layer = _pat(2.5, 1.0, 0.3, pattern, device)
             solver, *_, Nh = _make_solver_cfg(device, config)
-            S = solver.solve(layer)
+            S = solver.run(layer)
             loss = S.to_dense(Nh).abs().sum()
             loss.backward()
             return pattern.grad
@@ -448,7 +448,7 @@ class TestCheckpointEig:
             total = 0.0
             for _ in range(n_layers):
                 layer = _pat(4.0, 1.0, 0.3, pattern, dev)
-                S = solver.solve(layer)
+                S = solver.run(layer)
                 total = total + S.to_dense(Nh).abs().sum()
             total.backward()
             return torch.cuda.max_memory_allocated() / 1e6
@@ -466,23 +466,23 @@ class TestLayerSolverMedium:
 
     def test_returns_block2x2_like(self, device):
         solver, *_ = _make_solver(device)
-        assert _is_block2x2_like(solver.solve(_medium(2.5, device)))
+        assert _is_block2x2_like(solver.run(_medium(2.5, device)))
 
     def test_no_nan(self, device):
         solver, *_, Nh = _make_solver(device)
-        M = solver.solve(_medium(2.5, device)).to_dense(Nh)
+        M = solver.run(_medium(2.5, device)).to_dense(Nh)
         assert not torch.isnan(M).any()
 
     def test_vacuum_medium_is_star_identity(self, device):
         """MediumSpec(ε=1) in vacuum background → S_boundary = star_identity."""
         solver, *_, Nh = _make_solver(device)
-        S = solver.solve(_medium(1.0, device))
+        S = solver.run(_medium(1.0, device))
         assert _dense_is_star_id(S.to_dense(Nh))
 
     def test_non_vacuum_has_reflection(self, device):
         """For ε≠1 the reflection block must be non-zero."""
         solver, *_, Nh = _make_solver(device)
-        M = solver.solve(_medium(4.0, device)).to_dense(Nh)
+        M = solver.run(_medium(4.0, device)).to_dense(Nh)
         N = M.shape[-1] // 2
         assert M[..., :N, :N].abs().max().item() > 1e-6
 
@@ -501,7 +501,7 @@ class TestLayerSolverMedium:
 
     def test_output_device(self, device):
         solver, *_ = _make_solver(device)
-        S = solver.solve(_medium(2.5, device))
+        S = solver.run(_medium(2.5, device))
         assert _get_leaf(S).data.device.type == device
 
 
@@ -528,8 +528,8 @@ class TestLayerSolverPrepare:
         assert isinstance(op_med, LayerOperator)
         assert op_med.thickness is None
 
-    def test_smatrix_prepare_equals_solve(self, device):
-        """smatrix(prepare(x), left) must exactly match solve(x, left)."""
+    def test_smatrix_prepare_equals_run(self, device):
+        """smatrix(prepare(x), left) must exactly match run(x, left)."""
         solver, *_, Nh = _make_solver(device)
         elements = [
             _hom(2.5, 0.3, device),
@@ -538,7 +538,7 @@ class TestLayerSolverPrepare:
         ]
         for element in elements:
             for left in (True, False):
-                S_ref = solver.solve(element, left=left)
+                S_ref = solver.run(element, left=left)
                 S_got = solver.smatrix(solver.prepare(element), left=left)
                 assert_close(S_got.to_dense(Nh), S_ref.to_dense(Nh))
 
@@ -551,12 +551,12 @@ class TestLayerSolverPrepare:
         assert_close(S1.to_dense(Nh), S2.to_dense(Nh), atol=0, rtol=0)
 
     def test_thickness_change_without_reprepare(self, device):
-        """Swapping op.thickness (no re-prepare) must match a fresh solve()
+        """Swapping op.thickness (no re-prepare) must match a fresh run()
         of a layer with that thickness — the eigendecomposition is reused."""
         solver, *_, Nh = _make_solver(device)
         op = solver.prepare(_hom(2.5, 0.3, device))
         op2 = dataclasses.replace(op, thickness=_d(0.7, device))
 
         S_reused = solver.smatrix(op2)
-        S_fresh  = solver.solve(_hom(2.5, 0.7, device))
+        S_fresh  = solver.run(_hom(2.5, 0.7, device))
         assert_close(S_reused.to_dense(Nh), S_fresh.to_dense(Nh))

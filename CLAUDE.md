@@ -49,7 +49,7 @@ Model (structure + source)
 
 `Solver.__init__` is the expensive step: it precomputes harmonics, the TVF, and
 solves the modal eigenproblem for every stack element (`LayerSolver.prepare`),
-caching the result as a `LayerOperator` per element. `Solver.solve()` is cheap:
+caching the result as a `LayerOperator` per element. `Solver.run()` is cheap:
 pure Redheffer star-product composition of the cached operators via
 `LayerSolver.smatrix`, no eigendecomposition. Rebuild the `Solver` whenever the
 pattern/geometry changes (already required, since `model.spec()` resolves the
@@ -71,7 +71,7 @@ time, so thickness-only changes don't require rebuilding.
 
 | File/pkg | Responsibility |
 |----------|----------------|
-| `base.py` | `Solver`: top-level driver; precomputes harmonics + TVF + one `LayerOperator` per stack element; `solve()` only star-composes |
+| `base.py` | `Solver`: top-level driver; precomputes harmonics + TVF + one `LayerOperator` per stack element; `run()` only star-composes |
 | `config.py` | `Config` + `Factorization` dataclasses; grid/truncation/dtype/device/solver switches |
 | `harmonics.py` | Harmonic index map `(m,n)`, truncation, in-plane wavevectors `kx`/`ky` |
 | `smatrix.py` | `S_boundary`, `S_prop`, `S_layer`: per-interface/layer S-matrix builders |
