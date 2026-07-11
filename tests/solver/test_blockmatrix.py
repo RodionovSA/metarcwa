@@ -761,6 +761,243 @@ class TestBlock2x2Solve:
         assert_close(via_solve.d.data, via_inv.d.data, atol=1e-10, rtol=1e-10)
 
 
+# ---- Block2x2.solve dispatch -------------------------------------------------
+
+def _make_nested_diag(n: int, vals_a, vals_b, vals_c, vals_d,
+                      dtype=torch.float64) -> Block2x2:
+    """Build a depth-2 Block2x2 whose leaves are all DIAG (or SCALAR zero)."""
+    def _dblk(v):
+        return Block(Block.DIAG, torch.tensor(v, dtype=dtype).expand(n))
+    def _inner(aa, ab, ac, ad):
+        Z = Block.zeros(dtype=dtype)
+        return Block2x2(_dblk(aa), Z, Z, _dblk(ad))
+    Z2 = Block2x2(Block.zeros(dtype=dtype), Block.zeros(dtype=dtype),
+                  Block.zeros(dtype=dtype), Block.zeros(dtype=dtype))
+    return Block2x2(
+        _inner(vals_a[0], vals_a[1], vals_a[2], vals_a[3]),  # outer .a
+        Z2,                                                   # outer .b = 0
+        Z2,                                                   # outer .c = 0
+        _inner(vals_d[0], vals_d[1], vals_d[2], vals_d[3]),  # outer .d
+    )
+
+
+class TestBlock2x2SolveDispatch:
+    """Tests for the representation-aware dispatch in ``Block2x2.solve``.
+
+    Three branches:
+    - all-SCALAR → ``_solve_schur`` (Schur complement, no ``torch.linalg.solve``).
+    - all-DIAG/SCALAR → ``_solve_perharmonic`` (per-harmonic O(n), (M,M) solve).
+    - any DENSE → ``_solve_dense`` (full dense (M*n, M*n) solve).
+    """
+
+    # -- helpers shared by multiple tests ------------------------------------
+
+    def _nested_diag_system(self, n: int = 5):
+        """Construct a well-conditioned depth-2 Block2x2 with all-DIAG leaves
+        and a matching rhs, returning (M, R, M_mat, R_mat) where M_mat/R_mat
+        are the corresponding (2n×2n) dense tensors for reference solves."""
+        dtype = torch.float64
+        dv = torch.arange(1, n + 1, dtype=dtype)
+        # Two depth-1 inner blocks as entries of a block-diagonal outer matrix
+        A_inner = Block2x2(
+            Block(Block.DIAG, dv + 4.0),
+            Block.zeros(dtype=dtype),
+            Block.zeros(dtype=dtype),
+            Block(Block.DIAG, dv + 2.0),
+        )
+        D_inner = Block2x2(
+            Block(Block.DIAG, dv + 6.0),
+            Block.zeros(dtype=dtype),
+            Block.zeros(dtype=dtype),
+            Block(Block.DIAG, dv + 1.0),
+        )
+        Z2 = Block2x2(Block.zeros(dtype=dtype), Block.zeros(dtype=dtype),
+                      Block.zeros(dtype=dtype), Block.zeros(dtype=dtype))
+        M = Block2x2(A_inner, Z2, Z2, D_inner)
+
+        R_inner_a = Block2x2(
+            Block(Block.DIAG, torch.ones(n, dtype=dtype)),
+            Block.zeros(dtype=dtype),
+            Block.zeros(dtype=dtype),
+            Block(Block.DIAG, torch.ones(n, dtype=dtype) * 2),
+        )
+        R = Block2x2(R_inner_a, Z2, Z2, R_inner_a)
+        return M, R
+
+    # -- dispatch guards -------------------------------------------------------
+
+    def test_scalar_dispatch_no_linalg_solve(self, monkeypatch):
+        """All-SCALAR inputs: ``_solve_schur`` must be taken and
+        ``torch.linalg.solve`` must NOT be called."""
+        calls = {"n": 0}
+        real_solve = torch.linalg.solve
+
+        def counting(a, b):
+            calls["n"] += 1
+            return real_solve(a, b)
+
+        monkeypatch.setattr(torch.linalg, "solve", counting)
+        M = make_block2x2_scalar(3.0, 0.5, 0.5, 3.0)
+        R = make_block2x2_scalar(1.0, 0.0, 0.0, 1.0)
+        M.solve(R)
+        assert calls["n"] == 0
+
+    def test_diag_dispatch_solve_shape(self, monkeypatch):
+        """All-DIAG depth-2 inputs: ``torch.linalg.solve`` must be called with
+        (..., M, M) shape — not (..., M*n, M*n) — confirming the O(n) per-
+        harmonic path was taken."""
+        n = 6
+        M, R = self._nested_diag_system(n)
+
+        shapes = []
+        real_solve = torch.linalg.solve
+
+        def capturing(a, b):
+            shapes.append(tuple(a.shape[-2:]))
+            return real_solve(a, b)
+
+        monkeypatch.setattr(torch.linalg, "solve", capturing)
+        M.solve(R)
+        assert len(shapes) == 1, f"expected 1 solve call, got {len(shapes)}: {shapes}"
+        # M is depth-2 (4×4 per harmonic), not (4n×4n) full dense
+        assert shapes[0] == (4, 4), f"expected (4, 4), got {shapes[0]}"
+
+    def test_dense_dispatch_solve_shape(self, monkeypatch):
+        """DENSE leaves: ``torch.linalg.solve`` must be called with the full
+        (2n, 2n) shape — confirming full densification was triggered."""
+        n = N
+        dv = torch.arange(1, n + 1, dtype=torch.float)
+        A  = Block(Block.DENSE, torch.diag(dv)         + 0.1 * torch.eye(n))
+        D_ = Block(Block.DENSE, torch.diag(dv.flip(0)) + 0.1 * torch.eye(n))
+        Z  = Block.zeros()
+        M  = Block2x2(A, Z, Z, D_)
+        R  = Block2x2(
+            Block(Block.DENSE, torch.eye(n)),
+            Block.zeros(),
+            Block.zeros(),
+            Block(Block.DENSE, torch.eye(n)),
+        )
+
+        shapes = []
+        real_solve = torch.linalg.solve
+
+        def capturing(a, b):
+            shapes.append(tuple(a.shape[-2:]))
+            return real_solve(a, b)
+
+        monkeypatch.setattr(torch.linalg, "solve", capturing)
+        M.solve(R)
+        assert any(s == (2 * n, 2 * n) for s in shapes), \
+            f"expected a (2n, 2n) solve call, got: {shapes}"
+
+    # -- correctness -----------------------------------------------------------
+
+    def test_diag_matches_dense_ref(self):
+        """All-DIAG depth-2 solve must match ``torch.linalg.solve`` on the
+        full dense (4n×4n) system."""
+        n = 5
+        M, R = self._nested_diag_system(n)
+        X_struct = M.solve(R)
+        X_ref    = torch.linalg.solve(M.to_dense(n), R.to_dense(n))
+        assert_close(X_struct.to_dense(n), X_ref, atol=1e-10, rtol=1e-10)
+
+    def test_diag_no_nan_with_zero_inner_d_diagonal(self):
+        """Regression: depth-2 all-DIAG system whose outer-d entry has an inner
+        .d sub-block with exact-zero diagonals — the old Schur path would try
+        to invert that zero block and produce NaN/inf; the per-harmonic path
+        must avoid this and still match the dense reference.
+
+        Structure mirrors the physics case in S_boundary at normal incidence:
+        the outer matrix is like [[I, -I], [VL, VR]] where VL.a=VL.d=VR.a=VR.d=0
+        but VL.b, VL.c, VR.b, VR.c are non-zero, so the full 4×4 system is
+        non-singular even though the outer .d entry (VR) has a zero .d sub-block.
+        """
+        n = 4
+        dtype = torch.float64
+        # WL-like: I (outer .a = [[1,0],[0,1]])
+        WL = Block2x2(Block.eye(dtype=dtype), Block.zeros(dtype=dtype),
+                      Block.zeros(dtype=dtype), Block.eye(dtype=dtype))
+        # -WR-like: -I (outer .b = [[-1,0],[0,-1]])
+        negWR = Block2x2(-Block.eye(dtype=dtype), Block.zeros(dtype=dtype),
+                         Block.zeros(dtype=dtype), -Block.eye(dtype=dtype))
+        # VL-like: .a=0, .d=0 (the exact zeros), .b and .c non-zero
+        vb = torch.tensor([-2., -1., -3., -4.], dtype=dtype)
+        vc = torch.tensor([ 2.,  1.,  3.,  4.], dtype=dtype)
+        VL = Block2x2(Block.zeros(dtype=dtype), Block(Block.DIAG, vb),
+                      Block(Block.DIAG, vc), Block.zeros(dtype=dtype))
+        VR = Block2x2(Block.zeros(dtype=dtype), Block(Block.DIAG, -vb * 1.5),
+                      Block(Block.DIAG,  vc * 1.5), Block.zeros(dtype=dtype))
+        # Build left=[[WL,-WR],[VL,VR]] and right=[[-WL,WR],[VL,VR]] as in S_boundary
+        M = Block2x2(WL, negWR, VL, VR)
+        R = Block2x2(-WL, -negWR, VL, VR)
+
+        X = M.solve(R)
+        X_d = X.to_dense(n)
+        assert not torch.isnan(X_d).any(), "solve produced NaN for zero-diagonal inner d"
+        assert not torch.isinf(X_d).any()
+        # Must also match the dense reference
+        X_ref = torch.linalg.solve(M.to_dense(n), R.to_dense(n))
+        assert_close(X_d, X_ref, atol=1e-10, rtol=1e-10)
+
+    def test_dense_leaf_matches_linalg_solve(self):
+        """DENSE leaves: ``Block2x2.solve`` must match the flat dense reference."""
+        n  = N
+        dv = torch.arange(1, n + 1, dtype=torch.float)
+        A  = Block(Block.DENSE, torch.diag(dv)         + 0.1 * torch.eye(n))
+        B_ = Block(Block.DENSE, 0.3 * torch.eye(n))
+        C  = Block(Block.DENSE, 0.2 * torch.eye(n))
+        D_ = Block(Block.DENSE, torch.diag(dv.flip(0)) + 0.1 * torch.eye(n))
+        M  = Block2x2(A, B_, C, D_)
+        R  = Block2x2(
+            Block(Block.DENSE, torch.eye(n)),
+            Block(Block.DENSE, 0.1 * torch.eye(n)),
+            Block(Block.DENSE, 0.1 * torch.eye(n)),
+            Block(Block.DENSE, torch.eye(n)),
+        )
+        X_ref  = torch.linalg.solve(to_mat(M, n), to_mat(R, n))
+        X_flat = to_mat(M.solve(R), n)
+        assert_close(X_flat, X_ref, atol=1e-5, rtol=1e-5)
+
+    def test_diag_gradients_match_dense_ref(self):
+        """Autograd through the per-harmonic DIAG solve must produce the same
+        gradients as through an equivalent dense ``torch.linalg.solve``."""
+        n     = 6
+        dtype = torch.cdouble
+        dv    = torch.arange(1, n + 1, dtype=torch.float64).to(dtype)
+        # Construct a depth-1 (not nested) all-DIAG Block2x2 to keep this
+        # simpler: M = [[diag(dv+eps), 0],[0, diag(dv+1)]]  with eps learnable
+        eps = torch.tensor(2.0, dtype=dtype, requires_grad=True)
+        A = Block(Block.DIAG, dv + eps)
+        D = Block(Block.DIAG, dv + 1.0)
+        Z = Block.zeros(dtype=dtype)
+        M = Block2x2(A, Z, Z, D)
+        R = Block2x2(
+            Block(Block.DIAG, torch.ones(n, dtype=dtype)),
+            Z,
+            Z,
+            Block(Block.DIAG, torch.ones(n, dtype=dtype) * 2),
+        )
+
+        # Structured solve (DIAG path for depth-1)
+        X_struct = M.solve(R)
+        loss_struct = X_struct.to_dense(n).abs().sum()
+        loss_struct.backward()
+        grad_struct = eps.grad.clone()
+
+        # Dense reference
+        eps2 = torch.tensor(2.0, dtype=dtype, requires_grad=True)
+        A2 = Block(Block.DIAG, dv + eps2)
+        M2 = Block2x2(A2, Z, Z, D)
+        R2 = R
+        L2 = M2.to_dense(n)
+        R2d = R2.to_dense(n)
+        loss_dense = torch.linalg.solve(L2, R2d).abs().sum()
+        loss_dense.backward()
+        grad_dense = eps2.grad.clone()
+
+        assert_close(grad_struct, grad_dense, atol=1e-8, rtol=1e-8)
+
+
 # ---- Block2x2 star product ---------------------------------------------------
 
 class TestBlock2x2Star:

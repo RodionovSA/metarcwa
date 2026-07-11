@@ -5,10 +5,7 @@ import pytest
 import torch
 from torch.testing import assert_close
 
-from metarcwa.solver.smatrix import (
-    S_boundary, S_prop, S_layer,
-    _boundary_dense, _boundary_diag_fast, _all_diag_leaves,
-)
+from metarcwa.solver.smatrix import S_boundary, S_prop, S_layer
 from metarcwa.solver.blockmatrix import Block, Block2x2
 from metarcwa.solver.layersolver.homogeneous import homogeneous_modes
 from metarcwa.solver.layersolver.isotropic import compute_isotropic
@@ -157,20 +154,21 @@ def _pat_WV(eps_solid: float, eps_void: float, pattern: torch.Tensor,
     return W, V
 
 
-def _left_right(WL, VL, WR, VR):
-    """Mirror S_boundary's internal left/right construction, for calling
-    _boundary_dense directly as a ground-truth reference."""
-    return Block2x2(WL, -WR, VL, VR), Block2x2(-WL, WR, VL, VR)
+def _dense_ref(WL, VL, WR, VR, Nh):
+    """Dense ground-truth: densify left/right to [4Nh,4Nh] and solve once."""
+    left  = Block2x2(WL, -WR, VL, VR)
+    right = Block2x2(-WL, WR, VL, VR)
+    return torch.linalg.solve(left.to_dense(Nh), right.to_dense(Nh))
 
 
-class TestBoundaryDiagFastPath:
-    """`S_boundary` dispatches to `_boundary_diag_fast` (O(Nh), per-harmonic
-    batched solve) when every leaf block is SCALAR/DIAG, instead of always
-    densifying to `[..., 4Nh, 4Nh]`. The naive alternative -- a generic
-    `Block2x2.solve()` Schur-complement path on the same DIAG blocks --
-    would return NaN at normal incidence (V.d has exact-zero diagonal
-    entries there); these tests confirm the actual fast path avoids that
-    and stays exact against the dense ground truth in all cases."""
+class TestSBoundaryDispatch:
+    """``S_boundary`` delegates all dispatch logic to ``Block2x2.solve``.
+
+    These tests confirm end-to-end that the three dispatch branches
+    (all-SCALAR → Schur, all-DIAG → per-harmonic O(n), any-DENSE → dense)
+    produce correct and finite results, and that the efficient per-harmonic
+    branch is actually taken for homogeneous boundaries (shape-regression
+    guard)."""
 
     def _harmonics(self, kx0: float, ky0: float, Nh_half: int = 2, device: str = "cpu"):
         a1 = torch.tensor([1.0, 0.0], dtype=torch.float64, device=device)
@@ -182,10 +180,10 @@ class TestBoundaryDiagFastPath:
         return kx, ky, m, n
 
     def test_matches_dense_at_normal_incidence(self, device):
-        """Normal incidence: several harmonics have kx*ky=0 -> V.d has
-        exact-zero diagonal entries -- exactly the case that breaks a naive
-        Block2x2.solve() Schur path. The dispatcher-selected fast path must
-        still match the dense ground truth and contain no nan/inf."""
+        """Normal incidence: several harmonics have kx*ky=0 → V.d has
+        exact-zero diagonal entries — exactly the case that breaks a naive
+        Schur-complement path on DIAG blocks.  The per-harmonic solve must
+        still match the dense ground truth and produce no nan/inf."""
         kx, ky, m, n = self._harmonics(0.0, 0.0, device=device)
         Nh = kx.shape[-1]
         assert (kx * ky == 0).any(), "test setup must include a kx*ky=0 harmonic"
@@ -194,14 +192,13 @@ class TestBoundaryDiagFastPath:
         WR, VR = _hom_WV(4.0, kx, ky)
         assert (VL.d.to(Block.DENSE, Nh).data == 0).any()
 
-        S_fast = S_boundary(WL, VL, WR, VR)          # dispatches to the fast path
-        left, right = _left_right(WL, VL, WR, VR)
-        S_ref  = _boundary_dense(left, right, Nh)
+        S = S_boundary(WL, VL, WR, VR)
+        S_d   = S.to_dense(Nh)
+        S_ref = _dense_ref(WL, VL, WR, VR, Nh)
 
-        S_fast_d, S_ref_d = S_fast.to_dense(Nh), S_ref.to_dense(Nh)
-        assert not torch.isnan(S_fast_d).any()
-        assert not torch.isinf(S_fast_d).any()
-        assert_close(S_fast_d, S_ref_d, atol=1e-8, rtol=1e-8)
+        assert not torch.isnan(S_d).any()
+        assert not torch.isinf(S_d).any()
+        assert_close(S_d, S_ref, atol=1e-8, rtol=1e-8)
 
     def test_matches_dense_at_oblique_incidence(self, device):
         kx, ky, m, n = self._harmonics(0.13, 0.07, device=device)
@@ -210,41 +207,37 @@ class TestBoundaryDiagFastPath:
         WL, VL = _hom_WV(1.0, kx, ky)
         WR, VR = _hom_WV(4.0, kx, ky)
 
-        S_fast = S_boundary(WL, VL, WR, VR)
-        left, right = _left_right(WL, VL, WR, VR)
-        S_ref  = _boundary_dense(left, right, Nh)
+        assert_close(
+            S_boundary(WL, VL, WR, VR).to_dense(Nh),
+            _dense_ref(WL, VL, WR, VR, Nh),
+            atol=1e-8, rtol=1e-8,
+        )
 
-        assert_close(S_fast.to_dense(Nh), S_ref.to_dense(Nh), atol=1e-8, rtol=1e-8)
-
-    def test_gradients_match_dense(self, device):
+    def test_gradients_flow_through_diag_path(self, device):
+        """Gradients through the all-DIAG per-harmonic path must match
+        those from a direct dense reference solve."""
         kx, ky, m, n = self._harmonics(0.13, 0.07, device=device)
         Nh = kx.shape[-1]
+        eps_L = torch.tensor([[1.0 + 0j]], dtype=torch.complex128, device=device)
 
-        def _run(fast: bool, eps_r_val: float):
-            eps_R = torch.tensor([[eps_r_val + 0j]], dtype=torch.complex128,
+        def _grad_via(use_dense: bool):
+            eps_R = torch.tensor([[4.0 + 0j]], dtype=torch.complex128,
                                  device=device, requires_grad=True)
-            eps_L = torch.tensor([[1.0 + 0j]], dtype=torch.complex128, device=device)
             _, VL = homogeneous_modes(eps_L, kx, ky)
             _, VR = homogeneous_modes(eps_R, kx, ky)
             WL, WR = VL.eye_like(), VR.eye_like()
-            if fast:
-                S = _boundary_diag_fast(WL, VL, WR, VR, Nh)
+            if use_dense:
+                loss = _dense_ref(WL, VL, WR, VR, Nh).abs().sum()
             else:
-                left, right = _left_right(WL, VL, WR, VR)
-                S = _boundary_dense(left, right, Nh)
-            loss = S.to_dense(Nh).abs().sum()
+                loss = S_boundary(WL, VL, WR, VR).to_dense(Nh).abs().sum()
             loss.backward()
             return eps_R.grad.clone()
 
-        grad_fast  = _run(True, 4.0)
-        grad_dense = _run(False, 4.0)
-        assert_close(grad_fast, grad_dense, atol=1e-8, rtol=1e-8)
+        assert_close(_grad_via(False), _grad_via(True), atol=1e-8, rtol=1e-8)
 
-    def test_mixed_diag_dense_falls_through(self, device):
-        """One side homogeneous (DIAG), other patterned (DENSE): the
-        dispatcher must NOT take the fast path (it isn't valid when any leaf
-        is DENSE -- cross-harmonic coupling breaks the per-harmonic
-        decoupling the fast path relies on), and must match the dense path."""
+    def test_mixed_diag_dense_matches_dense_ref(self, device):
+        """One side homogeneous (DIAG), other patterned (DENSE): ``S_boundary``
+        must fall through to the dense solve and match the reference."""
         kx, ky, m, n = self._harmonics(0.13, 0.07, device=device)
         Nh = kx.shape[-1]
 
@@ -254,17 +247,15 @@ class TestBoundaryDiagFastPath:
         pattern[1::2, 1::2] = 1.0
         WR, VR = _pat_WV(4.0, 1.0, pattern, kx, ky, m, n)
 
-        assert not _all_diag_leaves(WL, VL, WR, VR)
-
-        S_dispatched = S_boundary(WL, VL, WR, VR)
-        left, right = _left_right(WL, VL, WR, VR)
-        S_ref = _boundary_dense(left, right, Nh)
-        assert_close(S_dispatched.to_dense(Nh), S_ref.to_dense(Nh), atol=1e-8, rtol=1e-8)
+        assert_close(
+            S_boundary(WL, VL, WR, VR).to_dense(Nh),
+            _dense_ref(WL, VL, WR, VR, Nh),
+            atol=1e-8, rtol=1e-8,
+        )
 
     def test_scalar_only_uses_schur_path(self, monkeypatch, device):
-        """True all-SCALAR inputs (Nh unknowable) must stay on the existing
-        Block2x2.solve() Schur path -- unchanged, and torch.linalg.solve
-        must not be invoked at all for this branch."""
+        """True all-SCALAR inputs (Nh unknowable) must stay on the Schur path —
+        ``torch.linalg.solve`` must not be called at all for this branch."""
         calls = {"n": 0}
         real_solve = torch.linalg.solve
 
@@ -278,10 +269,10 @@ class TestBoundaryDiagFastPath:
         S_boundary(W, V, W, V)
         assert calls["n"] == 0
 
-    def test_fast_path_solve_shape_regression(self, monkeypatch, device):
-        """Regression guard: the fast path's torch.linalg.solve call must
-        operate on (4,4) matrices, not (4Nh,4Nh) -- if this call ever
-        reverts to full densification, this test catches it."""
+    def test_diag_path_solve_shape_regression(self, monkeypatch, device):
+        """Regression guard: for all-DIAG inputs the ``torch.linalg.solve``
+        call must operate on (4, 4) matrices, not (4Nh, 4Nh) — guards that
+        the per-harmonic O(n) path is taken, not a full densification."""
         kx, ky, m, n = self._harmonics(0.13, 0.07, device=device)
         WL, VL = _hom_WV(1.0, kx, ky)
         WR, VR = _hom_WV(4.0, kx, ky)

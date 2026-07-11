@@ -1,8 +1,9 @@
 # metarcwa/solver/harmonics.py
 
 import torch
+from typing import Tuple
 
-def reciprocal_lattice_vectors(a1: torch.Tensor, a2: torch.Tensor):
+def reciprocal_lattice_vectors(a1: torch.Tensor, a2: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Compute 2D reciprocal lattice vectors b1 and b2 from direct lattice
     vectors a1 and a2.
@@ -40,7 +41,7 @@ def reciprocal_lattice_vectors(a1: torch.Tensor, a2: torch.Tensor):
     return b1, b2
 
 
-def harmonic_index_map(m_max: int, n_max: int, circular: bool = False, device=None):
+def harmonic_index_map(m_max: int, n_max: int, circular: bool = False, device="cpu") -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Create flattened harmonic index arrays, one entry per harmonic order.
 
@@ -85,7 +86,7 @@ def harmonic_index_map(m_max: int, n_max: int, circular: bool = False, device=No
 
 
 def reciprocal_index_map(m_flat: torch.Tensor, n_flat: torch.Tensor,
-                         b1: torch.Tensor, b2: torch.Tensor):
+                         b1: torch.Tensor, b2: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Compute reciprocal lattice vectors G_mn for every harmonic order.
 
@@ -121,7 +122,7 @@ def reciprocal_index_map(m_flat: torch.Tensor, n_flat: torch.Tensor,
 
 
 def harmonic_wavevectors(kx0: torch.Tensor, ky0: torch.Tensor,
-                         Gx: torch.Tensor, Gy: torch.Tensor):
+                         Gx: torch.Tensor, Gy: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Compute the in-plane wavevector components for every harmonic.
 
@@ -156,7 +157,7 @@ def harmonic_wavevectors(kx0: torch.Tensor, ky0: torch.Tensor,
 
 def compute_kxy(kx0: torch.Tensor, ky0: torch.Tensor,
                 a1: torch.Tensor, a2: torch.Tensor,
-                m_flat: torch.Tensor, n_flat: torch.Tensor):
+                m_flat: torch.Tensor, n_flat: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Compute all harmonic wavevector components in a single call.
 

@@ -2,7 +2,7 @@
 
 import torch
 
-def convolution_matrix(eps_grid: torch.Tensor, m_flat: torch.Tensor, n_flat: torch.Tensor):
+def convolution_matrix(eps_grid: torch.Tensor, m_flat: torch.Tensor, n_flat: torch.Tensor) -> torch.Tensor:
     """
     Build the Toeplitz (Laurent) convolution matrix in the Fourier domain.
 
