@@ -103,6 +103,47 @@ def _lam_inv_block(lam: torch.Tensor, N: int, delta: float = 1e-30) -> Block2x2:
     )
 
 
+def _regularize_eps(eps: torch.Tensor, reg: float) -> torch.Tensor:
+    """
+    Floor the imaginary part of a permittivity tensor to ``>= reg``.
+
+    Regularizes the exact-grazing degeneracy (``kz² = kx²+ky²-eps == 0`` at
+    normal incidence or, more subtly, at an exact critical angle for total
+    internal reflection): a lossless real ``eps`` there both zeroes ``lam``
+    and makes the ``Q`` operator (``homogeneous_Q``/``compute_Q0``)
+    rank-deficient (``Kx²-eps`` and ``eps-Ky²`` both vanish), which turns the
+    boundary S-matrix solve (``S_boundary`` / ``Block2x2.solve``) exactly
+    singular — most visibly in ``float32``, where the cancellation underflows
+    to exact zero even a fraction of a degree from grazing.
+
+    Adding a tiny loss (``+j*reg``, consistent with the ``exp(-j*omega*t)``
+    time convention) keeps ``kz²`` and the ``Q`` operator non-degenerate
+    everywhere, at the cost of an ``O(reg)`` perturbation to the result.
+
+    Flooring rather than unconditionally adding ``reg`` avoids double-counting
+    loss already present in a physically lossy medium.
+
+    Parameters
+    ----------
+    eps : torch.Tensor
+        Permittivity, real or complex, any shape.
+    reg : float
+        Minimum imaginary part. ``reg <= 0`` is a no-op (returns ``eps``
+        unchanged).
+
+    Returns
+    -------
+    torch.Tensor
+        Complex tensor with ``Im(eps) >= reg`` everywhere (dtype promoted to
+        complex if ``eps`` was real); unchanged if ``reg <= 0``.
+    """
+    if reg <= 0:
+        return eps
+    if eps.is_complex():
+        return torch.complex(eps.real, torch.clamp(eps.imag, min=reg))
+    return torch.complex(eps, torch.full_like(eps, reg))
+
+
 def _warn_grazing(lam: torch.Tensor, tol: float, source: str) -> None:
     """
     Emit a ``RuntimeWarning`` for near-grazing modes, if enabled.

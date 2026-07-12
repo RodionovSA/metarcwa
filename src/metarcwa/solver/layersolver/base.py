@@ -40,6 +40,7 @@ from metarcwa.solver.smatrix import S_layer, S_boundary
 from metarcwa.solver.layersolver.homogeneous import homogeneous_modes
 from metarcwa.solver.layersolver.isotropic import compute_isotropic
 from metarcwa.solver.layersolver.eigsolver import eigsolver
+from metarcwa.solver.layersolver._modes import _regularize_eps
 from metarcwa.solver.config import Config
 
 
@@ -143,9 +144,13 @@ class LayerSolver:
         """Compute the vacuum background mode matrices W0 = I and V0.
 
         Called once at construction.  Uses ε = 1 (vacuum) with the same
-        ``kx``/``ky`` grid as the rest of the stack.
+        ``kx``/``ky`` grid as the rest of the stack. Regularized by
+        ``config.grazing_eps_reg`` — the lossless reference is otherwise
+        itself exactly grazing whenever a harmonic's specular in-plane
+        wavevector reaches unit magnitude (see :func:`_regularize_eps`).
         """
         eps = torch.ones(self.kx.shape[0], dtype=self.kx.dtype, device=self.kx.device)
+        eps = _regularize_eps(eps, self.config.grazing_eps_reg)
         _, V0 = homogeneous_modes(eps, self.kx, self.ky)
         return V0.eye_like(), V0
 
@@ -249,7 +254,8 @@ class LayerSolver:
         """
         medium = layer.medium
         if isinstance(medium, IsotropicMediumSpec):
-            lam, V = homogeneous_modes(medium.eps, self.kx, self.ky)
+            eps = _regularize_eps(medium.eps, self.config.grazing_eps_reg)
+            lam, V = homogeneous_modes(eps, self.kx, self.ky)
             W      = V.eye_like()
         else:
             raise NotImplementedError(
@@ -275,6 +281,7 @@ class LayerSolver:
             eps_void  = medium_void.eps    # [N_wvl]
             eps_grid  = (eps_solid[:, None, None] * pattern[None, ...]
                          + (1 - pattern[None, ...]) * eps_void[:, None, None])
+            eps_grid  = _regularize_eps(eps_grid, self.config.grazing_eps_reg)
 
             if self.tvf is not None:
                 # TVF is geometry-only (detached, sign/scale-invariant in the A-blocks):
@@ -316,7 +323,8 @@ class LayerSolver:
             The semi-infinite medium specification.
         """
         if isinstance(medium, IsotropicMediumSpec):
-            lam, V = homogeneous_modes(medium.eps, self.kx, self.ky)
+            eps = _regularize_eps(medium.eps, self.config.grazing_eps_reg)
+            lam, V = homogeneous_modes(eps, self.kx, self.ky)
             W      = V.eye_like()
         else:
             raise NotImplementedError(

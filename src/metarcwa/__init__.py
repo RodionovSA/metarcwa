@@ -4,3 +4,6 @@ from .model.layer import Layer
 from .model.source import Source
 from .model.stack import Stack
 from .model.medium import IsotropicMedium, Medium
+from .solver.base import Solver
+from .solver.config import Config
+from .observables.base import Observables

@@ -129,6 +129,16 @@ class Config:
         forward pass per patterned layer in backward. Default ``False`` —
         leave off for compute-bound / small-batch runs where the recompute
         cost isn't worth it.
+    grazing_eps_reg : float
+        Minimum imaginary part (infinitesimal material loss) added to every
+        permittivity used in mode solving — media, homogeneous layers,
+        patterned-layer grids, and the internal vacuum reference. Regularizes
+        the exact-grazing degeneracy (``kz² → 0`` at normal-incidence or
+        critical-angle points) where the ``Q`` operator becomes rank-deficient
+        and the boundary S-matrix solve turns singular, most visibly at exactly
+        the total-internal-reflection critical angle. Default ``1e-8``; set to
+        ``0`` to disable (may raise ``torch.linalg.solve`` singular-matrix
+        errors at exact grazing incidence, especially in ``float32``).
     """
 
     dtype:            torch.dtype         = torch.float32
@@ -142,6 +152,7 @@ class Config:
     modesolver:       str                 = "eig"         # "eig"
     eigsolver_stable: bool                = True
     checkpoint_eig:   bool                = False
+    grazing_eps_reg:  float                = 1e-8
 
     def __post_init__(self) -> None:
         if not isinstance(self.device, torch.device):
@@ -160,6 +171,7 @@ class Config:
             "modesolver": self.modesolver,
             "eigsolver_stable": self.eigsolver_stable,
             "checkpoint_eig": self.checkpoint_eig,
+            "grazing_eps_reg": self.grazing_eps_reg,
         }
 
     @classmethod
