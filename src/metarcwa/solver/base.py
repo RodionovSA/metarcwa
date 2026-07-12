@@ -14,7 +14,12 @@ eigenproblem is solved once via :meth:`LayerSolver.prepare`. The result is a
 frozen :class:`PreparedStack` snapshot. :func:`run` is then genuinely
 cheap: pure Redheffer star-product composition of the precomputed
 :class:`~metarcwa.solver.layersolver.base.LayerOperator` objects, with no
-TVF, convolution, or eigendecomposition work.
+TVF, convolution, or eigendecomposition work. :func:`run` keeps only the
+reflection (``S11``) and transmission (``S21``) blocks a single-side (left)
+excitation needs, in a :class:`ModalSolution` that also retains the
+:class:`PreparedStack`, so downstream observables (and, eventually, field
+reconstruction via :class:`FieldSolution`) can reach every layer's modes
+without re-solving.
 
 There is a single solver for both regular (batched wavelength/angle sweep)
 runs and inverse-design optimization steps — they differ only in autograd
@@ -38,7 +43,7 @@ pattern changes. Two cases:
 
 Thickness gradients/updates are a separate, cheaper case still: operators
 hold a *reference* to each layer's thickness tensor and read it inside
-:func:`solve`, so autograd through thickness (and in-place ``nn.Parameter``
+:func:`run`, so autograd through thickness (and in-place ``nn.Parameter``
 thickness updates) work without rebuilding or re-preparing anything.
 """
 
@@ -49,7 +54,7 @@ from metarcwa.solver.layersolver.base import LayerSolver, LayerOperator
 from metarcwa.solver.tvf import TVF
 from metarcwa.solver.config import Config
 from metarcwa.solver.harmonics import compute_kxy, harmonic_index_map
-from metarcwa.solver.blockmatrix import Block2x2
+from metarcwa.solver.blockmatrix import Block2x2, Entry
 
 
 def build_layersolver(model_spec: ModelSpec, config: Config) -> LayerSolver:
@@ -97,7 +102,7 @@ def build_layersolver(model_spec: ModelSpec, config: Config) -> LayerSolver:
 
 @dataclass(frozen=True)
 class PreparedStack:
-    """Frozen snapshot of a fully-prepared stack, ready for :func:`solve`.
+    """Frozen snapshot of a fully-prepared stack, ready for :func:`run`.
 
     Attributes
     ----------
@@ -133,7 +138,7 @@ def prepare(model: Model, config: Config) -> PreparedStack:
     Returns
     -------
     PreparedStack
-        Frozen snapshot; pass to :func:`solve` (cheap) or :func:`reprepare`
+        Frozen snapshot; pass to :func:`run` (cheap) or :func:`reprepare`
         (re-solve a subset of layers at fixed source/lattice).
 
     Notes
@@ -222,13 +227,98 @@ def reprepare(prepared: PreparedStack, model: Model, config: Config,
 
     return replace(prepared, ops=tuple(ops), model_spec=model_spec)
 
+@dataclass(frozen=True)
+class ModalSolution:
+    """Cheap, excitation-independent output of :func:`run`.
 
-def run(prepared: PreparedStack) -> Block2x2:
-    """Compute the full-stack S-matrix from a prepared snapshot.
+    Bundles the scattering blocks needed for **single-side (left) excitation**
+    with a handle back to the :class:`PreparedStack` they were assembled from.
+    That handle is what lets downstream code reach each element's modes
+    (``W``/``V``/``lam`` on every
+    :class:`~metarcwa.solver.layersolver.base.LayerOperator` in
+    ``prepared.ops``) and the harmonic context (``kx``/``ky``/wavelength on
+    ``prepared.layersolver``) without re-solving anything.
+
+    Only the first *column* of the full-stack S-matrix is retained. With the
+    incidence medium on the left and no illumination from the right
+    (``in_right = 0``), the outgoing fields are ``out_left = S11·in_left``
+    (reflection) and ``out_right = S21·in_left`` (transmission); the
+    ``S12``/``S22`` blocks act only on ``in_right`` and are never used, so
+    they are dropped to save memory. This bakes in the left-illumination
+    convention — a right-side or two-sided excitation would need them.
+
+    Nothing stored here depends on the incident polarization/amplitude: the
+    S-matrix blocks and modes are excitation-independent by design
+    (:class:`Source` carries no polarization). Reflection/transmission
+    efficiencies are obtained downstream by applying a specific excitation to
+    ``S11``/``S21``; full internal fields require the heavier
+    :class:`FieldSolution` (which re-sweeps the stack from ``prepared`` and so
+    does **not** rely on the dropped blocks).
+
+    Attributes
+    ----------
+    S11 : Entry
+        Reflection block (``a`` = ``S11`` = "reflection from left"). Maps the
+        incident left-side amplitude to the reflected amplitude.
+    S21 : Entry
+        Transmission block (``c`` = ``S21`` = "transmission from left"). Maps
+        the incident left-side amplitude to the transmitted amplitude.
+    prepared : PreparedStack
+        The snapshot the blocks were assembled from — carries the per-element
+        :class:`~metarcwa.solver.layersolver.base.LayerOperator` modes and
+        the :class:`LayerSolver` context. Held by reference, not copied.
+    """
+    S11: Entry
+    S21: Entry
+    prepared: PreparedStack
+
+@dataclass(frozen=True)
+class FieldSolution:
+    """On-demand output for internal-field reconstruction (planned).
+
+    Produced by the field pipeline for a *specific* excitation, and a strict
+    superset of :class:`ModalSolution`'s capabilities: it embeds the
+    :class:`ModalSolution` (so reflection/transmission stay available) and
+    adds the per-element modal amplitudes needed to evaluate E/H fields
+    anywhere in the stack. The mode matrices themselves (``W``/``V``/``lam``)
+    are **not** duplicated here — they are reached through
+    ``modal.prepared.ops`` — so this object's own payload is only the
+    amplitudes and the excitation they were built from.
+
+    .. note::
+        Not yet produced: ``Solver.run(fields=True)`` currently raises
+        :class:`NotImplementedError`. This documents the intended shape.
+
+    Attributes
+    ----------
+    modal : ModalSolution
+        The embedded excitation-independent solution (S-matrix + prepared
+        handle). Keeps R/T available and carries the modes used to expand the
+        amplitudes into real-space fields.
+    amplitudes
+        Per-element forward/backward modal coefficients ``(c⁺, c⁻)``, aligned
+        index-for-index with ``modal.prepared.ops`` — obtained by
+        back-substituting the excitation through the stack's cut-plane partial
+        S-matrices. (Type TBD; placeholder ``...`` annotation for now.)
+    excitation
+        The incident amplitude vector ``c_inc`` (the excitation mapped into
+        the incidence-medium modes) this reconstruction was built from.
+        (Type TBD; placeholder ``...`` annotation for now.)
+    """
+    modal: ModalSolution
+    amplitudes: ...             # per-layer (c⁺, c⁻)
+    excitation: ...             # the c_inc it was built from
+
+def run(prepared: PreparedStack) -> ModalSolution:
+    """Compute the full-stack scattering solution from a prepared snapshot.
 
     Assembles the S-matrix by star-multiplying the incidence boundary,
     every finite layer in order, and the transmission boundary, using the
-    :class:`LayerOperator` objects in ``prepared.ops``.
+    :class:`LayerOperator` objects in ``prepared.ops``. The full ``Block2x2``
+    is formed transiently by the star product, but only its first column
+    (``S11`` reflection, ``S21`` transmission) is retained in the returned
+    :class:`ModalSolution` — the ``S12``/``S22`` blocks are unused for
+    left-side excitation and are left to be garbage-collected.
 
     Parameters
     ----------
@@ -237,17 +327,22 @@ def run(prepared: PreparedStack) -> Block2x2:
 
     Returns
     -------
-    S : Block2x2
-        Full-stack scattering matrix. Off-diagonal blocks carry
-        transmission amplitudes; diagonal blocks carry reflection.
+    solution : ModalSolution
+        The reflection/transmission blocks (``solution.S11``/``solution.S21``)
+        bundled with the :class:`PreparedStack` handle
+        (``solution.prepared``) they were computed from, so downstream
+        observables and field reconstruction can reach the per-layer modes
+        without re-solving.
     """
     ls = prepared.layersolver
     ops = prepared.ops
     S = ls.smatrix(ops[0], left=True)
     for op in ops[1:-1]:
         S = S.star(ls.smatrix(op))
-    return S.star(ls.smatrix(ops[-1], left=False))
-
+    S = S.star(ls.smatrix(ops[-1], left=False))
+    # Keep only the first column (a=S11 reflection, c=S21 transmission); the
+    # b=S12 / d=S22 blocks act only on right-side input and are dropped.
+    return ModalSolution(S11=S.a, S21=S.c, prepared=prepared)
 
 class Solver:
     """Top-level RCWA solver — thin convenience wrapper over the functional
@@ -317,18 +412,7 @@ class Solver:
     @property
     def _ops(self):
         return self._prepared.ops
-
-    def run(self) -> Block2x2:
-        """Compute the full-stack S-matrix.
-
-        Returns
-        -------
-        S : Block2x2
-            Full-stack scattering matrix. Off-diagonal blocks carry
-            transmission amplitudes; diagonal blocks carry reflection.
-        """
-        return run(self._prepared)
-
+    
     def reprepare(self, layer_indices) -> "Solver":
         """Re-solve only the named layers in place; reuse everything else.
 
@@ -350,3 +434,38 @@ class Solver:
         """
         self._prepared = reprepare(self._prepared, self.model, self.config, layer_indices)
         return self
+
+    def run(self, fields: bool = False) -> ModalSolution | FieldSolution:
+        """Solve the bound stack and return its scattering solution.
+
+        Cheap: pure Redheffer star-product composition of the precomputed
+        operators, with no eigendecomposition. Safe to call repeatedly after
+        :meth:`reprepare` or an in-place thickness update, without rebuilding
+        the ``Solver``.
+
+        Parameters
+        ----------
+        fields : bool, default False
+            If ``False``, return only the excitation-independent
+            :class:`ModalSolution` (S-matrix + prepared handle) — sufficient
+            for reflection/transmission observables. If ``True``, also
+            reconstruct the internal modal amplitudes and return a
+            :class:`FieldSolution` for near-field / absorption observables.
+            **Not implemented yet — raises** :class:`NotImplementedError`.
+
+        Returns
+        -------
+        ModalSolution or FieldSolution
+            :class:`ModalSolution` when ``fields=False``;
+            :class:`FieldSolution` when ``fields=True`` (once implemented).
+
+        Raises
+        ------
+        NotImplementedError
+            If ``fields=True`` — field reconstruction is not built yet.
+        """
+        if fields:
+            raise NotImplementedError("Fields computation is not implemented yet.")
+        return run(self._prepared)
+
+    

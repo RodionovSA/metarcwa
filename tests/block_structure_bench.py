@@ -60,6 +60,7 @@ from metarcwa.model.source import Source
 from metarcwa.model.nn_helpers import CallableModule
 from metarcwa.solver.base import Solver
 from metarcwa.solver.config import Config, Factorization
+from metarcwa.solver.blockmatrix import Block
 
 
 def parse_args():
@@ -81,6 +82,17 @@ def _const_eps(val: complex):
     """CallableModule returning a constant complex eps matching wvl's shape
     (mirrors tests/solver/test_solver.py::_const_eps)."""
     return CallableModule(lambda wvl: torch.full_like(wvl, val, dtype=torch.complex128))
+
+
+def _dense_block(entry, n: int) -> torch.Tensor:
+    """Densify one S-matrix block (leaf Block or nested Block2x2) to a tensor.
+
+    ``Solver.run()`` now returns a ``ModalSolution`` holding only the
+    reflection (``S11``) and transmission (``S21``) blocks a left-side
+    excitation needs -- both leaf ``Block``s (no ``.to_dense``), unlike the
+    old full ``Block2x2`` this benchmark used to densify directly.
+    """
+    return entry.to_dense(n) if hasattr(entry, "a") else entry.to(Block.DENSE, n).data
 
 
 def _uniform_map(lattice, nx: int, ny: int) -> torch.Tensor:
@@ -208,7 +220,15 @@ def run_one(n_patterned: int, config: Config, args, Nh: int) -> dict:
         # detached/CPU snapshot for the end-of-run correctness check (S_last
         # is whichever repeat happened to run last; the model/config are
         # identical across repeats so any repeat's S is equally valid).
-        "S_dense": S_last.to_dense(Nh).detach().to("cpu"),
+        # Stack the two retained blocks (S11 reflection, S21 transmission)
+        # along a new leading axis -- ModalSolution no longer carries the
+        # full S12/S22 blocks, so there is no single dense [...,2N,2N] to
+        # compare; comparing both retained blocks is equally strong evidence
+        # of agreement since they are all the two code paths ever compute.
+        "S_dense": torch.stack([
+            _dense_block(S_last.S11, Nh),
+            _dense_block(S_last.S21, Nh),
+        ]).detach().to("cpu"),
     }
 
 
