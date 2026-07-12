@@ -118,6 +118,9 @@ def S_prop(lam: torch.Tensor, wvl: torch.Tensor, d: torch.Tensor) -> Block2x2:
         Propagation S-matrix; each top-level entry is a Block2x2 of
         ``Block(DIAG, ...)`` sub-entries of shape ``[..., Nh]``.
     """
+    wvl = torch.as_tensor(wvl)
+    if wvl.ndim < lam.ndim:
+        wvl = wvl.reshape(*wvl.shape, *([1] * (lam.ndim - wvl.ndim)))
     k0 = 2 * torch.pi / wvl
     xd = torch.exp(lam * k0 * d)          # [..., 2Nh]
     Nh = xd.shape[-1] // 2

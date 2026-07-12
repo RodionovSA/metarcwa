@@ -275,6 +275,11 @@ def compute_isotropic(epsilon_grid: torch.Tensor,
         Q operator; each entry is a DENSE Block of shape ``[..., Nh, Nh]``.
     """
     epsilon_grid = epsilon_grid.to(dtype=_REAL_TO_COMPLEX[epsilon_grid.real.dtype])
+    n_extra = (kx.ndim - 1) - (epsilon_grid.ndim - 2)
+    if n_extra > 0:
+        epsilon_grid = epsilon_grid.reshape(
+            *epsilon_grid.shape[:-2], *([1] * n_extra), *epsilon_grid.shape[-2:]
+        )
     epsilon_conv = Block(Block.DENSE, convolution_matrix(epsilon_grid, m_flat, n_flat))
     Kx = Block(Block.DIAG, kx)
     Ky = Block(Block.DIAG, ky)
