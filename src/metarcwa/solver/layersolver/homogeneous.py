@@ -4,8 +4,6 @@ homogeneous — closed-form modal solver for homogeneous layers
 =============================================================
 
 **Scope:** isotropic, non-magnetic (μ = 1) homogeneous layers only.
-For anisotropic or magnetic media an eigendecomposition is required; these
-functions will give wrong results if called with such materials.
 
 Three public functions, in dependency order:
 
@@ -36,7 +34,7 @@ from metarcwa.solver.layersolver._modes import _branch_select, _lam_inv_block, _
 
 def homogeneous_kz(epsilon: torch.Tensor,
                    kx: torch.Tensor, ky: torch.Tensor,
-                   forward: str = "positive", tol: float = 1e-12, delta=1e-30) -> torch.Tensor:
+                   forward: str = "positive", tol: float = 1e-4, delta=1e-30) -> torch.Tensor:
     """
     Compute normalized kz for every Fourier harmonic of a homogeneous layer.
 
@@ -46,9 +44,11 @@ def homogeneous_kz(epsilon: torch.Tensor,
 
         kz² = ε − kx² − ky²
 
-    The sign of each mode is chosen so that:
-      - propagating modes (|Im(kz)| ≤ tol): Re(kz) > 0
-      - evanescent  modes (|Im(kz)| >  tol): Im(kz) > 0
+    The sign of each mode is chosen by :func:`_branch_select` so that:
+      - propagating modes (|Re(lam)| ≤ tol·|lam|): Re(kz) > 0
+      - evanescent  modes (|Re(lam)| >  tol·|lam|): Im(kz) > 0
+    (``lam = 1j·kz``; see :func:`_branch_select` for why classification keys
+    on ``Re(lam)`` rather than ``Im(kz)``.)
 
     Time convention: exp(−j ω t). The modal exponent is lam = 1j·kz, so
     forward-propagating fields vary as exp(+lam · z̃) where z̃ = k0·z.
@@ -68,7 +68,8 @@ def homogeneous_kz(epsilon: torch.Tensor,
     forward : str, optional
         ``"positive"`` (default) — forward branch; ``"negative"`` — backward branch.
     tol : float, optional
-        Threshold below which a mode is treated as propagating. Default ``1e-12``.
+        Relative threshold (as a fraction of ``|lam|``) passed to
+        :func:`_branch_select`. Default ``1e-4``.
     delta : float, optional
         Lorentzian regularisation for the square-root gradient.  kz is computed
         as ``lam2 / sqrt(lam2 + delta)`` instead of ``sqrt(lam2)``, which keeps
@@ -90,8 +91,6 @@ def homogeneous_kz(epsilon: torch.Tensor,
     lam2_block = kx**2 + ky**2 - eps                          # [..., Nh]
     lam2 = torch.cat([lam2_block, lam2_block], dim=-1)         # [..., 2Nh]
 
-    # local modal exponent 1j*kz (unbranched); branch-select in this space
-    # (E5 rule, shared with eigsolver) then convert to kz = -1j*lam.
     lam = _branch_select(lam2 / torch.sqrt(lam2 + delta), tol)
 
     if forward == "negative":
@@ -107,8 +106,7 @@ def homogeneous_Q(epsilon: torch.Tensor,
     """
     Assemble the Q matrix for a homogeneous isotropic non-magnetic layer.
 
-    Valid only for isotropic ε and μ = 1. For magnetic or anisotropic media
-    the off-diagonal coupling terms differ and this function is not applicable.
+    Valid only for isotropic scalar permittivity (μ = 1 assumed).
 
     For μ = 1 the Q operator has the 2×2 block form:
 
@@ -155,9 +153,7 @@ def homogeneous_modes(epsilon: torch.Tensor,
     """
     Closed-form modal decomposition for a homogeneous isotropic layer.
 
-    Valid only for isotropic ε and μ = 1. For anisotropic or magnetic media
-    the Fourier harmonics are not eigenvectors of PQ and an eigendecomposition
-    is required instead.
+    Valid only for isotropic scalar permittivity (μ = 1 assumed).
 
     For a homogeneous medium the Fourier harmonics are already eigenvectors of
     the PQ operator, so no eigendecomposition is needed. The E-mode matrix is
@@ -168,11 +164,6 @@ def homogeneous_modes(epsilon: torch.Tensor,
     computed by splitting lam into its two Nh-sized blocks and treating
     diag(1/lam) as a Block2x2 diagonal, so V remains all-DIAG (no dense
     matrices are allocated).
-
-    .. note::
-        Division by lam is undefined for grazing modes (kx² + ky² = ε).
-        This edge case is not guarded here — avoid exact grazing incidence or
-        handle it upstream.
 
     Parameters
     ----------
@@ -207,6 +198,6 @@ def homogeneous_modes(epsilon: torch.Tensor,
 
     Q0  = homogeneous_Q(epsilon=epsilon, kx=kx, ky=ky)        # Block2x2, all DIAG
     Nh  = kx.shape[-1]
-    lam_inv = _lam_inv_block(lam, Nh)                          # E6: Lorentzian-regularized
+    lam_inv = _lam_inv_block(lam, Nh)                          # Lorentzian-regularized
     V = Q0 @ lam_inv                                           # Block2x2 @ Block2x2
     return lam, V

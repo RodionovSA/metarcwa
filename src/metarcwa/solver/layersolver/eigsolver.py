@@ -11,13 +11,13 @@ to extract the E-mode matrix W (eigenvectors) and H-mode matrix V = Q·W·diag(1
 where λ = 1j·kz are the modal exponents in the convention shared with
 :func:`homogeneous_modes`.
 
-The public interface mirrors that of :func:`homogeneous_modes`:
+The public interface:
 
   eigsolver(P, Q)   →   (lam, W, V)
 
 Two public objects:
 
-  eigsolver(P, Q, stable_eig_grad=True, tol=1e-12)   → (lam, W, V)
+  eigsolver(P, Q, stable_eig_grad=True, tol=1e-4)   → (lam, W, V)
       Full patterned-layer mode solver.
 
   Eig                                                   autograd.Function
@@ -37,7 +37,7 @@ from metarcwa.solver.layersolver._modes import _branch_select, _lam_inv_block, _
 
 def eigsolver(P: Block2x2, Q: Block2x2,
               stable_eig_grad: bool = True,
-              tol: float = 1e-12) -> Tuple[torch.Tensor, Block2x2, Block2x2]:
+              tol: float = 1e-4) -> Tuple[torch.Tensor, Block2x2, Block2x2]:
     """
     Compute patterned-layer modes via eigendecomposition of Ω² = P·Q.
 
@@ -50,9 +50,9 @@ def eigsolver(P: Block2x2, Q: Block2x2,
     The result is fully compatible with :func:`S_layer` and
     :func:`homogeneous_modes` (same ``lam`` sign convention).
 
-    Branch selection for lam = 1j·kz:
-      - Propagating modes (|Im(lam)| > tol): Im(lam) > 0
-      - Evanescent  modes (|Im(lam)| ≤ tol): Re(lam) < 0
+    Branch selection for lam = 1j·kz (see :func:`_branch_select`):
+      - Propagating modes (|Re(lam)| ≤ tol·|lam|): Im(lam) > 0
+      - Evanescent  modes (|Re(lam)| >  tol·|lam|): Re(lam) < 0
 
     Parameters
     ----------
@@ -67,8 +67,11 @@ def eigsolver(P: Block2x2, Q: Block2x2,
         Set to ``False`` to use ``torch.linalg.eig`` directly (faster but
         gradients can be NaN near degeneracies).
     tol : float, optional
-        Threshold for classifying a mode as evanescent during branch
-        selection (|Im(lam)| < tol).  Default ``1e-12``.
+        Relative threshold (as a fraction of ``|lam|``) for classifying a
+        mode as propagating vs evanescent during branch selection; passed
+        to :func:`_branch_select`. Also used as the (unrelated, absolute)
+        ``|lam|`` threshold for the opt-in grazing-incidence warning (see
+        :func:`_warn_grazing`). Default ``1e-4``.
 
     Returns
     -------
@@ -108,7 +111,7 @@ def eigsolver(P: Block2x2, Q: Block2x2,
         Block(Block.DENSE, W_dense[..., N:, N:]),    # bottom-right
     )
 
-    # H-mode matrix: V = Q @ W @ diag(1/lam), Lorentzian-regularized (E6)
+    # H-mode matrix: V = Q @ W @ diag(1/lam), Lorentzian-regularized 
     lam_inv = _lam_inv_block(lam, N)
     V = Q @ W @ lam_inv
 
@@ -140,7 +143,7 @@ class Eig(torch.autograd.Function):
         (github.com/kch3782/torcwa) but not reproduced verbatim.
         Batching support (``torch.diag_embed``, batched diagonal zeroing)
         and replacement of the deprecated ``torch.inverse`` with
-        ``torch.linalg.inv`` were added.
+        ``torch.linalg.solve`` were added.
 
     Class Attributes
     ----------------

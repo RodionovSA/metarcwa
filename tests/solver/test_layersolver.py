@@ -58,8 +58,8 @@ def _make_solver(device: str):
     kx0 = torch.tensor([0.0], dtype=torch.float64, device=device)
     ky0 = torch.tensor([0.0], dtype=torch.float64, device=device)
     m_flat, n_flat = harmonic_index_map(Nh_half, Nh_half, device=device)
-    kx, ky = compute_kxy(kx0, ky0, a1, a2, m_flat, n_flat)   # [1, Nh]
-    wvl    = torch.tensor([1.0], dtype=torch.float64, device=device)
+    wvl    = torch.tensor([0.3], dtype=torch.float64, device=device)   # avoid kx=eps grazing coincidence at wvl=1.0
+    kx, ky = compute_kxy(kx0, ky0, a1, a2, m_flat, n_flat, k0=2 * torch.pi / wvl)   # [1, Nh]
     solver = LayerSolver(Config(), wvl, kx, ky, m_flat, n_flat, tvf=None)
     Nh = m_flat.shape[0]
     return solver, kx, ky, m_flat, wvl, Nh
@@ -73,8 +73,8 @@ def _make_solver_tvf(device: str):
     kx0 = torch.tensor([0.0], dtype=torch.float64, device=device)
     ky0 = torch.tensor([0.0], dtype=torch.float64, device=device)
     m_flat, n_flat = harmonic_index_map(Nh_half, Nh_half, device=device)
-    kx, ky = compute_kxy(kx0, ky0, a1, a2, m_flat, n_flat)   # [1, Nh]
-    wvl    = torch.tensor([1.0], dtype=torch.float64, device=device)
+    wvl    = torch.tensor([0.3], dtype=torch.float64, device=device)   # avoid kx=eps grazing coincidence at wvl=1.0
+    kx, ky = compute_kxy(kx0, ky0, a1, a2, m_flat, n_flat, k0=2 * torch.pi / wvl)   # [1, Nh]
     tvf    = TVF(a1, a2, Nh_half, Nh_half, method="Jones")
     solver = LayerSolver(Config(), wvl, kx, ky, m_flat, n_flat, tvf=tvf)
     Nh = m_flat.shape[0]
@@ -88,8 +88,8 @@ def _make_solver_cfg(device: str, config: Config):
     kx0 = torch.tensor([0.0], dtype=torch.float64, device=device)
     ky0 = torch.tensor([0.0], dtype=torch.float64, device=device)
     m_flat, n_flat = harmonic_index_map(Nh_half, Nh_half, device=device)
-    kx, ky = compute_kxy(kx0, ky0, a1, a2, m_flat, n_flat)   # [1, Nh]
-    wvl    = torch.tensor([1.0], dtype=torch.float64, device=device)
+    wvl    = torch.tensor([0.3], dtype=torch.float64, device=device)   # avoid kx=eps grazing coincidence at wvl=1.0
+    kx, ky = compute_kxy(kx0, ky0, a1, a2, m_flat, n_flat, k0=2 * torch.pi / wvl)   # [1, Nh]
     solver = LayerSolver(config, wvl, kx, ky, m_flat, n_flat, tvf=None)
     Nh = m_flat.shape[0]
     return solver, kx, ky, m_flat, wvl, Nh
@@ -322,7 +322,8 @@ class TestTVFSingleSliceEquivalence:
         kx0 = torch.tensor([0.0, 0.0], dtype=torch.float64, device=device)
         ky0 = torch.tensor([0.0, 0.0], dtype=torch.float64, device=device)
         m_flat, n_flat = harmonic_index_map(Nh_half, Nh_half, device=device)
-        kx, ky = compute_kxy(kx0, ky0, a1, a2, m_flat, n_flat)   # [2, Nh]
+        wvl = torch.tensor([1.0, 1.0], dtype=torch.float64, device=device)
+        kx, ky = compute_kxy(kx0, ky0, a1, a2, m_flat, n_flat, k0=2 * torch.pi / wvl)   # [2, Nh]
         Nh = m_flat.shape[0]
 
         tvf = TVF(a1, a2, Nh_half, Nh_half, method="Jones")
@@ -433,8 +434,8 @@ class TestCheckpointEig:
         kx0 = torch.tensor([0.0], dtype=torch.float64, device=dev)
         ky0 = torch.tensor([0.0], dtype=torch.float64, device=dev)
         m_flat, n_flat = harmonic_index_map(Nh_half_local, Nh_half_local, device=dev)
-        kx, ky = compute_kxy(kx0, ky0, a1, a2, m_flat, n_flat)
-        wvl = torch.tensor([1.0], dtype=torch.float64, device=dev)
+        wvl = torch.tensor([0.3], dtype=torch.float64, device=dev)   # avoid kx=eps grazing coincidence at wvl=1.0
+        kx, ky = compute_kxy(kx0, ky0, a1, a2, m_flat, n_flat, k0=2 * torch.pi / wvl)
         Nh = m_flat.shape[0]
         n_layers = 8
 

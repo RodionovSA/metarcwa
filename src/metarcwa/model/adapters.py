@@ -5,7 +5,7 @@
 from .nn_helpers import CallableModule
 
 
-def from_metashapes(shape, soft: bool, softness: float) -> CallableModule:
+def from_metashapes(shape, soft: bool = False, softness: float = 0.0) -> CallableModule:
     """Convert a MetaShapes ``Shape`` into a ``shape_fn(lattice, nx, ny)`` callable.
 
     The returned ``CallableModule`` registers ``shape`` as a submodule so its

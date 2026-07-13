@@ -49,6 +49,8 @@ thickness updates) work without rebuilding or re-preparing anything.
 
 from dataclasses import dataclass, replace
 
+import torch
+
 from metarcwa.model.base import Model, ModelSpec
 from metarcwa.solver.layersolver.base import LayerSolver, LayerOperator
 from metarcwa.solver.tvf import TVF
@@ -82,10 +84,12 @@ def build_layersolver(model_spec: ModelSpec, config: Config) -> LayerSolver:
     m_flat, n_flat = harmonic_index_map(
         config.m, config.n, config.truncation == "circular", config.device
     )
+    
+    k0 = 2 * torch.pi / model_spec.wavelength.reshape(-1)   # [N_wvl]
     kx, ky = compute_kxy(
         model_spec.kx0, model_spec.ky0,
         model_spec.a1,  model_spec.a2,
-        m_flat, n_flat,
+        m_flat, n_flat, k0=k0,
     )
 
     if config.factorization is not None:

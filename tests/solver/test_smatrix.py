@@ -176,7 +176,8 @@ class TestSBoundaryDispatch:
         kx0_t = torch.tensor([kx0], dtype=torch.float64, device=device)
         ky0_t = torch.tensor([ky0], dtype=torch.float64, device=device)
         m, n = harmonic_index_map(Nh_half, Nh_half, device=device)
-        kx, ky = compute_kxy(kx0_t, ky0_t, a1, a2, m, n)
+        k0 = torch.tensor([1.0], dtype=torch.float64, device=device)
+        kx, ky = compute_kxy(kx0_t, ky0_t, a1, a2, m, n, k0=k0)
         return kx, ky, m, n
 
     def test_matches_dense_at_normal_incidence(self, device):

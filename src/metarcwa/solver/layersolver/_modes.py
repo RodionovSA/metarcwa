@@ -7,13 +7,9 @@ Both mode solvers (:func:`homogeneous_modes` in ``homogeneous.py`` and
 :func:`eigsolver` in ``eigsolver.py``) need the same three pieces of logic
 on their modal exponent ``lam = 1j·kz``:
 
-  1. propagating/evanescent branch-sign selection (E5 rule)
+  1. propagating/evanescent branch-sign selection 
   2. the regularized diagonal inverse ``diag(1/lam)`` used to build ``V``
   3. an (opt-in) grazing-incidence warning
-
-These were historically duplicated verbatim in both solvers — the
-duplication itself was a recurring source of bugs (ANALYSIS.md A3). This
-module is the single place that logic lives; both solvers import from here.
 
 All functions use the exp(−j ω t) time convention.
 """
@@ -26,19 +22,22 @@ from metarcwa.solver.blockmatrix import Block, Block2x2
 #: Opt-in gate for the grazing-incidence warning in :func:`_warn_grazing`.
 #: Default off: the check requires ``.any().item()``, a CUDA host↔device
 #: sync, so it is validation to enable explicitly (e.g. at problem setup),
-#: not something paid on every hot-path call (ANALYSIS.md B3).
+#: not something paid on every hot-path call.
 WARN_GRAZING: bool = False
 
 
-def _branch_select(lam: torch.Tensor, tol: float = 1e-12) -> torch.Tensor:
+def _branch_select(lam: torch.Tensor, tol: float = 1e-4) -> torch.Tensor:
     """
-    Select the physical branch of a modal exponent ``lam`` (E5 rule).
+    Select the physical branch of a modal exponent ``lam``.
 
     Time convention exp(−j ω t): forward-propagating fields vary as
-    ``exp(+lam·k0·z)``, so the sign of each ``lam`` is chosen so that:
+    ``exp(+lam·k0·z)``, so a physical (non-growing) mode must have
+    ``Re(lam) <= 0``. Classification therefore keys on ``Re(lam)`` — the
+    decay rate, cleanly separated (``O(1)`` for evanescent vs ``~0`` for
+    propagating) — not on ``Im(lam)``:
 
-      - propagating modes (``|Im(lam)| > tol``): ``Im(lam) > 0``
-      - evanescent  modes (``|Im(lam)| <= tol``): ``Re(lam) < 0``
+      - propagating modes (``|Re(lam)| <= tol·|lam|``): ``Im(lam) > 0``
+      - evanescent  modes (``|Re(lam)| >  tol·|lam|``): ``Re(lam) < 0``
 
     Parameters
     ----------
@@ -46,17 +45,21 @@ def _branch_select(lam: torch.Tensor, tol: float = 1e-12) -> torch.Tensor:
         Unsigned (or arbitrarily-signed) modal exponent, e.g. from
         ``sqrt(lam_sq)``. Any shape.
     tol : float, optional
-        Threshold below which a mode is classified evanescent-by-imaginary-
-        part vs propagating. Default ``1e-12``.
+        Relative threshold (as a fraction of ``|lam|``) below which a mode
+        is classified propagating-by-real-part vs evanescent. Scale-robust
+        by construction (both sides scale with ``|lam|``), verified stable
+        for ``tol`` from ``1e-6`` to ``1e-2`` across problem scales.
+        Default ``1e-4``.
 
     Returns
     -------
     torch.Tensor
         ``lam`` with the sign of each entry corrected to the physical branch.
     """
-    is_ev = lam.imag.abs() < tol
-    sign  = torch.where(is_ev, -torch.sign(lam.real), torch.sign(lam.imag))
-    sign  = torch.where(sign == 0, torch.ones_like(sign), sign)
+    lam_abs = lam.abs().clamp_min(torch.finfo(lam.real.dtype).tiny)
+    is_prop = lam.real.abs() <= tol * lam_abs
+    sign    = torch.where(is_prop, torch.sign(lam.imag), -torch.sign(lam.real))
+    sign    = torch.where(sign == 0, torch.ones_like(sign), sign)
     return lam * sign
 
 
@@ -68,7 +71,7 @@ def _lam_inv_block(lam: torch.Tensor, N: int, delta: float = 1e-30) -> Block2x2:
     forms a block-diagonal ``Block2x2`` (left column = first block, right
     column = second block, off-diagonals zero).
 
-    The inverse is Lorentzian-regularized (E6)::
+    The inverse is Lorentzian-regularized:
 
         lam_inv = conj(lam) / (|lam|^2 + delta)
 
@@ -150,7 +153,7 @@ def _warn_grazing(lam: torch.Tensor, tol: float, source: str) -> None:
 
     No-op unless module-level :data:`WARN_GRAZING` is ``True`` (default
     off — the check triggers a CUDA host↔device sync via ``.any().item()``,
-    so it is opt-in validation, not a hot-path check; ANALYSIS.md B3).
+    so it is opt-in validation, not a hot-path check).
 
     Parameters
     ----------

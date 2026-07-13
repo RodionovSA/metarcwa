@@ -11,6 +11,7 @@ from metarcwa.solver.harmonics import (
 )
 
 TWO_PI = 2 * torch.pi
+ONE = torch.tensor(1.0)   # neutral k0: no wavelength context in these tests
 
 
 # ── fixtures / helpers ────────────────────────────────────────────────────────
@@ -34,7 +35,7 @@ class TestComputeKxy:
         a1, a2 = square_lattice()
         m_flat, n_flat = harmonic_index_map(1, 1)
         kx, ky = compute_kxy(
-            torch.tensor(0.0), torch.tensor(0.0), a1, a2, m_flat, n_flat
+            torch.tensor(0.0), torch.tensor(0.0), a1, a2, m_flat, n_flat, k0=ONE
         )
         Nh = m_flat.shape[0]
         assert kx.shape == (Nh,)
@@ -44,7 +45,7 @@ class TestComputeKxy:
         a1, a2 = square_lattice()
         m_flat, n_flat = harmonic_index_map(2, 2)
         kx0, ky0 = torch.zeros(5), torch.zeros(5)
-        kx, ky = compute_kxy(kx0, ky0, a1, a2, m_flat, n_flat)
+        kx, ky = compute_kxy(kx0, ky0, a1, a2, m_flat, n_flat, k0=ONE)
         assert kx.shape == (5, m_flat.shape[0])
         assert ky.shape == (5, m_flat.shape[0])
 
@@ -52,29 +53,41 @@ class TestComputeKxy:
         a1, a2 = square_lattice()
         m_flat, n_flat = harmonic_index_map(1, 1)
         kx0, ky0 = torch.zeros(3, 4), torch.zeros(3, 4)
-        kx, ky = compute_kxy(kx0, ky0, a1, a2, m_flat, n_flat)
+        kx, ky = compute_kxy(kx0, ky0, a1, a2, m_flat, n_flat, k0=ONE)
         assert kx.shape == (3, 4, m_flat.shape[0])
         assert ky.shape == (3, 4, m_flat.shape[0])
 
     def test_square_lattice_normal_incidence(self):
-        """kx_mn = m·2π, ky_mn = n·2π for a unit square lattice at normal incidence."""
+        """kx_mn = m·2π, ky_mn = n·2π for a unit square lattice, k0=1, normal incidence."""
         a1, a2 = square_lattice()
         m_flat, n_flat = harmonic_index_map(2, 2)
         kx, ky = compute_kxy(
-            torch.tensor(0.0), torch.tensor(0.0), a1, a2, m_flat, n_flat
+            torch.tensor(0.0), torch.tensor(0.0), a1, a2, m_flat, n_flat, k0=ONE
         )
         assert_close(kx, m_flat.float() * TWO_PI)
         assert_close(ky, n_flat.float() * TWO_PI)
+
+    def test_k0_normalizes_reciprocal_shift(self):
+        """kx at k0=2 must equal half of kx at k0=1 (only Gx/k0 depends on k0)."""
+        a1, a2 = square_lattice()
+        m_flat, n_flat = harmonic_index_map(2, 2)
+        kx1, _ = compute_kxy(
+            torch.tensor(0.0), torch.tensor(0.0), a1, a2, m_flat, n_flat, k0=ONE
+        )
+        kx2, _ = compute_kxy(
+            torch.tensor(0.0), torch.tensor(0.0), a1, a2, m_flat, n_flat, k0=torch.tensor(2.0)
+        )
+        assert_close(kx2, kx1 / 2)
 
     def test_oblique_incidence_shifts_all_harmonics_uniformly(self):
         """An offset kx0 must shift every harmonic by exactly kx0."""
         a1, a2 = square_lattice()
         m_flat, n_flat = harmonic_index_map(1, 1)
         kx_normal, _ = compute_kxy(
-            torch.tensor(0.0), torch.tensor(0.0), a1, a2, m_flat, n_flat
+            torch.tensor(0.0), torch.tensor(0.0), a1, a2, m_flat, n_flat, k0=ONE
         )
         kx_oblique, _ = compute_kxy(
-            torch.tensor(0.3), torch.tensor(0.0), a1, a2, m_flat, n_flat
+            torch.tensor(0.3), torch.tensor(0.0), a1, a2, m_flat, n_flat, k0=ONE
         )
         assert_close(kx_oblique - kx_normal, torch.full_like(kx_normal, 0.3))
 
@@ -85,11 +98,11 @@ class TestComputeKxy:
         kx0 = torch.tensor([0.1, 0.2])
         ky0 = torch.tensor([0.0, 0.05])
 
-        kx_combined, ky_combined = compute_kxy(kx0, ky0, a1, a2, m_flat, n_flat)
+        kx_combined, ky_combined = compute_kxy(kx0, ky0, a1, a2, m_flat, n_flat, k0=ONE)
 
         b1, b2 = reciprocal_lattice_vectors(a1, a2)
         Gx, Gy = reciprocal_index_map(m_flat, n_flat, b1, b2)
-        kx_manual, ky_manual = harmonic_wavevectors(kx0, ky0, Gx, Gy)
+        kx_manual, ky_manual = harmonic_wavevectors(kx0, ky0, Gx, Gy, k0=ONE)
 
         assert_close(kx_combined, kx_manual)
         assert_close(ky_combined, ky_manual)

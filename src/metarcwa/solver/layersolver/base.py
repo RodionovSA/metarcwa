@@ -277,10 +277,10 @@ class LayerSolver:
 
         if isinstance(medium_solid, IsotropicMediumSpec) and \
                 isinstance(medium_void, IsotropicMediumSpec):
-            eps_solid = medium_solid.eps   # [N_wvl]
-            eps_void  = medium_void.eps    # [N_wvl]
-            eps_grid  = (eps_solid[:, None, None] * pattern[None, ...]
-                         + (1 - pattern[None, ...]) * eps_void[:, None, None])
+            eps_solid = medium_solid.eps   # [*B] (B may be empty, i.e. 0-dim)
+            eps_void  = medium_void.eps    # [*B]
+            eps_grid  = (eps_solid[..., None, None] * pattern
+                         + (1 - pattern) * eps_void[..., None, None])
             eps_grid  = _regularize_eps(eps_grid, self.config.grazing_eps_reg)
 
             if self.tvf is not None:
