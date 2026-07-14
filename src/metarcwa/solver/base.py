@@ -98,7 +98,9 @@ def build_layersolver(model_spec: ModelSpec, config: Config) -> LayerSolver:
                   config.m, config.n,
                   f.method, f.optimizer,
                   f.alpha, f.beta, f.gamma, f.steps,
-                  newton_chunk_size=f.newton_chunk_size)
+                  newton_chunk_size=f.newton_chunk_size,
+                  newton_cg_max_iter=f.newton_cg_max_iter,
+                  newton_cg_tol=f.newton_cg_tol)
     else:
         tvf = None
 

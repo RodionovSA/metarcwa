@@ -28,10 +28,24 @@ sinks can be told apart:
   - a large residual-with-graph gap present ONLY with grad on -> sink #2
     (retained FFF matrices).
 
+Sink #1 (the exact-Newton Hessian assembly/solve) has two mitigations,
+selectable via ``--optimizer`` / ``--newton-chunk-size``:
+  - ``newton`` (default) + ``newton_chunk_size`` (int): assembles the dense
+    ``[B, flat, flat]`` Hessian in column chunks instead of all at once,
+    bounding the transient peak at the cost of some runtime. Still forms
+    the dense Hessian and runs an ``O(flat**3)`` solve.
+  - ``newton_cg``: matrix-free Newton-CG (``solver/tvf/optimizers.py``,
+    class ``NewtonCG``) — never materializes the dense Hessian or runs a
+    cubic solve; each CG iteration is one Hessian-vector product, so peak
+    memory is ``O(flat + grid)`` regardless of harmonic truncation. This is
+    the better choice at high ``m``/``n`` where even a chunked dense Hessian
+    (``O(flat**2)`` memory, ``O(flat**3)`` solve) becomes the bottleneck.
+
 Usage
 -----
     uv run python tvf_memory_profile.py
     uv run python tvf_memory_profile.py --device cpu --m 6 --n 6
+    uv run python tvf_memory_profile.py --optimizer newton_cg --m 20 --n 20 --nx 256 --ny 256
 """
 
 from __future__ import annotations
@@ -101,12 +115,12 @@ def build_model(*, requires_grad: bool, wl_count: int):
 
 
 def build_config(*, with_tvf: bool, dtype, device, m, n, nx, ny, truncation,
-                  newton_chunk_size):
+                  optimizer, newton_chunk_size):
     from metarcwa import Config, Factorization
 
     factorization = (
         Factorization(method="Jones", beta=0.05, gamma=0.05,
-                      newton_chunk_size=newton_chunk_size)
+                      optimizer=optimizer, newton_chunk_size=newton_chunk_size)
         if with_tvf else None
     )
     return Config(
@@ -138,7 +152,8 @@ def _peak_rss_mib() -> float:
 
 def measure_variant(*, with_tvf: bool, requires_grad: bool, device_str: str,
                      dtype_str: str, m: int, n: int, nx: int, ny: int,
-                     truncation: str, wl_count: int, newton_chunk_size) -> dict:
+                     truncation: str, wl_count: int, optimizer: str,
+                     newton_chunk_size) -> dict:
     dtype = _DTYPES[dtype_str]
     device = torch.device(device_str)
     is_cuda = device.type == "cuda"
@@ -146,7 +161,7 @@ def measure_variant(*, with_tvf: bool, requires_grad: bool, device_str: str,
     model = build_model(requires_grad=requires_grad, wl_count=wl_count)
     config = build_config(with_tvf=with_tvf, dtype=dtype, device=device,
                            m=m, n=n, nx=nx, ny=ny, truncation=truncation,
-                           newton_chunk_size=newton_chunk_size)
+                           optimizer=optimizer, newton_chunk_size=newton_chunk_size)
 
     from metarcwa import Solver
 
@@ -218,6 +233,7 @@ def run_child(args: argparse.Namespace) -> None:
         m=args.m, n=args.n, nx=args.nx, ny=args.ny,
         truncation=args.truncation,
         wl_count=args.wl_count,
+        optimizer=args.optimizer,
         newton_chunk_size=args.newton_chunk_size,
     )
     # Single JSON line on stdout; everything else (imports, warnings) goes
@@ -241,6 +257,7 @@ def run_parent(args: argparse.Namespace) -> None:
             "--nx", str(args.nx), "--ny", str(args.ny),
             "--truncation", args.truncation,
             "--wl-count", str(args.wl_count),
+            "--optimizer", args.optimizer,
             "--newton-chunk-size",
             "none" if args.newton_chunk_size is None else str(args.newton_chunk_size),
             "--_tvf", "1" if with_tvf else "0",
@@ -279,7 +296,8 @@ def print_report(results: list[dict], args: argparse.Namespace) -> None:
     print(f"metarcwa TVF memory profile  "
           f"(device={args.device}, dtype={args.dtype}, m={args.m}, n={args.n}, "
           f"nx={args.nx}, ny={args.ny}, truncation={args.truncation}, "
-          f"wl_count={args.wl_count}, newton_chunk_size={args.newton_chunk_size})")
+          f"wl_count={args.wl_count}, optimizer={args.optimizer}, "
+          f"newton_chunk_size={args.newton_chunk_size})")
     print("=" * 116)
     header = (f"{'variant':<16}{'baseline':>12}{'peak':>12}{'d_peak':>12}"
               f"{'resid(graph)':>14}{'resid(clean)':>14}{'time(s)':>10}")
@@ -351,11 +369,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--wl-count", type=int, default=3)
     p.add_argument("--grad", default="both", choices=["on", "off", "both"],
                     help="which autograd modes to test (default: both)")
+    p.add_argument("--optimizer", default="newton", choices=["newton", "newton_cg", "lbfgs"],
+                    help="TVF optimizer (Factorization.optimizer). 'newton' = exact "
+                         "dense-Hessian solve (see --newton-chunk-size); 'newton_cg' = "
+                         "matrix-free Newton-CG, no dense Hessian/cubic solve, memory "
+                         "flat in harmonic count -- prefer this at high m/n. Default: "
+                         "'newton'.")
     p.add_argument("--newton-chunk-size", type=_chunk_size_type, default=64,
                     help="Factorization.newton_chunk_size for the exact-Newton TVF "
                          "optimizer's Hessian assembly (int, or 'none' to disable "
                          "chunking and restore the original single-shot behavior). "
-                         "Default: 64.")
+                         "Only used when --optimizer=newton. Default: 64.")
     # Internal flags used to re-invoke this script as an isolated child process.
     p.add_argument("--_child", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--_tvf", type=int, default=0, help=argparse.SUPPRESS)

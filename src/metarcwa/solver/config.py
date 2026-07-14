@@ -66,7 +66,25 @@ class Factorization:
         the result is mathematically identical (same Hessian, same solve).
         Default ``64``, which keeps peak memory low on consumer GPUs.  Set
         to ``None`` to disable chunking (single-shot, original, fastest but
-        highest-memory behavior). 
+        highest-memory behavior).
+    newton_cg_max_iter : int or None
+        Max CG iterations for the matrix-free Newton-CG optimizer
+        (``optimizer="newton_cg"`` only; ignored otherwise). Unlike
+        ``NewtonExact``, ``NewtonCG`` never materializes the dense
+        ``[B, flat, flat]`` Hessian or its ``O(flat**3)`` solve — each CG
+        iteration is one Hessian-vector product, so memory stays
+        ``O(flat + grid)`` regardless of harmonic count. Prefer this
+        optimizer over ``"newton"`` (with or without ``newton_chunk_size``)
+        at high truncation, where the dense Hessian/solve dominate. Default
+        ``None`` -> ``2 * flat`` (``flat = (2*m+1)*(2*n+1)*4``), generous
+        headroom since exact arithmetic converges within ``flat`` iterations.
+    newton_cg_tol : float
+        Relative-residual stop tolerance for Newton-CG:
+        ``||r|| <= newton_cg_tol * ||g||``. Default ``1e-8``. Use
+        ``dtype=torch.float64`` for tight tolerances; ``float32`` will
+        typically not converge much below ``~1e-6`` regardless of this
+        setting. A ``RuntimeWarning`` is raised if ``newton_cg_max_iter`` is
+        exhausted before convergence.
     """
 
     method: str                    = "Jones"    # "Normal" | "Pol" | "Jones" | "Jones_direct"
@@ -76,6 +94,8 @@ class Factorization:
     beta: float                    = 0.05
     gamma: float                   = 0.05
     newton_chunk_size: int | None  = 64
+    newton_cg_max_iter: int | None = None
+    newton_cg_tol: float           = 1e-8
 
     def to_dict(self) -> dict:
         return {
@@ -86,6 +106,8 @@ class Factorization:
             "beta": self.beta,
             "gamma": self.gamma,
             "newton_chunk_size": self.newton_chunk_size,
+            "newton_cg_max_iter": self.newton_cg_max_iter,
+            "newton_cg_tol": self.newton_cg_tol,
         }
 
     @classmethod

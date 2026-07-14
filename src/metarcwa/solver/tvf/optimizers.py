@@ -1,6 +1,7 @@
 # metarcwa/solver/tvf/optimizers.py
 # Optimizer wrappers for TVF optimization
 
+import warnings
 from typing import Callable
 from abc import ABC, abstractmethod
 import torch
@@ -237,6 +238,141 @@ class NewtonExact(TVFOptimizer):
         return params
 
 
+# ----- Matrix-free Newton-CG solve -----
+class NewtonCG(TVFOptimizer):
+    """
+    Matrix-free Newton optimizer for the TVF quadratic loss, using conjugate
+    gradients (CG) to solve ``H·Δx = g`` from Hessian-vector products alone.
+
+    Like :class:`NewtonExact`, this relies on the TVF loss being a *real*
+    quadratic function of the Fourier coefficients, so solving the Newton
+    system gives the exact global minimum (up to CG convergence tolerance).
+    Unlike :class:`NewtonExact`, it never materializes the dense
+    ``[B, flat, flat]`` Hessian or runs an ``O(flat**3)`` batched solve —
+    each CG iteration costs one Hessian-vector product (one ``jvp`` through
+    the loss), so peak memory is ``O(flat + grid)`` instead of ``O(flat**2)``.
+    This is the optimizer to use at high harmonic truncation
+    (``flat = (2m+1)(2n+1)*4``), where :class:`NewtonExact`'s dense Hessian
+    and cubic solve become the bottleneck even with chunking.
+
+    Each batch element is solved independently but the CG iteration is fully
+    vectorized across the batch (per-element dot products / stopping
+    criteria), so this is one Python loop over CG iterations regardless of
+    batch size or parameter count.
+
+    Parameters
+    ----------
+    regularization : float
+        Diagonal regularization added to the Hessian-vector product before
+        the solve (same role as ``NewtonExact.regularization``). Default
+        ``1e-12``.
+    max_iter : int or None
+        Maximum CG iterations. ``None`` (default) uses ``2 * flat`` — for an
+        exact quadratic, CG should converge within ``flat`` iterations in
+        exact arithmetic; the factor of 2 gives headroom for floating-point
+        loss of conjugacy on ill-conditioned Hessians.
+    tol : float
+        Relative-residual stopping tolerance:
+        ``||r|| <= tol * ||g||`` per batch element (all elements must meet
+        this to stop early). Default ``1e-8``. Use a tighter tolerance in
+        ``float64`` for high-accuracy runs; ``float32`` will typically not
+        reach residuals much below ``~1e-6`` regardless of ``tol``.
+    steps : int
+        Number of Newton steps. Default 1 (exact for quadratic losses).
+    """
+
+    def __init__(self, regularization: float = 1e-12, max_iter: int | None = None,
+                 tol: float = 1e-8, steps: int = 1):
+        self.regularization = regularization
+        self.max_iter = max_iter
+        self.tol = tol
+        self.steps = steps
+
+    def minimize(self, params: torch.Tensor, loss_fn: Callable, steps: int) -> torch.Tensor:
+        """
+        Run ``steps`` Newton iterations, each solving ``H·Δx = g`` via
+        matrix-free batched CG (see class docstring).
+
+        Parameters
+        ----------
+        params : torch.Tensor
+            Leaf tensor with ``requires_grad=True``.  Shape ``[B, ...]``.
+        loss_fn : Callable
+            Maps params -> torch.Tensor of shape ``[B]``.
+        steps : int
+            Number of Newton iterations.
+
+        Returns
+        -------
+        params : torch.Tensor
+            Updated params (same object, data updated via no_grad).
+        """
+        B = params.shape[0]
+        shape_per = params.shape[1:]   # shape of one batch element
+        flat = params[0].numel()
+        max_iter = 2 * flat if self.max_iter is None else self.max_iter
+        dims = tuple(range(1, len(shape_per) + 1))   # per-element reduction dims
+
+        def scalar_loss(p: torch.Tensor) -> torch.Tensor:
+            return loss_fn(p).sum()
+
+        grad_fn = func_grad(scalar_loss)
+
+        def dot(u: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+            return (u * w).sum(dim=dims)   # [B]
+
+        def bview(v: torch.Tensor) -> torch.Tensor:
+            return v.reshape(B, *([1] * len(shape_per)))
+
+        for _ in range(steps):
+            x = params.detach()        # [B, *shape_per], pure functional primal
+            g = grad_fn(x)              # [B, *shape_per]
+
+            def hvp(v: torch.Tensor) -> torch.Tensor:
+                return jvp(grad_fn, (x,), (v,))[1] + self.regularization * v
+
+            # ── Batched conjugate gradients: solve H·delta = g, x0 = 0 ───────
+            delta = torch.zeros_like(g)
+            r = g.clone()
+            p = r.clone()
+            rs_old = dot(r, r)                          # [B]
+            g_norm = dot(g, g).sqrt().clamp_min(1e-300)  # [B]
+
+            for _n_iter in range(max_iter):
+                Hp = hvp(p)
+                pHp = dot(p, Hp).clamp_min(1e-300)
+                alpha = bview(rs_old / pHp)
+                delta = delta + alpha * p
+                r = r - alpha * Hp
+                rs_new = dot(r, r)
+                converged = bool((rs_new.sqrt() <= self.tol * g_norm).all())
+                if converged:
+                    # Update rs_old to the just-computed (lower) residual before
+                    # breaking, so the post-loop report/warning reflects the
+                    # actual converged value rather than the prior iteration's
+                    # (stale, larger) one.
+                    rs_old = rs_new
+                    break
+                beta = bview(rs_new / rs_old.clamp_min(1e-300))
+                p = r + beta * p
+                rs_old = rs_new
+
+            residual = (rs_old.sqrt() / g_norm).max().item()
+            if residual > self.tol:
+                warnings.warn(
+                    f"NewtonCG: did not converge within {max_iter} CG iterations "
+                    f"(worst-case relative residual {residual:.3e} > tol {self.tol:.1e}). "
+                    "Consider raising max_iter or newton_cg_tol tolerance, or switch to "
+                    "'newton' for this harmonic count.",
+                    RuntimeWarning,
+                )
+
+            with torch.no_grad():
+                params -= delta
+
+        return params
+
+
 # ----- Factory -----
 def make_optimizer(name: str, **kwargs) -> TVFOptimizer:
     """
@@ -245,7 +381,9 @@ def make_optimizer(name: str, **kwargs) -> TVFOptimizer:
     Parameters
     ----------
     name : str
-        Optimizer name (case-insensitive). Supported: ``"lbfgs"``.
+        Optimizer name (case-insensitive). Supported: ``"lbfgs"``, ``"newton"``
+        (:class:`NewtonExact`), ``"newton_cg"`` (:class:`NewtonCG`, matrix-free,
+        for high harmonic truncation).
     **kwargs
         Forwarded to the optimizer constructor.
 
@@ -258,4 +396,8 @@ def make_optimizer(name: str, **kwargs) -> TVFOptimizer:
         return TorchLBFGS(**kwargs)
     if name in ("newton", "newtonexact"):
         return NewtonExact(**kwargs)
-    raise ValueError(f"Unknown optimizer '{name}'. Supported: 'lbfgs', 'newton'")
+    if name in ("newton_cg", "newtoncg"):
+        return NewtonCG(**kwargs)
+    raise ValueError(
+        f"Unknown optimizer '{name}'. Supported: 'lbfgs', 'newton', 'newton_cg'"
+    )
