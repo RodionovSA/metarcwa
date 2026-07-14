@@ -140,11 +140,20 @@ class NewtonExact(TVFOptimizer):
         Diagonal regularization added to H before the solve. Default 1e-12.
     steps : int
         Number of Newton steps.  Default 1 (exact for quadratic losses).
+    chunk_size : int or None
+        Number of Hessian columns assembled per ``vmap`` pass in
+        :meth:`minimize` (see there for the memory/speed tradeoff).
+        ``None`` (default) assembles all columns in a single pass — the
+        original behavior, fastest but with peak memory scaling as
+        ``flat = numel(params[0])``. A positive int caps memory at
+        roughly ``flat / chunk_size`` of that, at some runtime cost.
     """
 
-    def __init__(self, regularization: float = 1e-12, steps: int = 1):
+    def __init__(self, regularization: float = 1e-12, steps: int = 1,
+                 chunk_size: int | None = None):
         self.regularization = regularization
         self.steps = steps
+        self.chunk_size = chunk_size
 
     def minimize(self, params: torch.Tensor, loss_fn: Callable, steps: int) -> torch.Tensor:
         """
@@ -205,7 +214,13 @@ class NewtonExact(TVFOptimizer):
                 return jvp(grad_fn, (x,), (v_batch,))[1]
 
             # cols[k, b, ...] = k-th column of H_b  → shape [flat, B, *shape_per]
-            cols = vmap(hvp_col)(basis)
+            # chunk_size caps how many basis columns are evaluated in one
+            # vmap pass — each column's hvp_col forward+tangent pass touches
+            # the full [B, D0, D1, 2] grid (via loss_fn/total_loss), so an
+            # unchunked vmap over all `flat` columns at once is the dominant
+            # peak-memory cost of TVF. Chunking is mathematically identical
+            # (same H, same solve), it only trades some speed for memory.
+            cols = vmap(hvp_col, chunk_size=self.chunk_size)(basis)
 
             # Reshape to [B, flat, flat]: H[b, j, k] = cols[k, b, j]
             H = cols.reshape(flat, B, flat).permute(1, 2, 0)   # [B, flat, flat]

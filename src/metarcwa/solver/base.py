@@ -97,7 +97,8 @@ def build_layersolver(model_spec: ModelSpec, config: Config) -> LayerSolver:
         tvf = TVF(model_spec.a1, model_spec.a2,
                   config.m, config.n,
                   f.method, f.optimizer,
-                  f.alpha, f.beta, f.gamma, f.steps)
+                  f.alpha, f.beta, f.gamma, f.steps,
+                  newton_chunk_size=f.newton_chunk_size)
     else:
         tvf = None
 

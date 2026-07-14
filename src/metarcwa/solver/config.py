@@ -53,14 +53,29 @@ class Factorization:
         Fourier regularisation weight (band-limit smoothness).  Default ``0.05``.
     gamma : float
         Smoothness loss weight (spatial smoothness).  Default ``0.05``.
+    newton_chunk_size : int or None
+        Column-chunk size for the exact-Newton optimizer's Hessian assembly
+        (``NewtonExact`` only; ignored by other optimizers). The Newton
+        solve builds the Hessian via a ``vmap`` over ``(2*m+1)*(2*n+1)*4``
+        basis directions, each triggering a full-grid ``[B, Ny, Nx, 2]``
+        forward/tangent evaluation; done all at once this is the dominant
+        peak-memory cost of TVF (can reach several GB at ``m=n=10`` and
+        ``nx=ny=256``). Setting this to a positive int assembles the
+        Hessian in chunks of that many columns instead, cutting peak memory
+        by roughly ``flat / newton_chunk_size`` at a modest runtime cost —
+        the result is mathematically identical (same Hessian, same solve).
+        Default ``64``, which keeps peak memory low on consumer GPUs.  Set
+        to ``None`` to disable chunking (single-shot, original, fastest but
+        highest-memory behavior). 
     """
 
-    method: str    = "Jones"    # "Normal" | "Pol" | "Jones" | "Jones_direct"
-    optimizer: str = "newton"
-    steps: int     = 1
-    alpha: float   = 1.0
-    beta: float    = 0.05
-    gamma: float   = 0.05
+    method: str                    = "Jones"    # "Normal" | "Pol" | "Jones" | "Jones_direct"
+    optimizer: str                 = "newton"
+    steps: int                     = 1
+    alpha: float                   = 1.0
+    beta: float                    = 0.05
+    gamma: float                   = 0.05
+    newton_chunk_size: int | None  = 64
 
     def to_dict(self) -> dict:
         return {
@@ -70,6 +85,7 @@ class Factorization:
             "alpha": self.alpha,
             "beta": self.beta,
             "gamma": self.gamma,
+            "newton_chunk_size": self.newton_chunk_size,
         }
 
     @classmethod

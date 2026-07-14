@@ -81,6 +81,12 @@ class TVF:
     steps : int
         Optimizer steps.  Default 1 (exact for the Newton solve on a
         quadratic loss).
+    newton_chunk_size : int or None
+        Hessian-column chunk size, forwarded to ``NewtonExact`` only (see
+        its docstring); ignored for other optimizers. ``None`` disables
+        chunking (original single-shot behavior). Default ``None`` here —
+        the ``Config``/``Factorization`` default of ``64`` is applied by
+        the caller (``solver/base.py``).
     """
 
     METHODS = ("Jones", "Pol", "Normal", "Jones_direct")
@@ -97,6 +103,7 @@ class TVF:
         beta: float | None = None,
         gamma: float | None = None,
         steps: int = 1,
+        newton_chunk_size: int | None = None,
     ):
         if method not in self.METHODS:
             raise ValueError(
@@ -107,7 +114,12 @@ class TVF:
         self.M = int(M)
         self.N = int(N)
         self.method = method
-        self.optimizer = make_optimizer(optimizer)
+        # chunk_size is a NewtonExact-only knob; other optimizers (e.g.
+        # TorchLBFGS) don't accept it, so only forward it for newton.
+        optimizer_kwargs = {}
+        if optimizer.lower() in ("newton", "newtonexact"):
+            optimizer_kwargs["chunk_size"] = newton_chunk_size
+        self.optimizer = make_optimizer(optimizer, **optimizer_kwargs)
         self.alpha = 1.0 if alpha is None else alpha
         self.beta  = 0.05 if beta is None else beta
         self.gamma = 0.05 if gamma is None else gamma
