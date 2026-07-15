@@ -15,6 +15,7 @@ factorization method, and eigenvalue solver behaviour.
 
 import yaml
 import torch
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -195,6 +196,36 @@ class Config:
     def __post_init__(self) -> None:
         if not isinstance(self.device, torch.device):
             self.device = torch.device(self.device)
+
+        # Harmonic truncation vs. real-space grid: the convolution matrix
+        # (convolution.py) indexes eps_hat modulo (nx, ny). Once the harmonic
+        # span 2*m+1 (or 2*n+1) exceeds the grid, distinct harmonics alias
+        # onto the same Fourier bin and the convolution matrix becomes
+        # exactly singular -- surfaces downstream as a cryptic
+        # torch.linalg.inv/solve "singular matrix" error deep in the modal
+        # solve. Catch it here instead, at Config construction time (this
+        # also fires on every dataclasses.replace(...)).
+        for label, m_max, grid in (("m", self.m, self.nx), ("n", self.n, self.ny)):
+            span = 2 * m_max + 1
+            if span > grid:
+                other = "nx" if label == "m" else "ny"
+                raise ValueError(
+                    f"{other}={grid} too small for {label}={m_max}: truncation "
+                    f"spans {label}=[-{m_max}, {m_max}] ({span} harmonics), which "
+                    f"aliases modulo {other} and makes the convolution matrix "
+                    f"singular; need {other} >= {span} (>= {4 * m_max + 1} to also "
+                    "avoid Laurent-rule aliasing)."
+                )
+            if 4 * m_max + 1 > grid:
+                other = "nx" if label == "m" else "ny"
+                warnings.warn(
+                    f"{other}={grid} is below the Laurent-rule sampling "
+                    f"requirement for {label}={m_max} (need {other} >= "
+                    f"{4 * m_max + 1}); Fourier coefficients up to order "
+                    f"2*{label}={2 * m_max} will be aliased, degrading accuracy.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
     def to_dict(self) -> dict:
         return {
