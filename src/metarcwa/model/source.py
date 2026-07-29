@@ -23,7 +23,7 @@ class SourceSpec:
     Attributes
     ----------
     wavelength : Tensor | nn.Parameter
-        Free-space wavelength, shape ``[N_wl, 1, 1]``. Retained so the
+        Free-space wavelength, shape ``[N_wl]``. Retained so the
         free-space wavenumber ``k0 = 2*pi / wavelength`` can be recovered
         downstream (see ``kx0``/``ky0`` below).
     kx0, ky0 : Tensor | nn.Parameter
@@ -91,7 +91,6 @@ class Source(nn.Module):
         # k0*n*sin(th)*cos(ph). The solver runs entirely in these units; k0 is
         # reintroduced downstream from `wavelength` only where a physical
         # wavevector is needed.
-        wl = self.wavelength.reshape(-1, 1, 1)
         th = self.theta.reshape(1, -1, 1)
         ph = self.phi.reshape(1, 1, -1)
         n  = n_incidence.reshape(-1, 1, 1)
