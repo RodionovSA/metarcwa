@@ -277,8 +277,8 @@ wheels = [
 
 [[package]]
 name = "dispertorch"
-version = "0.1.0"
-source = { git = "https://github.com/RodionovSA/dispertorch.git#b734eeec72702a315f315c91b6fd1a46f507c1bb" }
+version = "0.1.1"
+source = { git = "https://github.com/RodionovSA/dispertorch.git#aa51ff9c279c576d2e065d4bdb16e123ed714f55" }
 dependencies = [
     { name = "torch" },
 ]
