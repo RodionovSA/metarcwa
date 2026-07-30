@@ -102,3 +102,32 @@ class TestWavelengthSweepThroughFiniteLayer:
         assert S11_h.shape[0] == 6 and S11_e.shape[0] == 6
         assert torch.allclose(S11_h, S11_e, atol=1e-8)
         assert torch.allclose(S21_h, S21_e, atol=1e-8)
+
+    def test_matexp_matches_homogeneous_and_eigen(self):
+        """Same slab as `test_homogeneous_and_eigen_paths_agree`, solved a
+        third way: `Config.modesolver="matexp"` (no eigendecomposition --
+        sliced matrix exponential instead, see docs/matrixexp.md). Must
+        agree with the closed-form homogeneous path across the wavelength
+        sweep, same as the eig path does."""
+        wl = torch.linspace(0.5, 1.5, 6, dtype=torch.float64)
+        cfg_eig    = Config(m=1, n=1, dtype=torch.float64, factorization=None,
+                            modesolver="eig")
+        cfg_matexp = Config(m=1, n=1, dtype=torch.float64, factorization=None,
+                            modesolver="matexp")
+
+        solver_h = Solver(_make_model("homogeneous", wl), cfg_eig)
+        solver_m = Solver(_make_model("eigen", wl), cfg_matexp)
+        Nh = solver_h.layersolver.m_flat.shape[0]
+
+        sol_h = solver_h.run()
+        sol_m = solver_m.run()
+
+        def dense(entry):
+            return entry.to_dense(Nh) if hasattr(entry, "a") else entry.to(entry.DENSE, Nh).data
+
+        S11_h, S11_m = dense(sol_h.S11), dense(sol_m.S11)
+        S21_h, S21_m = dense(sol_h.S21), dense(sol_m.S21)
+
+        assert S11_m.shape[0] == 6
+        assert torch.allclose(S11_h, S11_m, atol=1e-8)
+        assert torch.allclose(S21_h, S21_m, atol=1e-8)

@@ -436,6 +436,20 @@ class Block2x2:
         return torch.cat([torch.cat([A, B], dim=-1),
                           torch.cat([C, D], dim=-1)], dim=-2)
 
+    @classmethod
+    def from_dense(cls, dense: torch.Tensor, template: "Block2x2") -> "Block2x2":
+        """Inverse of :meth:`to_dense`: reconstruct a Block2x2 tree from a
+        dense ``(..., 2N, 2N)`` tensor (or ``(..., 2^k*N, 2^k*N)`` for k
+        nesting levels), splitting into quadrants matching *template*'s
+        nesting shape. Leaf entries become ``Block(DENSE, ...)``.
+
+        Used by callers that compute a dense operator directly (e.g. a
+        matrix exponential) and need to re-embed it into the Block2x2
+        algebra to compose with structured operators via ``@``/``solve``/
+        ``star``.
+        """
+        return _untile(dense, template)
+
     # --- misc -------------------------------------------------------------
     @property
     def shape(self) -> Tuple[object, object, object, object]:

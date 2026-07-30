@@ -92,8 +92,8 @@ class Factorization:
     optimizer: str                 = "newton"
     steps: int                     = 1
     alpha: float                   = 1.0
-    beta: float                    = 0.05
-    gamma: float                   = 0.05
+    beta: float                    = 0.005
+    gamma: float                   = 0.0
     newton_chunk_size: int | None  = 64
     newton_cg_max_iter: int | None = None
     newton_cg_tol: float           = 1e-8
@@ -151,9 +151,17 @@ class Config:
         TVF Li-factorization settings.  ``None`` disables TVF and uses the
         plain Laurent convolution rule.  Default ``Factorization()``.
     modesolver : str
-        Mode-solving strategy for patterned layers.  Currently only
-        ``"eig"`` (full eigendecomposition via :func:`eigsolver`) is
-        supported.  Default ``"eig"``.
+        Mode-solving strategy for patterned layers.  One of ``"eig"`` (full
+        eigendecomposition via :func:`eigsolver`) or ``"matexp"`` (matrix
+        exponential of the first-order system via
+        :mod:`~metarcwa.solver.layersolver.matexpsolver`, see
+        ``docs/matrixexp.md``).  Default ``"eig"``.  The ``matexp_*``
+        settings below apply only to ``"matexp"``; ``eigsolver_stable`` and
+        ``checkpoint_eig`` apply only to ``"eig"`` (inert, not an error,
+        under the other solver).  Note the cost model inverts relative to
+        ``"eig"``: ``matexp`` makes ``LayerSolver.prepare`` cheaper (no
+        eigendecomposition, just ``P``/``Q``) and ``smatrix``/``Solver.run``
+        more expensive.
     eigsolver_stable : bool
         If ``True`` (default), use :class:`Eig` with Lorentzian-broadened
         gradients for stability near degenerate eigenvalues.  Set to
@@ -178,24 +186,70 @@ class Config:
         the total-internal-reflection critical angle. Default ``1e-8``; set to
         ``0`` to disable (may raise ``torch.linalg.solve`` singular-matrix
         errors at exact grazing incidence, especially in ``float32``).
+    matexp_slicing : bool
+        Master on/off switch for slicing a ``"matexp"`` patterned layer into
+        several thin sub-layers before exponentiating. A matrix exponential
+        of the full first-order system has entries spanning
+        ``exp(+-|lam|*k0*d)``; for thick layers / high harmonics these
+        overflow and swamp the small entries that carry the physical S-matrix
+        (docs/smatrix.md's stated reason for preferring S- over T-matrices).
+        Slicing into ``n`` thin sub-layers keeps each ``expm`` argument
+        bounded, converts each slice to an S-matrix immediately, and
+        recombines via ``n-1`` Redheffer star products (:math:`O(\\log n)` via
+        repeated squaring) — exact, not approximate. Default ``True``. Set to
+        ``False`` to force a single unsliced ``expm`` (fast, but unstable for
+        thick/high-harmonic layers — a ``RuntimeWarning`` is raised when the
+        estimated exponent exceeds ``matexp_max_exponent``).
+    matexp_slices : int or None
+        Explicit slice count for ``"matexp"`` patterned layers, overriding
+        automatic estimation. ``None`` (default) estimates ``n`` from
+        ``k0*d*max|lam|`` and ``matexp_max_exponent`` (see
+        :func:`~metarcwa.solver.layersolver.matexpsolver.slice_count`).
+        Ignored when ``matexp_slicing=False``.
+    matexp_max_slices : int
+        Cap on the automatically estimated slice count (never applies to an
+        explicit ``matexp_slices``). Default ``512``. A ``RuntimeWarning``
+        is raised if the estimate exceeds this cap; the count is clamped to
+        it, which may leave the per-slice exponent above
+        ``matexp_max_exponent``.
+    matexp_max_exponent : float or None
+        Per-slice exponent budget ``max(k0*d*|lam|)`` used to estimate the
+        automatic slice count. ``None`` (default) resolves to ``8.0`` for
+        ``complex128`` (``dtype=torch.float64``, retained relative accuracy
+        ``~ machine_eps * exp(2*8) ~ 2e-9``) or ``3.0`` for ``complex64``
+        (``dtype=torch.float32``, ``~ 5e-5``). Lower is more conservative
+        (more slices, more star products); ignored when
+        ``matexp_slices`` is set or ``matexp_slicing=False``.
     """
 
-    dtype:            torch.dtype         = torch.float32
-    device:           torch.device        = "cpu"
-    nx:               int                 = 128
-    ny:               int                 = 128
-    m:                int                 = 12
-    n:                int                 = 12
-    truncation:       str                 = "circular"    # "circular" | "rectangular"
-    factorization:    Factorization|None  = field(default_factory=Factorization)
-    modesolver:       str                 = "eig"         # "eig"
-    eigsolver_stable: bool                = True
-    checkpoint_eig:   bool                = False
-    grazing_eps_reg:  float                = 1e-8
+    dtype:                torch.dtype         = torch.float32
+    device:               torch.device        = "cpu"
+    nx:                   int                 = 128
+    ny:                   int                 = 128
+    m:                    int                 = 12
+    n:                    int                 = 12
+    truncation:           str                 = "circular"    # "circular" | "rectangular"
+    factorization:        Factorization|None  = field(default_factory=Factorization)
+    modesolver:           str                 = "eig"         # "eig" | "matexp"
+    eigsolver_stable:     bool                = True
+    checkpoint_eig:       bool                = False
+    grazing_eps_reg:      float               = 1e-8
+    matexp_slicing:       bool                = True
+    matexp_slices:        int | None          = None
+    matexp_max_slices:    int                 = 512
+    matexp_max_exponent:  float | None        = None
+
+    _MODESOLVERS = ("eig", "matexp")
 
     def __post_init__(self) -> None:
         if not isinstance(self.device, torch.device):
             self.device = torch.device(self.device)
+
+        if self.modesolver not in Config._MODESOLVERS:
+            raise ValueError(
+                f"modesolver={self.modesolver!r} not supported; must be one "
+                f"of {Config._MODESOLVERS}."
+            )
 
         # Harmonic truncation vs. real-space grid: the convolution matrix
         # (convolution.py) indexes eps_hat modulo (nx, ny). Once the harmonic
@@ -241,6 +295,10 @@ class Config:
             "eigsolver_stable": self.eigsolver_stable,
             "checkpoint_eig": self.checkpoint_eig,
             "grazing_eps_reg": self.grazing_eps_reg,
+            "matexp_slicing": self.matexp_slicing,
+            "matexp_slices": self.matexp_slices,
+            "matexp_max_slices": self.matexp_max_slices,
+            "matexp_max_exponent": self.matexp_max_exponent,
         }
 
     @classmethod

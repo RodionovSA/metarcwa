@@ -4,12 +4,14 @@ base — LayerSolver: per-element modal solver and S-matrix assembler
 =====================================================================
 
 ``LayerSolver`` is the central mode-solving orchestrator. It splits work into
-two phases with very different cost:
+two phases with very different cost (for the default ``"eig"`` modesolver —
+see the note on ``"matexp"`` below):
 
   - :meth:`prepare` — EXPENSIVE. Solves the per-element eigenproblem (TVF
     field, convolution matrices, eigendecomposition for patterned layers;
     closed-form modes for homogeneous layers/media) and returns a
-    :class:`LayerOperator` — a plain snapshot of the modal solution.
+    :class:`~metarcwa.solver.layersolver.operator.LayerOperator` — a plain
+    snapshot of the modal solution.
   - :meth:`smatrix` — CHEAP. Assembles the ``Block2x2`` S-matrix from an
     already-prepared operator via boundary matching + propagation.
 
@@ -22,60 +24,44 @@ geometry (e.g. a thickness sweep, where only ``op.thickness`` changes).
 Supported element types and their solvers:
 
   HomogeneousLayer   → :func:`homogeneous_modes` (closed-form, no eigensolver)
-  PatternedLayer     → :func:`compute_isotropic` + :func:`eigsolver`
-  MediumSpec         → :func:`homogeneous_modes`
+                       → :class:`~metarcwa.solver.layersolver.operator.ModalOperator`
+  PatternedLayer     → :func:`compute_isotropic`, then either:
+                         "eig"    → :func:`eigsolver` → ``ModalOperator``
+                         "matexp" → :mod:`~metarcwa.solver.layersolver.matexpsolver`
+                                    → :class:`~metarcwa.solver.layersolver.matexpsolver.TransferOperator`
+                       (``Config.modesolver`` selects the branch)
+  MediumSpec         → :func:`homogeneous_modes` → ``ModalOperator``
                        (semi-infinite input/output medium; boundary-only,
                        no propagation)
+
+``LayerOperator`` itself is a structural contract (see ``operator.py``), not
+a single concrete type — ``ModalOperator`` and ``TransferOperator`` both
+satisfy it. ``smatrix()`` below therefore delegates to the operator itself
+(``op.smatrix(self.background, left)``) rather than assuming a
+``(lam, W, V)`` triple.
+
+Note on cost model under ``"matexp"``: it inverts. ``prepare()`` becomes
+cheap (no eigendecomposition — just ``P``/``Q``) and ``smatrix()`` becomes
+the expensive step (a sliced matrix exponential, computed there rather than
+in ``prepare()`` specifically so it stays responsive to
+``dataclasses.replace(op, thickness=...)``, matching the eig path's
+late-binding of ``thickness``). See ``docs/matrixexp.md``.
 """
 
 import torch
 from torch.utils.checkpoint import checkpoint
-from dataclasses import dataclass
 from typing import Tuple
 
 from metarcwa.model.layer import HomogeneousLayer, PatternedLayer
 from metarcwa.model.medium import MediumSpec, IsotropicMediumSpec
 from metarcwa.solver.blockmatrix import Block2x2
-from metarcwa.solver.smatrix import S_layer, S_boundary
 from metarcwa.solver.layersolver.homogeneous import homogeneous_modes
 from metarcwa.solver.layersolver.isotropic import compute_isotropic
 from metarcwa.solver.layersolver.eigsolver import eigsolver
+from metarcwa.solver.layersolver.matexpsolver import TransferOperator
+from metarcwa.solver.layersolver.operator import Background, LayerOperator, ModalOperator
 from metarcwa.solver.layersolver._modes import _regularize_eps
 from metarcwa.solver.config import Config
-
-
-@dataclass(frozen=True)
-class LayerOperator:
-    """
-    Precomputed modal solution of one stack element.
-
-    Produced by :meth:`LayerSolver.prepare` (the expensive step: TVF field,
-    convolution matrices, eigendecomposition). Consumed by
-    :meth:`LayerSolver.smatrix` (cheap: boundary matching + propagation).
-
-    The caller owns the lifetime: rebuild when the geometry or source
-    changes (e.g. every inverse-design step); reuse across repeated
-    ``smatrix()`` calls at fixed geometry. ``thickness`` is read at
-    ``smatrix()`` time, so thickness-only changes (e.g. an in-place
-    ``nn.Parameter`` update, or ``dataclasses.replace(op, thickness=...)``)
-    do NOT require re-preparing.
-
-    Attributes
-    ----------
-    lam : torch.Tensor
-        Modal exponents lam = 1j·kz, shape ``[..., 2Nh]``.
-    W : Block2x2
-        E-mode matrix (columns = eigenvectors of the E-field).
-    V : Block2x2
-        H-mode matrix.
-    thickness : torch.Tensor or None
-        Layer thickness. ``None`` marks a semi-infinite medium — a
-        boundary-only element with no propagation.
-    """
-    lam: torch.Tensor
-    W: Block2x2
-    V: Block2x2
-    thickness: torch.Tensor | None = None
 
 
 class LayerSolver:
@@ -106,6 +92,10 @@ class LayerSolver:
         Background E-mode matrix (identity for vacuum).
     V0 : Block2x2
         Background H-mode matrix computed from vacuum dispersion.
+    background : Background
+        ``W0``/``V0``/``wvl`` bundled into the reference every
+        :class:`~metarcwa.solver.layersolver.operator.LayerOperator` is
+        assembled against; passed to ``op.smatrix()``/``op.transfer()``.
     """
 
     def __init__(self, config: Config, wvl: torch.Tensor,
@@ -139,6 +129,7 @@ class LayerSolver:
         self.n_flat  = n_flat
         self.tvf     = tvf
         self.W0, self.V0 = self._prepare_vacuum()
+        self.background = Background(self.W0, self.V0, self.wvl)
 
     def _prepare_vacuum(self) -> Tuple[Block2x2, Block2x2]:
         """Compute the vacuum background mode matrices W0 = I and V0.
@@ -190,12 +181,14 @@ class LayerSolver:
 
     def smatrix(self, op: LayerOperator, left: bool = True) -> Block2x2:
         """
-        Assemble the S-matrix from a prepared operator (cheap).
+        Assemble the S-matrix from a prepared operator (cheap for the "eig"
+        modesolver; see the module docstring's note on "matexp").
 
-        For a finite layer (``op.thickness is not None``) this cascades
-        ``S_in ⋆ S_prop ⋆ S_out`` via :func:`S_layer`. For a semi-infinite
-        medium (``op.thickness is None``) it computes a single boundary
-        S-matrix via :func:`S_boundary`.
+        Delegates to the operator itself — ``op.smatrix(self.background,
+        left)`` — since different operator families (``ModalOperator``,
+        ``TransferOperator``) assemble it differently (modal boundary
+        matching + propagation vs. a sliced matrix exponential). See
+        ``operator.py`` for the shared contract.
 
         Parameters
         ----------
@@ -213,12 +206,7 @@ class LayerSolver:
             S-matrix of the element; compose successive elements with
             ``S1.star(S2)`` (Redheffer star product).
         """
-        if op.thickness is None:
-            if left:
-                return S_boundary(op.W, op.V, self.W0, self.V0)
-            else:
-                return S_boundary(self.W0, self.V0, op.W, op.V)
-        return S_layer(self.W0, self.V0, op.W, op.V, op.lam, op.thickness, self.wvl)
+        return op.smatrix(self.background, left)
 
     def run(self, element: HomogeneousLayer | PatternedLayer | MediumSpec,
             left: bool = True) -> Block2x2:
@@ -261,15 +249,22 @@ class LayerSolver:
             raise NotImplementedError(
                 f"Homogeneous solver not implemented for {type(medium)}"
             )
-        return LayerOperator(lam, W, V, layer.thickness)
+        return ModalOperator(lam, W, V, layer.thickness)
 
     def _patterned(self, layer: PatternedLayer) -> LayerOperator:
-        """Solve the modes of a patterned layer via eigensolver.
+        """Solve a patterned layer via ``Config.modesolver`` ("eig" or
+        "matexp").
 
         Builds the permittivity grid from ``medium_solid`` and ``medium_void``
         weighted by ``pattern``, computes P and Q operators via
-        :func:`compute_isotropic`, then solves for modes with
-        :func:`eigsolver`.
+        :func:`compute_isotropic` (shared by both modesolvers — same TVF
+        correction, same convolution matrices), then dispatches:
+
+          "eig"    → :func:`eigsolver` → :class:`ModalOperator`
+          "matexp" → :class:`~metarcwa.solver.layersolver.matexpsolver.TransferOperator`
+                     (no eigendecomposition; P/Q and a cheap modal-exponent
+                     bound are carried directly, exponentiated at
+                     ``smatrix()`` time)
         """
         medium_solid = layer.medium_solid
         medium_void  = layer.medium_void
@@ -302,17 +297,31 @@ class LayerSolver:
                     )
                 else:
                     lam, W, V = eigsolver(P, Q, self.config.eigsolver_stable)
+                return ModalOperator(lam, W, V, layer.thickness)
+            elif self.config.modesolver == "matexp":
+                # Cheap upper bound on the modal exponent, no eigenvalues
+                # needed: lam^2 ~ kx^2 + ky^2 - eps for the isotropic system,
+                # so max|lam| <~ sqrt(max(kx^2+ky^2) + max|eps|). Detached —
+                # only sizes the auto slice count (matexpsolver.slice_count),
+                # never enters autograd.
+                Nh = self.m_flat.shape[0]
+                kxy2_max = (self.kx.detach().abs() ** 2
+                            + self.ky.detach().abs() ** 2).amax()
+                eps_max = eps_grid.detach().abs().amax().to(kxy2_max.dtype)
+                lam_bound = torch.sqrt(kxy2_max + eps_max)
+                return TransferOperator(
+                    P, Q, Nh, lam_bound, self.config, layer.thickness,
+                )
             else:
                 raise NotImplementedError(
                     f"modesolver '{self.config.modesolver}' is not supported. "
-                    "Currently only 'eig' is implemented."
+                    "Currently 'eig' and 'matexp' are implemented."
                 )
         else:
             raise NotImplementedError(
                 f"Patterned solver not implemented for "
                 f"({type(medium_solid)}, {type(medium_void)})"
             )
-        return LayerOperator(lam, W, V, layer.thickness)
 
     def _medium(self, medium: MediumSpec) -> LayerOperator:
         """Solve the modes of a semi-infinite medium.
@@ -330,4 +339,4 @@ class LayerSolver:
             raise NotImplementedError(
                 f"Medium solver not implemented for {type(medium)}"
             )
-        return LayerOperator(lam, W, V, thickness=None)
+        return ModalOperator(lam, W, V, thickness=None)

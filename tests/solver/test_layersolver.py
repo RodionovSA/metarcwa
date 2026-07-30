@@ -95,6 +95,22 @@ def _make_solver_cfg(device: str, config: Config):
     return solver, kx, ky, m_flat, wvl, Nh
 
 
+def _make_solver_full(device: str, config: Config, tvf=None):
+    """Same as `_make_solver_cfg`, but also takes an optional `TVF` instance
+    (combines `_make_solver_cfg`'s custom-Config support with
+    `_make_solver_tvf`'s TVF wiring)."""
+    a1 = torch.tensor([1.0, 0.0], dtype=torch.float64, device=device)
+    a2 = torch.tensor([0.0, 1.0], dtype=torch.float64, device=device)
+    kx0 = torch.tensor([0.0], dtype=torch.float64, device=device)
+    ky0 = torch.tensor([0.0], dtype=torch.float64, device=device)
+    m_flat, n_flat = harmonic_index_map(Nh_half, Nh_half, device=device)
+    wvl    = torch.tensor([0.3], dtype=torch.float64, device=device)   # avoid kx=eps grazing coincidence at wvl=1.0
+    kx, ky = compute_kxy(kx0, ky0, a1, a2, m_flat, n_flat, k0=2 * torch.pi / wvl)   # [1, Nh]
+    solver = LayerSolver(config, wvl, kx, ky, m_flat, n_flat, tvf=tvf)
+    Nh = m_flat.shape[0]
+    return solver, kx, ky, m_flat, wvl, Nh
+
+
 def _eps(val: float, device: str) -> torch.Tensor:
     return torch.tensor([val + 0j], dtype=torch.complex128, device=device)
 
@@ -362,12 +378,22 @@ class TestPatternedEqualsHomogeneous:
     so an operator-level Q-only test would not have caught it).
     """
 
+    @pytest.mark.parametrize("modesolver", ["eig", "matexp"])
     @pytest.mark.parametrize("eps_val", [1.0, 2.5])
     @pytest.mark.parametrize("use_tvf", [False, True])
-    def test_uniform_pattern_equals_homogeneous(self, device, use_tvf, eps_val):
-        solver, *_, Nh = (_make_solver_tvf(device) if use_tvf else _make_solver(device))
+    def test_uniform_pattern_equals_homogeneous(self, device, use_tvf, eps_val, modesolver):
+        cfg = Config(dtype=torch.float64, modesolver=modesolver)
+        tvf = None
+        if use_tvf:
+            a1 = torch.tensor([1.0, 0.0], dtype=torch.float64, device=device)
+            a2 = torch.tensor([0.0, 1.0], dtype=torch.float64, device=device)
+            tvf = TVF(a1, a2, Nh_half, Nh_half, method="Jones")
+        solver, *_, Nh = _make_solver_full(device, cfg, tvf)
         d_val = 0.3
 
+        # The homogeneous layer always goes through ModalOperator regardless
+        # of `modesolver` (which only affects `_patterned`), so this is a
+        # direct eig-vs-matexp cross-check whichever value is parametrized.
         S_pat = solver.run(_pat(eps_val, eps_val, d_val, _checkerboard(device), device))
         S_hom = solver.run(_hom(eps_val, d_val, device))
 

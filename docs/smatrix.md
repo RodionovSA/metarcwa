@@ -14,6 +14,8 @@ so $S_{11}$ is the reflection from the left, $S_{22}$ from the right, and $S_{12
 
 The S-matrix is preferred over the transfer matrix (T-matrix) for numerical stability. The T-matrix propagates all amplitudes from one face to the other, which requires dividing by exponentially decaying evanescent factors for thick layers; this causes catastrophic numerical cancellation. The S-matrix avoids this: its blocks remain $O(1)$ regardless of layer thickness, making it unconditionally stable.
 
+This does not rule out using a T-matrix as an *intermediate* quantity, converted to an S-matrix immediately rather than cascaded directly — [Matrix exponential](matrixexp.md) uses exactly this route (propagating $\psi$ with $\exp(Ak_0d)$ instead of diagonalizing $PQ$), converting one thin slice at a time and recombining via the star product below so the per-slice exponent stays bounded.
+
 This document derives the S-matrix for (1) an interface between two layers, (2) a homogeneous propagation layer of finite thickness, and (3) the Redheffer star product used to cascade multiple S-matrices into a single device-level matrix.
 
 ---

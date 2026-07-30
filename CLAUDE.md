@@ -47,11 +47,12 @@ Model (structure + source)
                  └─ .solve() / LayerSolver.smatrix(op) ──► Block2x2  (full-stack S-matrix)
 ```
 
-`Solver.__init__` is the expensive step: it precomputes harmonics, the TVF, and
-solves the modal eigenproblem for every stack element (`LayerSolver.prepare`),
-caching the result as a `LayerOperator` per element. `Solver.run()` is cheap:
-pure Redheffer star-product composition of the cached operators via
-`LayerSolver.smatrix`, no eigendecomposition. Rebuild the `Solver` whenever the
+`Solver.__init__` is the expensive step (under the default `modesolver="eig"`):
+it precomputes harmonics, the TVF, and solves the modal eigenproblem for every
+stack element (`LayerSolver.prepare`), caching the result as a `LayerOperator`
+per element. `Solver.run()` is cheap: pure Redheffer star-product composition
+of the cached operators via `LayerSolver.smatrix`, no eigendecomposition.
+(`modesolver="matexp"` inverts this split — see Gotchas.) Rebuild the `Solver` whenever the
 pattern/geometry changes (already required, since `model.spec()` resolves the
 pattern in `__init__`); a `LayerOperator`'s `thickness` is read at `smatrix()`
 time, so thickness-only changes don't require rebuilding.
@@ -77,10 +78,12 @@ time, so thickness-only changes don't require rebuilding.
 | `smatrix.py` | `S_boundary`, `S_prop`, `S_layer`: per-interface/layer S-matrix builders |
 | `blockmatrix.py` | `Block` / `Block2x2`: structured operator algebra + Redheffer star product |
 | `convolution.py` | Fourier convolution matrix helpers |
-| `layersolver/base.py` | `LayerSolver` + `LayerOperator`: `.prepare(element)` solves the modal eigenproblem (expensive); `.smatrix(op)` assembles the S-matrix (cheap); `.solve()` = both; precomputes vacuum modes `W0`/`V0` |
+| `layersolver/base.py` | `LayerSolver`: `.prepare(element)` builds a `LayerOperator` (expensive: TVF/convolution/eigendecomp, unless `modesolver="matexp"` — see gotchas); `.smatrix(op)` delegates to `op.smatrix(background)` (cheap, unless `matexp`); `.solve()` = both; precomputes vacuum modes `W0`/`V0`/`background` |
+| `layersolver/operator.py` | `LayerOperator`: structural `Protocol` (`thickness`, `.smatrix()`, `.transfer()`), not one concrete type — matches the `Entry` Protocol pattern in `blockmatrix.py`. `ModalOperator` is the `(lam, W, V, thickness)` implementation used by `eigsolver`/`homogeneous_modes`. `Background` bundles `W0`/`V0`/`wvl`. |
 | `layersolver/homogeneous.py` | `homogeneous_modes`: closed-form modes (no eigensolver) |
-| `layersolver/isotropic.py` | `compute_isotropic`: builds patterned-layer eigenproblem matrices |
+| `layersolver/isotropic.py` | `compute_isotropic`: builds patterned-layer eigenproblem matrices (`P`, `Q` — shared by both modesolvers) |
 | `layersolver/eigsolver.py` | `eigsolver`: numerical eigendecomp with stable autograd gradient |
+| `layersolver/matexpsolver.py` | `TransferOperator`: the other `LayerOperator` implementation, for `modesolver="matexp"`. No eigendecomposition — slices the layer, exponentiates `A=[[0,P],[Q,0]]` per slice (`torch.linalg.matrix_exp`), converts to an S-matrix, recombines via `star_power` (`O(log n)` Redheffer star products). See `docs/matrixexp.md`. |
 | `tvf/tvf.py` | `TVF`: Tangent Vector Field for Li/FFF factorization |
 | `tvf/tvf_utils.py` | TVF field math: periodic gradients, Fourier loss, normalization |
 | `tvf/optimizers.py` | `make_optimizer`: Newton + other TVF direction-field optimizers |
@@ -109,11 +112,15 @@ time, so thickness-only changes don't require rebuilding.
   (`circular` ellipse or `rectangular` grid; set in `Config.nx/ny` + `Config.m/n`).
 - **Field vector**: `ψ = (Sx, Sy, Ux, Uy)` transverse components; mode matrices `W` (E) and
   `V` (H). For homogeneous layers `W=I` (implicit).
-- **Two interchangeable layer paths** (same return signature → drop-in for `S_layer`):
-  - `homogeneous_modes` — closed form, no eig, used for uniform layers/half-spaces.
-  - `eigsolver` — numerical eig for patterned layers; stable autograd variant default.
-  - Both are wrapped identically as a `LayerOperator(lam, W, V, thickness)` by
-    `LayerSolver.prepare()`; `thickness=None` marks a semi-infinite medium (boundary only).
+- **Two interchangeable patterned-layer paths**, selected by `Config.modesolver`:
+  - `"eig"` (default) — `compute_isotropic` → `eigsolver` → `ModalOperator(lam, W, V, thickness)`.
+  - `"matexp"` — same `compute_isotropic` `P`/`Q`, no eigendecomposition — `TransferOperator`
+    (see `layersolver/matexpsolver.py`, `docs/matrixexp.md`).
+  - `homogeneous_modes` (closed form, no eig) also produces a `ModalOperator`, for
+    `HomogeneousLayer`/`MediumSpec` regardless of `modesolver` (which only affects `_patterned`).
+  - `LayerOperator` itself is a structural `Protocol` (`operator.py`), not one dataclass — both
+    `ModalOperator` and `TransferOperator` satisfy it (`.smatrix()`, `.transfer()`, `thickness`).
+    `thickness=None` marks a semi-infinite medium (boundary only).
 - **S-matrix composition**: Redheffer star product `Block2x2.star()`. **Not matrix multiply.**
   Associative, not commutative. Convention: `S11/S22` = reflection, `S12/S21` = transmission.
 - **TVF / FFF**: Tangent Vector Field gives the anisotropic Fourier-space factorization of
@@ -157,8 +164,14 @@ time, so thickness-only changes don't require rebuilding.
   isotropic/anisotropic is unsupported (`layer.py:45–53`).
 - Reciprocal lattice uses an **explicit 2D cross-product formula** (not `linalg.solve`) — keep
   consistent if editing lattice math (commit `735639b`).
-- Only `modesolver="eig"` is implemented; `matrixexp.md` path is unbuilt (`config.py:114–117`).
-- GPU eigendecomposition is a known perf bottleneck (synchronizes CPU↔GPU) [verify].
+- Both `modesolver="eig"` and `"matexp"` are implemented (`docs/matrixexp.md`). Under `"matexp"`
+  the `Solver.__init__`-expensive / `run()`-cheap split **inverts**: `prepare()` skips the
+  eigendecomposition (cheap), and the sliced `matrix_exp` moves into `smatrix()`/`run()` instead,
+  since it depends on `thickness` and must stay responsive to
+  `dataclasses.replace(op, thickness=...)`.
+- GPU eigendecomposition is a known perf bottleneck (synchronizes CPU↔GPU) [verify] —
+  `modesolver="matexp"` avoids it entirely (no `eig` call), at the cost of the slicing overhead
+  above and ~4x the dense memory per patterned layer (`4Nh×4Nh` system matrix vs `2Nh×2Nh` for `Ω²`).
 - Historically bug-prone areas: sign conventions, TVF scaling, homogeneous layer shapes.
 
 ---
@@ -174,4 +187,4 @@ time, so thickness-only changes don't require rebuilding.
 | `homogeneous.md` | Closed-form modes; `λ²=kx²+ky²−ε`; Lorentzian sqrt regularization; grazing incidence |
 | `smatrix.md` | S- vs T-matrix (stability rationale); boundary/layer/Redheffer-star derivations; impl notes |
 | `blockmatrix.md` | `Block`/`Block2x2` system (SCALAR/DIAG/DENSE); memory savings; Schur-complement inverse |
-| `matrixexp.md` | **Empty placeholder** — alternative solver not implemented |
+| `matrixexp.md` | Matrix-exponential patterned-layer solver (`modesolver="matexp"`) — system matrix, T→S conversion, slicing for stability, cost-model inversion |

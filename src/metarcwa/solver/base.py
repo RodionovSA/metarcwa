@@ -13,7 +13,7 @@ pre-computed (:func:`build_layersolver`), and every stack element's modal
 eigenproblem is solved once via :meth:`LayerSolver.prepare`. The result is a
 frozen :class:`PreparedStack` snapshot. :func:`run` is then genuinely
 cheap: pure Redheffer star-product composition of the precomputed
-:class:`~metarcwa.solver.layersolver.base.LayerOperator` objects, with no
+:class:`~metarcwa.solver.layersolver.operator.LayerOperator` objects, with no
 TVF, convolution, or eigendecomposition work. :func:`run` keeps only the
 reflection (``S11``) and transmission (``S21``) blocks a single-side (left)
 excitation needs, in a :class:`ModalSolution` that also retains the
@@ -52,7 +52,8 @@ from dataclasses import dataclass, replace
 import torch
 
 from metarcwa.model.base import Model, ModelSpec
-from metarcwa.solver.layersolver.base import LayerSolver, LayerOperator
+from metarcwa.solver.layersolver.base import LayerSolver
+from metarcwa.solver.layersolver.operator import LayerOperator
 from metarcwa.solver.tvf import TVF
 from metarcwa.solver.config import Config
 from metarcwa.solver.harmonics import compute_kxy, harmonic_index_map
@@ -242,7 +243,7 @@ class ModalSolution:
     with a handle back to the :class:`PreparedStack` they were assembled from.
     That handle is what lets downstream code reach each element's modes
     (``W``/``V``/``lam`` on every
-    :class:`~metarcwa.solver.layersolver.base.LayerOperator` in
+    :class:`~metarcwa.solver.layersolver.operator.LayerOperator` in
     ``prepared.ops``) and the harmonic context (``kx``/``ky``/wavelength on
     ``prepared.layersolver``) without re-solving anything.
 
@@ -272,7 +273,7 @@ class ModalSolution:
         the incident left-side amplitude to the transmitted amplitude.
     prepared : PreparedStack
         The snapshot the blocks were assembled from — carries the per-element
-        :class:`~metarcwa.solver.layersolver.base.LayerOperator` modes and
+        :class:`~metarcwa.solver.layersolver.operator.LayerOperator` modes and
         the :class:`LayerSolver` context. Held by reference, not copied.
     """
     S11: Entry
@@ -357,7 +358,7 @@ class Solver:
 
     Holds a fully-resolved model snapshot, a pre-initialised
     :class:`LayerSolver`, and the precomputed
-    :class:`~metarcwa.solver.layersolver.base.LayerOperator` for every stack
+    :class:`~metarcwa.solver.layersolver.operator.LayerOperator` for every stack
     element (incidence boundary, each finite layer, transmission boundary).
     Constructing a ``Solver`` is the expensive step (device transfer,
     harmonic pre-computation, TVF setup, and one modal eigensolve per

@@ -10,7 +10,7 @@ factorization:
   optimizer: newton
   steps: 1
   alpha: 1.0
-  beta: 0.05
-  gamma: 0.05
+  beta: 0.005
+  gamma: 0.0
 modesolver: eig
 eigsolver_stable: true

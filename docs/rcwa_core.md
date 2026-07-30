@@ -285,7 +285,7 @@ $$
 
 The matrix $P$ is independent of the TVF correction because it originates solely from the curl-$\mathbf{E}$ equations, where $\varepsilon$ enters only through $[[\varepsilon]]^{-1}$ (the inverse Toeplitz operator) and not through the boundary-orientation tensor. The TVF correction appears exclusively in $Q$, which is built from the curl-$\mathbf{H}$ equations and carries the anisotropic $\mathbf{D}$–$\mathbf{E}$ factorization. The construction of $T_x(x,y)$ and $T_y(x,y)$ and the resulting Toeplitz matrices are described in [TVF](tvf.md).
 
-There are two main approaches to solving Eqs. (37) and (38) — via the eigenvalue decomposition of $PQ$ (see [Eigenvalue problem](eigenproblem.md)) or via the matrix exponential of the full $2N_h \times 2N_h$ system (see [Matrix exponential](matrixexp.md)). Regardless of the approach, the combined transverse field vector used for S-matrix assembly (see [S-matrix algebra](smatrix.md)) is $\psi(z)$, defined as:
+There are two main approaches to solving Eqs. (37) and (38) — via the eigenvalue decomposition of $PQ$ (see [Eigenvalue problem](eigenproblem.md)) or via the matrix exponential of the full $4N_h \times 4N_h$ system (see [Matrix exponential](matrixexp.md)). Regardless of the approach, the combined transverse field vector used for S-matrix assembly (see [S-matrix algebra](smatrix.md)) is $\psi(z)$, defined as:
 
 $$
 \begin{align}
