@@ -215,11 +215,25 @@ class Config:
     matexp_max_exponent : float or None
         Per-slice exponent budget ``max(k0*d*|lam|)`` used to estimate the
         automatic slice count. ``None`` (default) resolves to ``8.0`` for
-        ``complex128`` (``dtype=torch.float64``, retained relative accuracy
-        ``~ machine_eps * exp(2*8) ~ 2e-9``) or ``3.0`` for ``complex64``
-        (``dtype=torch.float32``, ``~ 5e-5``). Lower is more conservative
-        (more slices, more star products); ignored when
-        ``matexp_slices`` is set or ``matexp_slicing=False``.
+        ``complex128`` (``dtype=torch.float64``) or ``3.0`` for
+        ``complex64`` (``dtype=torch.float32``). Lower is more conservative
+        (more slices, more star products); ignored when ``matexp_slices``
+        is set or ``matexp_slicing=False``. This budget only bounds the
+        ``matrix_exp`` step's own error — it does *not* bound the accuracy
+        of the whole ``"matexp"`` solve. The dominant ``complex64`` error
+        source in practice is a different mechanism: a fictitious
+        vacuum-embedded sub-slab (an artifact of slicing, not the physical
+        layer) can sit on a sharp near-pole of its own S-matrix at some
+        wavelengths, where the Redheffer star product's internal solve is
+        ill-conditioned (``cond > 1e5``) independent of ``matexp_slices`` —
+        costing several percent relative error at ``complex64`` precision
+        even for a well-chosen slice count (see ``docs/matrixexp.md``
+        "Accuracy and conditioning"; :func:`~metarcwa.solver.layersolver.matexpsolver.slice_count`
+        mitigates this by nudging the automatic estimate off the
+        resonance-prone dyadic squaring ladder, and :func:`~metarcwa.solver.layersolver.matexpsolver.star_power`
+        warns if it's hit anyway). Prefer ``dtype=torch.float64`` for
+        ``"matexp"`` whenever accuracy matters more than the (GPU- and
+        dtype-dependent) speed advantage over ``"eig"``.
     """
 
     dtype:                torch.dtype         = torch.float32

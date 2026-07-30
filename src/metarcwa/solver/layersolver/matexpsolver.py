@@ -164,6 +164,29 @@ def transfer_to_smatrix(T: Block2x2, background: Background) -> Block2x2:
     return Block2x2(M.c, M.d, M.a, M.b)
 
 
+#: Resonance-guard magnitude threshold for an intermediate star_power
+#: S-matrix, keyed by the *complex* dtype of its leaves. A lossless slab's
+#: S-matrix entries are physically bounded (~O(1), reaching a few tens even
+#: near a genuine sharp resonance -- see docs/matrixexp.md). Anything past
+#: this is either a genuine near-pole under-resolved by too few slices, or
+#: (see slice_count's docstring) a fictitious vacuum-embedded sub-slab
+#: resonance hit by the squaring ladder; either way, complex64 has already
+#: lost several percent of relative accuracy by this point, so warn while
+#: complex128 still has comfortable headroom to be trustworthy.
+_RESONANCE_GUARD_MAGNITUDE = {
+    torch.complex64:  50.0,
+    torch.complex128: 1e4,
+}
+
+
+def _leaf_dtype(entry) -> torch.dtype:
+    """Dtype of a Block2x2/Block tree's first leaf (descends via `.a`)."""
+    node = entry
+    while hasattr(node, "a"):
+        node = node.a
+    return node.data.dtype
+
+
 def star_power(S: Block2x2, n: int) -> Block2x2:
     """Compose ``n`` copies of the identical S-matrix ``S`` via the Redheffer
     star product, using repeated squaring (``O(log n)`` star products instead
@@ -172,6 +195,18 @@ def star_power(S: Block2x2, n: int) -> Block2x2:
     Does *not* seed from ``Block2x2.star_identity()`` — that returns SCALAR
     ``Block`` leaves, which cannot compose with ``S``'s (depth-2, DENSE-leaf)
     structure. Instead accumulates from the first set bit of ``n``.
+
+    Resonance guard: every squaring/accumulation step is cheap to inspect
+    (its leaves are already DENSE, so ``to_dense()`` is a concatenation, not
+    a promotion) — if an intermediate S-matrix's largest-magnitude entry
+    exceeds :data:`_RESONANCE_GUARD_MAGNITUDE` for the working dtype, this
+    warns once. This is a heuristic, not a certificate: it reliably catches
+    gross blow-ups (too few slices for the exponent budget) but a resonance
+    that is narrow relative to the accumulated numerical error can still
+    corrupt the result by a few percent without ever producing an
+    out-of-range magnitude (see ``docs/matrixexp.md`` "Accuracy and
+    conditioning"). ``slice_count``'s odd-``n`` nudge is the primary
+    mitigation; this guard is the backstop for whatever it misses.
 
     Parameters
     ----------
@@ -182,14 +217,43 @@ def star_power(S: Block2x2, n: int) -> Block2x2:
     """
     if n < 1:
         raise ValueError(f"n must be >= 1, got {n}")
+
+    threshold = _RESONANCE_GUARD_MAGNITUDE.get(
+        _leaf_dtype(S), _RESONANCE_GUARD_MAGNITUDE[torch.complex64],
+    )
+    warned = False
+
+    def _check(block: Block2x2, label: str) -> None:
+        nonlocal warned
+        if warned:
+            return
+        mag = float(block.to_dense().detach().abs().amax())
+        if mag > threshold:
+            warned = True
+            warnings.warn(
+                f"star_power: intermediate S-matrix magnitude {mag:.3g} at "
+                f"{label} exceeds the resonance guard ({threshold:.3g} for "
+                f"{_leaf_dtype(S)}). This usually means a fictitious "
+                "vacuum-embedded matexp sub-slab hit a spurious near-pole, "
+                "or the layer is under-sliced for the accuracy budget; "
+                "either way, accuracy at this wavelength/geometry is "
+                "suspect. Try a different matexp_slices, or "
+                "dtype=torch.float64 (see docs/matrixexp.md 'Accuracy and "
+                "conditioning').",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+
     result = None
     base = S
     while n:
         if n & 1:
             result = base if result is None else result.star(base)
+            _check(result, "an accumulation step")
         n >>= 1
         if n:
             base = base.star(base)
+            _check(base, "a squaring step")
     return result
 
 
@@ -213,8 +277,27 @@ def slice_count(lam_bound: torch.Tensor, k0: torch.Tensor, d: torch.Tensor,
 
     Resolution order: ``config.matexp_slicing=False`` -> ``1`` (warns if the
     exponent budget is exceeded); explicit ``config.matexp_slices`` -> that
-    value; otherwise an automatic estimate from ``lam_bound``, clamped to
-    ``config.matexp_max_slices`` (warns if clamped).
+    value; otherwise an automatic estimate from ``lam_bound``, nudged off the
+    dyadic ladder (see below), clamped to ``config.matexp_max_slices`` (warns
+    if clamped).
+
+    Off-the-ladder nudge: :func:`star_power` composes ``n`` identical slices
+    by repeated squaring, so its intermediate thicknesses are ``(d/n)*2^k``
+    for every ``k`` visited on the way to ``n``. When ``n`` is even, several
+    of those land on exact dyadic fractions of ``d`` (e.g. ``d/2``, ``d/4``,
+    ``d/8``, ...); a fictitious vacuum-embedded sub-slab at exactly one of
+    those thicknesses can sit on (or very near) a sharp, wavelength-dependent
+    resonance of its own, unrelated to the physical layer, where the
+    Redheffer star product's ``(I - S22 S11)`` solve has condition number
+    ``>1e5`` regardless of ``n`` — costing several percent relative error in
+    ``complex64`` even though ``matrix_exp`` itself is perfectly well-scaled
+    there (see ``docs/matrixexp.md`` "Accuracy and conditioning"). Odd ``n``
+    can never revisit an exact dyadic fraction of ``d`` for ``n>1``
+    (``2^k/n`` is dyadic only if ``n`` divides ``2^k``, impossible for odd
+    ``n>1``), so the automatic estimate is bumped to the next odd integer.
+    This is a cheap, order-preserving mitigation, not a proof that no
+    resonance is ever hit — :func:`star_power` also warns if an intermediate
+    S-matrix magnitude suggests one was.
 
     Parameters
     ----------
@@ -252,6 +335,8 @@ def slice_count(lam_bound: torch.Tensor, k0: torch.Tensor, d: torch.Tensor,
         return max(1, int(config.matexp_slices))
 
     n_est = max(1, math.ceil(max_exponent / budget))
+    if n_est % 2 == 0:
+        n_est += 1   # off the dyadic squaring ladder -- see docstring above
     if n_est > config.matexp_max_slices:
         warnings.warn(
             f"matexp auto slice-count estimate ({n_est}) exceeds "

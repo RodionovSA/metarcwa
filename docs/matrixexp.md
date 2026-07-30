@@ -97,11 +97,52 @@ The default budget is $8.0$ for `complex128` ($\varepsilon_\text{rel}\sim2\times
 
 ---
 
+## Accuracy and conditioning
+
+The exponent budget above bounds `matrix_exp`'s *own* error. It does not bound the error of the whole `"matexp"` solve — measured on `examples/compare_solvers.ipynb` (an ellipse-patterned metasurface, $m=n=10$, $N_h=317$, 200 nm layer, $n=3.8$ in air, 300–900 nm sweep), `float32` `matexp` with the (pre-fix) automatic slice count reached $\max|\Delta R|=7\times10^{-3}$ against an `eig`/`float64` reference — 20× worse than `eig`/`float32`'s own $3\times10^{-4}$ — at specific, isolated wavelengths, and the error at a given wavelength could appear or vanish depending on `matexp_slices` alone, with no change to the physical geometry.
+
+**Mechanism.** Every slice's S-matrix is built by embedding a *thin, fictitious* sub-slab of the patterned layer's material in the vacuum reference (`transfer_to_smatrix`, above) — a real physical construct only for the whole layer, not for an arbitrary thickness $d/n$ of it. That fictitious sub-slab has its own S-matrix poles: harmonics evanescent in the vacuum reference but propagating inside a high-index sub-slab produce a sharp, wavelength-dependent near-resonance at specific sub-slab thicknesses. On the benchmark structure at 560 nm, scanning sub-slab thickness in isolation (in `float64`, so the numbers below are exact, not roundoff) shows a spike:
+
+| $t$ (nm) | 20 | 22 | 23 | 24 | **25** | 26 | 27 | 28 | 30 |
+|---|---|---|---|---|---|---|---|---|---|
+| $\max|S_\text{slice}|$ | 1.6 | 2.0 | 2.5 | 3.8 | **28** | 3.9 | 2.0 | 1.4 | 1.0 |
+
+At $t=25\,\text{nm}=d/8$, the Redheffer star product's internal solve — $(I-S_{22}^BS_{11}^A)$ in `Block2x2.star` — has condition number $\sim2\times10^5$, independent of $n$ or `dtype`. At `complex128` ($\varepsilon_\text{machine}\sim2\times10^{-16}$) that costs $\sim5\times10^{-11}$ relative error, negligible; at `complex64` ($\varepsilon_\text{machine}\sim1.2\times10^{-7}$) it costs a few **percent**.
+
+**Why it appears/disappears with $n$.** `star_power` composes $n$ slices by repeated squaring, so its intermediate thicknesses are exactly $(d/n)\cdot2^k$ for the $k$ visited on the way to $n$. For any even $n$, several of those are exact dyadic fractions of $d$ (e.g. $n=8,16,32,\dots$ all pass through $d/8=25\,\text{nm}$ on this structure); an odd $n>1$ never can, since $2^k/n$ is dyadic only if $n$ divides $2^k$, impossible for odd $n>1$. Measured error in $R$ at 560 nm vs. $n$ (`float32`; `float64` stays at $\lesssim10^{-11}$ for every $n$ shown, confirming the mechanism is precision-limited, not algorithmic):
+
+| $n$ | 1 | 2 | 3 | 4 | 5 | 8 | 11 | 16 | 32 | 48 | 64 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| err | 2e-1 | 4e-2 | 3e-5 | 6e-4 | 1e-6 | 1e-1 | 3e-5 | **1.2** | 1e-1 | 4e-5 | 4e-2 |
+
+Every power of two $\geq8$ is bad; every odd $n$ shown lands at `eig`/`float32` parity ($\sim10^{-5}$). ($n=1$ fails for the *modeled* reason instead — an unsliced exponent this large simply overflows.)
+
+**Mitigations, applied by default:**
+
+- `slice_count` nudges its automatic estimate to the next odd integer whenever it lands even, keeping the squaring ladder off exact dyadic fractions of $d$. This is the primary fix — on the benchmark it drops full-spectrum $\max|\Delta R|$ from $7\times10^{-3}$ to $1.4\times10^{-3}$, back in `eig`/`float32`'s own range.
+- `star_power` checks each intermediate S-matrix's largest-magnitude entry against a `dtype`-aware threshold ($50$ for `complex64`, $10^4$ for `complex128`) and raises a `RuntimeWarning` if exceeded. This is a **heuristic backstop, not a certificate**: it reliably catches gross under-slicing (the $n=1$ case above), but a resonance narrow enough relative to the accumulated error can corrupt the result by a few percent without the magnitude itself leaving a physically plausible range — an odd `n` chosen right next to a resonance could still, in principle, be unlucky. If the warning fires, try a different `matexp_slices` or switch to `dtype=torch.float64`.
+- `Block2x2.star` itself now solves rather than inverts (`(I-P)^{-1}@rhs` via `Entry.solve`, never a materialized `(I-P)^{-1}`) — repo convention, and the better-conditioned of the two equivalent formulations near a near-pole; it also benefits every other star product in the solver, not just this path.
+
+**Not fixed by any of the above** (future work): the fictitious-slab resonance itself, which is an artifact of referencing every slice to *vacuum* regardless of the layer's actual index. Referencing each slice to a "gap medium" close to the layer's own mean permittivity instead — at the cost of two extra boundary S-matrices at the layer's outer faces — would shrink the index contrast that creates the poles in the first place, addressing the mechanism rather than dodging it. Not implemented.
+
+---
+
 ## Cost model
 
 Unlike the eig path, where `LayerSolver.prepare()` is the expensive step (eigendecomposition) and `smatrix()` is cheap (pure algebra), the matexp path **inverts** this: `prepare()` only needs $P$, $Q$ (no eigendecomposition — the cheap half of `compute_isotropic` + `eigsolver`), and the matrix exponential moves into `smatrix()`, because it depends on `thickness` and must stay responsive to `dataclasses.replace(op, thickness=...)` — computing it in `prepare()` would silently break the documented late-binding of thickness (a thickness-only sweep or optimization step must not require re-preparing).
 
 Memory: the system matrix $A$ is $4N_h\times4N_h$ densified once per slice-exponentiation, versus $2N_h\times2N_h$ for $\Omega^2=PQ$ on the eig path — roughly $4\times$ the dense footprint per patterned layer.
+
+**`float64` erodes matexp's GPU speed advantage — a hardware effect, not an algorithmic one.** Consumer GPUs (measured: RTX 4090) run `complex128` GEMM/`matrix_exp` at roughly $1/40$ their `complex64` throughput (`torch.linalg.matrix_exp` measured $36\times$ slower, plain `X@X` $42\times$), because `float64` isn't a first-class datapath on that silicon. `torch.linalg.eig`, by contrast, is latency/reduction-bound (`geev`), not GEMM-bound, so it only slows $\sim4\times$ going to `complex128`. The part matexp *removes* (eigendecomposition) is the part least sensitive to `dtype`; the part it *adds* (dense `matrix_exp`) is the part most sensitive. Net effect, same 20-wavelength benchmark structure as above, split by `Solver.__init__`/`run()`:
+
+| dtype | solver | init | run | total | slices |
+|---|---|---|---|---|---|
+| `float32` | eig | 3.24 s | 0.13 s | 3.37 s | – |
+| `float32` | matexp | 0.77 s | 0.29 s | **1.06 s** | 32 |
+| `float64` | eig | 6.57 s | 1.74 s | 8.30 s | – |
+| `float64` | matexp | 0.80 s | 6.21 s | **7.01 s** | 12 |
+
+matexp's $3\times$ `float32` advantage nearly vanishes at `float64` on this GPU (the larger `float64` exponent budget, 8.0 vs 3.0, needing fewer slices — 12 vs 32 — is the only reason it doesn't reverse outright). On a datacenter GPU with a 1:2 `float64:float32` throughput ratio (A100/H100) rather than a consumer card's $\sim$1:40–1:64, matexp should keep its advantage at `float64` too — this is a property of the deployment GPU, not of the algorithm.
 
 ---
 
@@ -143,6 +184,8 @@ def star_power(S, n):                  # S composed with itself n times, O(log n
 
 `star_power` deliberately does **not** seed from `Block2x2.star_identity()`: that returns `SCALAR` leaves, which cannot compose with `S`'s `DENSE`-leaf structure via `.star()`. It accumulates from the first set bit of `n` instead.
 
+The snippet above omits two pieces added for the reasons in "Accuracy and conditioning": `slice_count` nudges its automatic `n` to the next odd integer, and `star_power` checks each intermediate's magnitude against a `dtype`-aware threshold, warning if a fictitious-slab resonance looks like it was hit.
+
 `TransferOperator` (the `LayerOperator` implementation for this path — `LayerOperator` itself is a structural contract, not one concrete type, satisfied by both `ModalOperator` (the eig path) and `TransferOperator`) carries `P`, `Q`, the harmonic count, a detached `lam_bound`, `Config`, and `thickness`; its `smatrix()` runs the slice → exponentiate → convert → `star_power` pipeline above, and its `transfer(background, z)` — the propagator $\psi(0)\to\psi(z)$ needed for interior-field evaluation — is `transfer_matrix` applied directly with no slicing (intended for single-depth evaluation, not cascading; large $z$ faces the same conditioning limits as an unsliced `smatrix()`).
 
 ---
@@ -164,7 +207,7 @@ The premise this solver exists for — avoiding `torch.linalg.eig`'s CPU↔GPU s
 ## Known limitations
 
 - **Anisotropic media are unsupported**, matching `eigsolver`'s current coverage — both solvers dispatch from the same `compute_isotropic` path.
-- **Accuracy is bounded** by $\varepsilon_\text{machine}\cdot e^{2\cdot\text{budget}}$; `float32` is materially worse here than on the eig path, where accuracy is set by the eigendecomposition's own conditioning rather than an explicit, user-tunable exponent budget. Measured at ~$10^{-4}$ on a real structure (above) — fine for design work, but prefer `float64` for tight-tolerance validation.
+- **`float32` accuracy is dominated by fictitious-slab resonance conditioning, not the exponent budget** — see "Accuracy and conditioning" above. The default mitigations (odd auto slice count, `star_power`'s magnitude guard) bring it back to `eig`/`float32`'s own ballpark ($\sim10^{-4}$–$10^{-3}$) on the structures measured so far, but the guard is a heuristic, not a certificate; prefer `float64` for tight-tolerance validation, keeping in mind its GPU cost (see "Cost model" above).
 - **`Solver.run()` is no longer cheap** under `modesolver="matexp"` — a thickness sweep or a single-layer optimization step now pays one (sliced) matrix exponential per evaluation, instead of reusing a cached eigendecomposition and only re-cascading star products.
 - **Peak memory is higher** (~2.3× measured above) — the $4N_h\times4N_h$ system matrix, densified once per slice-exponentiation, dominates.
 - **`transfer()` is not yet wired into `Observables`** — the primitive exists and is cross-validated against the eig path's own `transfer()` (`tests/solver/test_matexpsolver.py::TestFieldParity`), but interior-field reconstruction itself is future work (`FieldSolution` in `solver/base.py`, currently unimplemented).

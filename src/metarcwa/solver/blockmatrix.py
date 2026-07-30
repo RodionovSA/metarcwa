@@ -368,14 +368,30 @@ class Block2x2:
         order must be preserved. Associative, so fold direction is free.
         Inverts only (I - R1 R2), never an S-matrix.
         Convention: a=S11, b=S12, c=S21, d=S22 (reflection on the diagonal).
+
+        Solves rather than inverts (repo convention, ``.solve(rhs)`` over
+        ``.inv() @ rhs``): the textbook form needs ``self.b @ (I-P)^-1`` and
+        ``o.c @ (I-Q)^-1``, right-multiplications by an inverse that
+        ``Entry.solve`` (a left-solve) can't express directly. Instead solve
+        for what those right-multiplications are actually used for —
+        ``(I-P)^-1 @ o.a``, ``(I-P)^-1 @ o.b``, ``(I-Q)^-1 @ self.c``,
+        ``(I-Q)^-1 @ (self.d @ o.b)`` — then left-multiply by ``self.b`` /
+        ``o.c`` afterward; algebraically identical, but never materializes
+        ``(I-P)^-1``/``(I-Q)^-1`` as an explicit operator, which is the more
+        ill-conditioned quantity of the two near a Redheffer near-pole (see
+        ``docs/matrixexp.md`` "Accuracy and conditioning").
         """
         P = o.a @ self.d                       # S11^B S22^A
         Q = self.d @ o.a                       # S22^A S11^B
-        D = self.b @ (P.eye_like() - P).inv()  # S12^A (I - S11^B S22^A)^-1
-        F = o.c   @ (Q.eye_like() - Q).inv()   # S21^B (I - S22^A S11^B)^-1
+        IP = P.eye_like() - P                  # I - S11^B S22^A
+        IQ = Q.eye_like() - Q                  # I - S22^A S11^B
+        Za = IP.solve(o.a)                     # (I - S11^B S22^A)^-1 S11^B
+        Zb = IP.solve(o.b)                     # (I - S11^B S22^A)^-1 S12^B
+        Wc = IQ.solve(self.c)                  # (I - S22^A S11^B)^-1 S21^A
+        Wdb = IQ.solve(self.d @ o.b)           # (I - S22^A S11^B)^-1 S22^A S12^B
         return Block2x2(
-            self.a + D @ o.a @ self.c,  D @ o.b,
-            F @ self.c,                 o.d + F @ self.d @ o.b,
+            self.a + self.b @ Za @ self.c,  self.b @ Zb,
+            o.c @ Wc,                        o.d + o.c @ Wdb,
         )
 
     # --- neutral elements -------------------------------------------------
