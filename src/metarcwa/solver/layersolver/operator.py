@@ -24,12 +24,13 @@ Both satisfy the same two-method contract:
   ``smatrix(background, left=True)`` — assemble this element's S-matrix
       against the shared vacuum background.
   ``transfer(background, z)`` — the propagator mapping the transverse field
-      vector psi(0) to psi(z) at depth z inside the element, in the vacuum
-      mode-amplitude basis. This is the basis-free primitive interior-field
-      evaluation needs; both families implement it natively (modal: the gap-
-      matrix similarity transform; matexp: the exponential directly, with no
-      eigendecomposition at all), so field visualization can be built against
-      this shared interface rather than against ``lam``/``W``/``V`` directly.
+      vector psi(0) to psi(z) at depth z inside the element, in
+      ``background``'s mode-amplitude basis. This is the basis-free
+      primitive interior-field evaluation needs; both families implement it
+      natively (modal: the gap-matrix similarity transform; matexp: the
+      exponential directly, with no eigendecomposition at all), so field
+      visualization can be built against this shared interface rather than
+      against ``lam``/``W``/``V`` directly.
 
 ``LayerSolver.prepare()`` (expensive) returns one of these per stack element;
 ``LayerSolver.smatrix()`` (cheap) calls ``op.smatrix(background)`` — the
@@ -48,19 +49,20 @@ from metarcwa.solver.smatrix import S_boundary, S_layer
 
 @dataclass(frozen=True)
 class Background:
-    """The homogeneous (vacuum) reference the whole stack is embedded in.
+    """A homogeneous reference medium's mode matrices, bundled with ``wvl``.
 
-    Precomputed once by :class:`~metarcwa.solver.layersolver.base.LayerSolver`
-    and passed to every element's :meth:`LayerOperator.smatrix`/``transfer``
-    call — this is what makes those calls cheap: no per-element vacuum
-    recomputation.
+    Usually the stack's shared vacuum background, precomputed once by
+    :class:`~metarcwa.solver.layersolver.base.LayerSolver`. Also used for
+    the per-layer "gap medium" (``Config.matexp_gap``) that
+    :class:`~metarcwa.solver.layersolver.matexpsolver.TransferOperator`
+    references internally.
 
     Attributes
     ----------
     W0 : Block2x2
-        Vacuum E-mode matrix (identity).
+        E-mode matrix (identity for any isotropic homogeneous medium).
     V0 : Block2x2
-        Vacuum H-mode matrix.
+        H-mode matrix.
     wvl : torch.Tensor
         Free-space wavelengths, shape ``[N_wvl]``.
     """

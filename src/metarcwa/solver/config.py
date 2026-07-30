@@ -218,22 +218,23 @@ class Config:
         ``complex128`` (``dtype=torch.float64``) or ``3.0`` for
         ``complex64`` (``dtype=torch.float32``). Lower is more conservative
         (more slices, more star products); ignored when ``matexp_slices``
-        is set or ``matexp_slicing=False``. This budget only bounds the
-        ``matrix_exp`` step's own error — it does *not* bound the accuracy
-        of the whole ``"matexp"`` solve. The dominant ``complex64`` error
-        source in practice is a different mechanism: a fictitious
-        vacuum-embedded sub-slab (an artifact of slicing, not the physical
-        layer) can sit on a sharp near-pole of its own S-matrix at some
-        wavelengths, where the Redheffer star product's internal solve is
-        ill-conditioned (``cond > 1e5``) independent of ``matexp_slices`` —
-        costing several percent relative error at ``complex64`` precision
-        even for a well-chosen slice count (see ``docs/matrixexp.md``
-        "Accuracy and conditioning"; :func:`~metarcwa.solver.layersolver.matexpsolver.slice_count`
-        mitigates this by nudging the automatic estimate off the
-        resonance-prone dyadic squaring ladder, and :func:`~metarcwa.solver.layersolver.matexpsolver.star_power`
-        warns if it's hit anyway). Prefer ``dtype=torch.float64`` for
-        ``"matexp"`` whenever accuracy matters more than the (GPU- and
-        dtype-dependent) speed advantage over ``"eig"``.
+        is set or ``matexp_slicing=False``. Bounds ``matrix_exp``'s own
+        error only, not the accuracy of the whole ``"matexp"`` solve — see
+        ``matexp_gap`` and ``docs/matrixexp.md`` "Accuracy and conditioning".
+    matexp_gap : str
+        Homogeneous "gap medium" every ``"matexp"`` slice's S-matrix is
+        referenced to before recombining and transitioning back to the
+        stack background. One of:
+
+        - ``"mean"`` (default) — the layer's spatial-mean permittivity.
+        - ``"max"`` — the componentwise max over the layer's permittivity
+          grid.
+        - ``"vacuum"`` — plain vacuum, the behavior before this option
+          existed.
+
+        Exact for any choice; only conditioning changes, not the answer.
+        Ignored when ``modesolver != "matexp"``. See ``docs/matrixexp.md``
+        "Accuracy and conditioning".
     """
 
     dtype:                torch.dtype         = torch.float32
@@ -252,8 +253,10 @@ class Config:
     matexp_slices:        int | None          = None
     matexp_max_slices:    int                 = 512
     matexp_max_exponent:  float | None        = None
+    matexp_gap:           str                 = "mean"        # "mean" | "max" | "vacuum"
 
     _MODESOLVERS = ("eig", "matexp")
+    _MATEXP_GAP_MODES = ("mean", "max", "vacuum")
 
     def __post_init__(self) -> None:
         if not isinstance(self.device, torch.device):
@@ -263,6 +266,12 @@ class Config:
             raise ValueError(
                 f"modesolver={self.modesolver!r} not supported; must be one "
                 f"of {Config._MODESOLVERS}."
+            )
+
+        if self.matexp_gap not in Config._MATEXP_GAP_MODES:
+            raise ValueError(
+                f"matexp_gap={self.matexp_gap!r} not supported; must be one "
+                f"of {Config._MATEXP_GAP_MODES}."
             )
 
         # Harmonic truncation vs. real-space grid: the convolution matrix
@@ -313,6 +322,7 @@ class Config:
             "matexp_slices": self.matexp_slices,
             "matexp_max_slices": self.matexp_max_slices,
             "matexp_max_exponent": self.matexp_max_exponent,
+            "matexp_gap": self.matexp_gap,
         }
 
     @classmethod

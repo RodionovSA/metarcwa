@@ -88,6 +88,26 @@ def _vacuum_background(kx, ky, wvl, device):
     return Background(V0.eye_like(), V0, wvl)
 
 
+def _gap_background(eps_grid, kx, ky, wvl, device):
+    """Mean-permittivity gap-medium Background, mirroring the "mean" branch
+    of LayerSolver._patterned's matexp gap construction (kept local here so
+    this file doesn't reach into solver internals -- see _eps_grid)."""
+    eps_gap = eps_grid.mean(dim=(-2, -1))
+    _, Vg = homogeneous_modes(eps_gap, kx, ky)
+    return Background(Vg.eye_like(), Vg, wvl)
+
+
+def _eps_grid_patterned(eps_solid: complex, eps_void: complex,
+                        pattern: torch.Tensor, device: str) -> torch.Tensor:
+    """Permittivity grid genuinely patterned in *value* (unlike _eps_grid,
+    which is uniform-in-value but pattern-shaped) -- for tests that need
+    real spatial contrast, e.g. exercising the fictitious-sub-slab
+    resonance mechanism gap embedding is meant to shrink."""
+    solid = torch.full((1,), eps_solid, dtype=torch.complex128, device=device)
+    void = torch.full((1,), eps_void, dtype=torch.complex128, device=device)
+    return solid[..., None, None] * pattern[None, ...] + void[..., None, None] * (1 - pattern[None, ...])
+
+
 def _lam_bound(kx, ky, eps_grid):
     return torch.sqrt((kx.abs() ** 2 + ky.abs() ** 2).amax() + eps_grid.abs().amax())
 
@@ -238,6 +258,11 @@ def test_config_rejects_unknown_modesolver():
         Config(modesolver="bogus")
 
 
+def test_config_rejects_unknown_matexp_gap():
+    with pytest.raises(ValueError):
+        Config(matexp_gap="bogus")
+
+
 # ---------------------------------------------------------------------------
 # ModalOperator / TransferOperator field parity
 # ---------------------------------------------------------------------------
@@ -261,13 +286,162 @@ class TestFieldParity:
         modal_op = ModalOperator(lam, W, V, thickness=d)
 
         cfg = Config(dtype=torch.float64)
-        transfer_op = TransferOperator(P, Q, Nh, _lam_bound(kx, ky, eps_grid), cfg, thickness=d)
+        gap_background = _gap_background(eps_grid, kx, ky, wvl, device)
+        transfer_op = TransferOperator(P, Q, Nh, _lam_bound(kx, ky, eps_grid), cfg,
+                                        gap_background=gap_background, thickness=d)
 
         z = torch.tensor([0.15], dtype=torch.float64, device=device)
         T_modal = modal_op.transfer(background, z)
         T_transfer = transfer_op.transfer(background, z)
 
         assert_close(T_modal.to_dense(Nh), T_transfer.to_dense(Nh), atol=1e-8, rtol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Gap-medium embedding (Config.matexp_gap): the sandwich in
+# TransferOperator.smatrix() references each slice to a per-layer gap
+# medium instead of plain vacuum, then transitions back to the stack's
+# vacuum background via two boundary S-matrices. This is exact for *any*
+# gap medium -- only conditioning changes, never the answer.
+# ---------------------------------------------------------------------------
+
+def _oblique_harmonic_context(device: str):
+    """A more oblique context than _harmonic_context: kx0/ky0 large enough
+    that some harmonics have kt^2 = kx^2+ky^2 > 1 -- i.e. evanescent in
+    vacuum -- which is the regime the fictitious-sub-slab resonance
+    mechanism needs (a harmonic evanescent in the reference medium but
+    propagating inside a high-index sub-slab). _harmonic_context's own
+    kx0=0.2/ky0=0.1 never reaches kt^2>1 with Nh_half=1, so it can't
+    reproduce the mechanism; this fixture is for tests that specifically
+    need to."""
+    a1 = torch.tensor([1.0, 0.0], dtype=torch.float64, device=device)
+    a2 = torch.tensor([0.0, 1.0], dtype=torch.float64, device=device)
+    kx0 = torch.tensor([0.8], dtype=torch.float64, device=device)
+    ky0 = torch.tensor([0.5], dtype=torch.float64, device=device)
+    m_flat, n_flat = harmonic_index_map(Nh_half, Nh_half, device=device)
+    wvl = torch.tensor([0.3], dtype=torch.float64, device=device)
+    kx, ky = compute_kxy(kx0, ky0, a1, a2, m_flat, n_flat, k0=2 * torch.pi / wvl)
+    Nh = m_flat.shape[0]
+    return kx, ky, m_flat, n_flat, wvl, Nh
+
+
+class TestGapMediumInvariance:
+    """The gap-medium sandwich is algebraically exact for any choice of
+    homogeneous gap medium -- the direct correctness proof underlying
+    Config.matexp_gap's whole premise (that the setting only affects
+    conditioning, never the answer)."""
+
+    def test_smatrix_independent_of_gap_choice(self, device):
+        kx, ky, m_flat, n_flat, wvl, Nh = _harmonic_context(device)
+        pattern = _checkerboard(device)
+        eps_grid = _eps_grid(2.5, pattern, device)
+        P, Q = compute_isotropic(eps_grid, m_flat, n_flat, kx, ky, tvf_fields=None)
+        background = _vacuum_background(kx, ky, wvl, device)
+        d = torch.tensor([0.05], dtype=torch.float64, device=device)   # thin, non-resonant
+        lam_bound = _lam_bound(kx, ky, eps_grid)
+        # matexp_slices fixed explicitly: slice_count depends only on
+        # (lam_bound, k0, thickness, config), none of which differ between
+        # the operators below, so all three already get the same n -- fixing
+        # it here just makes that shared-n precondition explicit/robust.
+        cfg = Config(dtype=torch.float64, modesolver="matexp", matexp_slices=3)
+
+        eps_arbitrary = torch.full((1,), 9.0, dtype=torch.complex128, device=device)
+        _, V_arb = homogeneous_modes(eps_arbitrary, kx, ky)
+        gaps = {
+            "vacuum": _vacuum_background(kx, ky, wvl, device),
+            "mean":   _gap_background(eps_grid, kx, ky, wvl, device),
+            "arbitrary (eps=9)": Background(V_arb.eye_like(), V_arb, wvl),
+        }
+
+        results = {
+            name: TransferOperator(P, Q, Nh, lam_bound, cfg, gap_background=gap,
+                                    thickness=d).smatrix(background).to_dense(Nh)
+            for name, gap in gaps.items()
+        }
+        ref_name, ref = next(iter(results.items()))
+        for name, S in list(results.items())[1:]:
+            assert_close(S, ref, atol=1e-9, rtol=1e-7,
+                         msg=f"gap={name!r} disagrees with gap={ref_name!r}")
+
+    def test_transfer_independent_of_gap_choice(self, device):
+        """TransferOperator.transfer() is a raw field-basis propagator with
+        no gap-medium embedding at all (unlike smatrix()) -- pin that it was
+        correctly left alone by this change (see matexpsolver.py module
+        docstring / TransferOperator.smatrix docstring)."""
+        kx, ky, m_flat, n_flat, wvl, Nh = _harmonic_context(device)
+        pattern = _checkerboard(device)
+        eps_grid = _eps_grid(2.5, pattern, device)
+        P, Q = compute_isotropic(eps_grid, m_flat, n_flat, kx, ky, tvf_fields=None)
+        background = _vacuum_background(kx, ky, wvl, device)
+        d = torch.tensor([0.3], dtype=torch.float64, device=device)
+        lam_bound = _lam_bound(kx, ky, eps_grid)
+        cfg = Config(dtype=torch.float64, modesolver="matexp")
+
+        op_vac = TransferOperator(P, Q, Nh, lam_bound, cfg,
+                                   gap_background=_vacuum_background(kx, ky, wvl, device),
+                                   thickness=d)
+        op_mean = TransferOperator(P, Q, Nh, lam_bound, cfg,
+                                    gap_background=_gap_background(eps_grid, kx, ky, wvl, device),
+                                    thickness=d)
+
+        z = torch.tensor([0.15], dtype=torch.float64, device=device)
+        assert_close(op_vac.transfer(background, z).to_dense(Nh),
+                     op_mean.transfer(background, z).to_dense(Nh),
+                     atol=1e-12, rtol=1e-10)
+
+
+class TestGapMediumMechanism:
+    """Regression for the reason Config.matexp_gap exists: on a high-contrast
+    structure with at least one harmonic evanescent in vacuum but
+    propagating inside the material (kt^2 > 1, see
+    _oblique_harmonic_context), vacuum-embedded sub-slabs develop a sharp
+    S-matrix resonance at some thickness; gap-embedded ones should not (or
+    much less so), since the gap medium's own kt^2 threshold sits above the
+    vacuum one."""
+
+    @pytest.mark.parametrize("gap_mode", ["mean", "max"])
+    def test_gap_embedding_suppresses_sub_slab_resonance(self, device, gap_mode):
+        kx, ky, m_flat, n_flat, wvl, Nh = _oblique_harmonic_context(device)
+        pattern = _checkerboard(device)
+        eps_grid = _eps_grid_patterned(12.0 + 0j, 1.0 + 0j, pattern, device)
+        P, Q = compute_isotropic(eps_grid, m_flat, n_flat, kx, ky, tvf_fields=None)
+        vacuum = _vacuum_background(kx, ky, wvl, device)
+        if gap_mode == "mean":
+            gap = _gap_background(eps_grid, kx, ky, wvl, device)
+        else:   # "max" -- componentwise max, mirrors LayerSolver._patterned
+            eps_gap = (eps_grid.real.amax(dim=(-2, -1))
+                       + 1j * eps_grid.imag.amax(dim=(-2, -1)))
+            _, Vg = homogeneous_modes(eps_gap, kx, ky)
+            gap = Background(Vg.eye_like(), Vg, wvl)
+
+        A = system_matrix(P, Q)
+        k0 = 2 * torch.pi / wvl
+        ts = torch.linspace(0.05, 50.0, 200, dtype=torch.float64, device=device)
+
+        def max_mag(background):
+            mags = []
+            for t in ts:
+                T = transfer_matrix(A, Nh, k0, t.reshape(1))
+                S = transfer_to_smatrix(T, background)
+                mags.append(float(S.to_dense().abs().max()))
+            return max(mags)
+
+        mag_vacuum = max_mag(vacuum)
+        mag_gap = max_mag(gap)
+
+        # Vacuum embedding must show the mechanism at all (else the test
+        # fixture itself isn't exercising it) ...
+        assert mag_vacuum > 10.0, (
+            f"expected a vacuum-embedded sub-slab resonance on this "
+            f"high-contrast fixture, got max|S|={mag_vacuum:.3g}; fixture "
+            "may no longer reach the evanescent-in-vacuum regime"
+        )
+        # ... and gap embedding (either mode) must suppress it, staying near
+        # the physically-bounded O(1) a lossless passive S-matrix should have.
+        assert mag_gap < 1.5, (
+            f"gap_mode={gap_mode!r} did not suppress the resonance: "
+            f"max|S|={mag_gap:.3g}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -299,8 +473,13 @@ class TestThickLayerStability:
         S_eig = ModalOperator(lam, W, V, thickness=d).smatrix(background)
 
         cfg = Config(dtype=torch.float64)   # matexp_slicing=True by default
+        # Real (mean-eps) gap medium here: eps_grid is uniform-in-value (see
+        # _eps_grid), so the gap exactly equals the layer -- gap embedding
+        # only makes this more accurate, not less; tolerances stay valid.
+        gap_background = _gap_background(eps_grid, kx, ky, wvl, device)
         S_matexp = TransferOperator(
-            P, Q, Nh, _lam_bound(kx, ky, eps_grid), cfg, thickness=d,
+            P, Q, Nh, _lam_bound(kx, ky, eps_grid), cfg,
+            gap_background=gap_background, thickness=d,
         ).smatrix(background)
 
         S_matexp_dense = S_matexp.to_dense(Nh)
@@ -326,11 +505,17 @@ class TestThickLayerStability:
         S_eig = ModalOperator(lam, W, V, thickness=d).smatrix(background).to_dense(Nh)
 
         cfg = Config(dtype=torch.float64, matexp_slicing=False)
+        # Deliberately vacuum here, not a real (mean-eps) gap: eps_grid is
+        # uniform-in-value (see _eps_grid), so a real gap would exactly equal
+        # the layer and transfer_to_smatrix would degenerate to pure
+        # propagation -- stable even unsliced, which would cancel the very
+        # reference/layer-mismatch instability this test exists to exercise.
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             try:
                 S_bad = TransferOperator(
-                    P, Q, Nh, _lam_bound(kx, ky, eps_grid), cfg, thickness=d,
+                    P, Q, Nh, _lam_bound(kx, ky, eps_grid), cfg,
+                    gap_background=background, thickness=d,
                 ).smatrix(background).to_dense(Nh)
             except torch._C._LinAlgError:
                 return   # a hard singular-matrix error is itself the failure
@@ -374,7 +559,13 @@ class TestGradients:
             op = ModalOperator(lam, W, V, thickness=d)
         elif modesolver == "matexp":
             cfg = Config(dtype=torch.float64, modesolver="matexp")
-            op = TransferOperator(P, Q, Nh, _lam_bound(kx, ky, eps_grid), cfg, thickness=d)
+            # Real (differentiable) gap medium: this is the path that must
+            # exercise eps_gap's gradient contribution (analytically it
+            # cancels, per TestGapMediumInvariance, but the implemented
+            # smatrix() still differentiates through it).
+            gap_background = _gap_background(eps_grid, kx, ky, wvl, device)
+            op = TransferOperator(P, Q, Nh, _lam_bound(kx, ky, eps_grid), cfg,
+                                   gap_background=gap_background, thickness=d)
         else:
             raise ValueError(modesolver)
 

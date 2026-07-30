@@ -360,10 +360,10 @@ loss = alpha * alignment_loss(field_spatial, target, weights)
 
 | Method | Literature | Default β, γ | Final normalization | Output dtype |
 |--------|------------|--------------|---------------------|--------------|
-| `Jones` | Antos 2009 | 0.05, 0.05 | `normalize_jones` on `.real` of optimized field | complex |
-| `Pol` | S4 / Liu & Fan 2012 | 0.05, 0.05 | `normalize_max_global` on `.real` | real |
-| `Normal` | Schuster 2007 | 0.05, 0.05 | `normalize_elementwise` on `.real` | real |
-| `Jones_direct` | FMMax / Schubert 2023 | 0.05, 0.05 | `normalize_max_global` (complex, no `.real`) | complex |
+| `Jones` | Antos 2009 | 0.005, 0.005 | `normalize_jones` on `.real` of optimized field | complex |
+| `Pol` | S4 / Liu & Fan 2012 | 0.005, 0.005 | `normalize_max_global` on `.real` | real |
+| `Normal` | Schuster 2007 | 0.005, 0.005 | `normalize_elementwise` on `.real` | real |
+| `Jones_direct` | FMMax / Schubert 2023 | 0.005, 0.005 | `normalize_max_global` (complex, no `.real`) | complex |
 
 `Jones_direct` is unique in its target construction: in `_prepare_field`
 the target itself is immediately converted to a Jones field via `normalize_jones`,

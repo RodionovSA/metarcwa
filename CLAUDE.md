@@ -83,7 +83,7 @@ time, so thickness-only changes don't require rebuilding.
 | `layersolver/homogeneous.py` | `homogeneous_modes`: closed-form modes (no eigensolver) |
 | `layersolver/isotropic.py` | `compute_isotropic`: builds patterned-layer eigenproblem matrices (`P`, `Q` — shared by both modesolvers) |
 | `layersolver/eigsolver.py` | `eigsolver`: numerical eigendecomp with stable autograd gradient |
-| `layersolver/matexpsolver.py` | `TransferOperator`: the other `LayerOperator` implementation, for `modesolver="matexp"`. No eigendecomposition — slices the layer, exponentiates `A=[[0,P],[Q,0]]` per slice (`torch.linalg.matrix_exp`), converts to an S-matrix, recombines via `star_power` (`O(log n)` Redheffer star products). See `docs/matrixexp.md`. |
+| `layersolver/matexpsolver.py` | `TransferOperator`: the other `LayerOperator` implementation, for `modesolver="matexp"`. No eigendecomposition — slices the layer, exponentiates `A=[[0,P],[Q,0]]` per slice (`torch.linalg.matrix_exp`), converts to an S-matrix referenced to a per-layer "gap medium" (`Config.matexp_gap`, default the layer's mean permittivity — not vacuum, which reduces a fictitious-sub-slab resonance artifact of slicing), recombines via `star_power` (`O(log n)` Redheffer star products), then sandwiches back to the stack's vacuum background. See `docs/matrixexp.md`. |
 | `tvf/tvf.py` | `TVF`: Tangent Vector Field for Li/FFF factorization |
 | `tvf/tvf_utils.py` | TVF field math: periodic gradients, Fourier loss, normalization |
 | `tvf/optimizers.py` | `make_optimizer`: Newton + other TVF direction-field optimizers |

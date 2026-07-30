@@ -150,14 +150,17 @@ def S_layer(W0: Block2x2, V0: Block2x2, W: Block2x2, V: Block2x2,
     - ``S_prop`` = propagation through the layer
     - ``S_out`` = S_boundary reversed — layer → background interface
 
-    Because the background medium is the same on both sides, the right
-    interface S-matrix is obtained by block-swapping ``S_in``:
+    The right interface S-matrix is obtained by block-swapping ``S_in``
+    instead of a second :func:`S_boundary` solve:
 
         S_out = [[S_in.d, S_in.c],
                  [S_in.b, S_in.a]]
 
-    This mirror symmetry holds **only** when the same background fills both
-    sides.  For asymmetric embeddings call :func:`S_boundary` explicitly.
+    This mirror trick is an identity of :func:`S_boundary` that holds for
+    any two media, not only equal ones — see ``docs/matrixexp.md``
+    "Accuracy and conditioning" for the general form and a use against two
+    different media. Call :func:`S_boundary` explicitly whenever the two
+    faces should reference genuinely different backgrounds.
 
     Parameters
     ----------

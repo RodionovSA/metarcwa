@@ -46,23 +46,23 @@ $T$ is the layer's **transfer matrix** in the field basis $(s,u)$ — it propaga
 
 [S-matrix algebra](smatrix.md) explains why an S-matrix is preferred over a T-matrix: a T-matrix's entries span $\exp(\pm|\lambda|k_0d)$, so for a layer with any appreciable evanescent content the large entries overflow and swamp the small ones, destroying exactly the information the S-matrix needs. That objection does not disappear here — it is the reason this route needs the slicing scheme below — but it does not rule out using $T$ as an *intermediate* quantity, converted to an S-matrix immediately, one thin slice at a time.
 
-Both faces of a slice sit in the same vacuum background, so the field vector at each face is $\psi=\Phi_0\,(c^+,c^-)^\top$ with the vacuum gap matrix $\Phi_0=\bigl(\begin{smallmatrix}W_0&W_0\\V_0&-V_0\end{smallmatrix}\bigr)$ ($W_0=I$, $V_0$ the vacuum H-mode matrix). Substituting into $\psi(d)=T\,\psi(0)$ and grouping outgoing amplitudes $(c_L^-,c_R^+)$ on one side, incoming $(c_L^+,c_R^-)$ on the other, gives exactly the same *shape* of linear system `S_boundary` solves in [S-matrix algebra](smatrix.md) — just built from $T$ (partitioned to match the $(s,u)$ structure of $A$, so $T_{11},T_{12},T_{21},T_{22}$ below are $T$'s own $2N_h\times2N_h$ blocks) instead of plain continuity:
+Both faces of a slice sit in the same **reference medium** — some homogeneous medium, not necessarily vacuum (see "Accuracy and conditioning" below for why a per-layer *gap medium* is used by default) — so the field vector at each face is $\psi=\Phi\,(c^+,c^-)^\top$ with that medium's gap matrix $\Phi=\bigl(\begin{smallmatrix}W&W\\V&-V\end{smallmatrix}\bigr)$ ($W=I$ for any isotropic homogeneous medium, $V$ its H-mode matrix). Substituting into $\psi(d)=T\,\psi(0)$ and grouping outgoing amplitudes $(c_L^-,c_R^+)$ on one side, incoming $(c_L^+,c_R^-)$ on the other, gives exactly the same *shape* of linear system `S_boundary` solves in [S-matrix algebra](smatrix.md) — just built from $T$ (partitioned to match the $(s,u)$ structure of $A$, so $T_{11},T_{12},T_{21},T_{22}$ below are $T$'s own $2N_h\times2N_h$ blocks) instead of plain continuity:
 
 $$
 \begin{align}
-\underbrace{\begin{pmatrix} W_0 & -(T_{11}W_0-T_{12}V_0) \\ V_0 & -(T_{21}W_0-T_{22}V_0) \end{pmatrix}}_{\text{left}}
+\underbrace{\begin{pmatrix} W & -(T_{11}W-T_{12}V) \\ V & -(T_{21}W-T_{22}V) \end{pmatrix}}_{\text{left}}
 \begin{pmatrix} c_R^+ \\ c_L^- \end{pmatrix}
 =
-\underbrace{\begin{pmatrix} T_{11}W_0+T_{12}V_0 & -W_0 \\ T_{21}W_0+T_{22}V_0 & V_0 \end{pmatrix}}_{\text{right}}
+\underbrace{\begin{pmatrix} T_{11}W+T_{12}V & -W \\ T_{21}W+T_{22}V & V \end{pmatrix}}_{\text{right}}
 \begin{pmatrix} c_L^+ \\ c_R^- \end{pmatrix}.
 \end{align}
 $$
 
 One `Block2x2.solve` (`left.solve(right)`) gives $(c_R^+,c_L^-)$ in terms of $(c_L^+,c_R^-)$; swapping the two output rows puts it in the $(c_L^-,c_R^+)$ order the S-matrix convention (Eq. (1) in [S-matrix algebra](smatrix.md)) expects.
 
-**Why not $M=\Phi_0^{-1}T\Phi_0$?** That is algebraically equivalent but numerically worse: at `dtype=torch.float32` it produced physically invalid $T>1$ on a real patterned-grating regression, and — the signature of a genuine conditioning problem rather than under-slicing — the error grew *worse*, not better, as the slice count increased. $\Phi_0$ mixes harmonics with very different magnitudes (evanescent harmonics can have large $|k_z|$), so inverting it directly is ill-conditioned exactly where `S_boundary` avoids the analogous risk by never inverting a monolithic gap matrix. The direct-solve form above has the same conditioning profile as `S_boundary` itself, because it *is* the same derivation. `tests/solver/test_matexpsolver.py::TestTransferToSmatrix` and the real-structure benchmark below both target this regression specifically.
+**Numerical form.** The direct-solve form above avoids materializing $\Phi^{-1}$. Forming $M=\Phi^{-1}T\Phi$ explicitly is algebraically equivalent but ill-conditioned at `dtype=torch.float32`: $\Phi$ mixes harmonics of very different magnitude (evanescent harmonics can have large $|k_z|$), so its inverse is poorly scaled. On a real patterned-grating regression the naive route produced a physically invalid $T>1$ that grew worse with more slices, the signature of a conditioning problem rather than under-slicing. The solve-based form shares `S_boundary`'s conditioning instead, since it's the same derivation. Regression: `tests/solver/test_matexpsolver.py::TestTransferToSmatrix`.
 
-**Sanity check.** For a vacuum layer, $\Phi_0$ diagonalizes $A$ exactly (it *is* the eigenbasis, with $\lambda=1j k_z$ the vacuum dispersion), so the system above collapses to $S_{11}=S_{22}=0$, $S_{12}=S_{21}=X_d$ with $X_d=\exp(\lambda k_0 d)$ — exactly $S_l$ from [S-matrix algebra](smatrix.md). `tests/solver/test_matexpsolver.py::TestTransferToSmatrix::test_vacuum_slab_matches_s_prop` checks this bit-for-bit.
+**Sanity check.** For a layer matching the reference medium exactly, $\Phi$ diagonalizes $A$ exactly (it *is* the eigenbasis, with $\lambda=1j k_z$ that medium's own dispersion), so the system above collapses to $S_{11}=S_{22}=0$, $S_{12}=S_{21}=X_d$ with $X_d=\exp(\lambda k_0 d)$ — exactly $S_l$ from [S-matrix algebra](smatrix.md). `tests/solver/test_matexpsolver.py::TestTransferToSmatrix::test_vacuum_slab_matches_s_prop` checks this bit-for-bit for the vacuum case.
 
 ---
 
@@ -82,16 +82,18 @@ $$
 S_\text{layer} = \underbrace{S_\text{slice}\star S_\text{slice}\star\cdots\star S_\text{slice}}_{n\text{ times}}.
 $$
 
-Every slice is a genuine vacuum-embedded S-matrix (the derivation above holds for any thickness), so this recombination is **exact**, not an approximation — shrinking $d/n$ only shrinks the per-slice exponent, and $S_\text{slice}$ is exponentiated once and reused $n$ times via repeated squaring ($O(\log n)$ star products, since every slice is identical), not recomputed $n$ times.
+Every slice is exponentiated once and reused $n$ times via repeated squaring ($O(\log n)$ star products, not $n-1$), and the recombination is exact for any thickness and any homogeneous reference medium — shrinking $d/n$ only shrinks the per-slice exponent.
 
-**Choosing $n$.** No eigenvalues are available (that's the point of this solver), so $n$ is sized from a cheap upper bound on the modal exponent. For the isotropic system $\lambda^2\approx k_x^2+k_y^2-\varepsilon$, so
+The reference medium for this internal slicing is a per-layer **gap medium** (`Config.matexp_gap`, default the layer's own mean permittivity), not the stack's vacuum background. See "Accuracy and conditioning" below. $S_\text{layer}$ is transitioned back to the vacuum background afterward by two boundary S-matrices, which are exact for the same reason `S_boundary` is.
+
+**Choosing $n$.** No eigenvalues are available, so $n$ is sized from a cheap upper bound on the modal exponent. For the isotropic system $\lambda^2\approx k_x^2+k_y^2-\varepsilon$:
 
 $$
 \max|\lambda| \lesssim \sqrt{\max_h(k_x^2+k_y^2) + \max|\varepsilon|}, \qquad
-n = \left\lceil \frac{k_0\,d\,\max|\lambda|}{\text{budget}} \right\rceil,
+n = \left\lceil \frac{k_0\,d\,\max|\lambda|}{\text{budget}} \right\rceil.
 $$
 
-reduced to a detached scalar (`.max()`, `.detach()`) since $n$ controls a Python loop count and cannot vary per batch element. Gradients through the resulting S-matrix are exact for any fixed $n$ — only the *choice* of $n$ is non-differentiable, which is correct, not approximate (a design variable crossing the threshold where $n$ changes moves to a different, equally valid computation graph rather than perturbing an otherwise-smooth function).
+$n$ is a detached scalar (`.max()`, `.detach()`): it controls a Python loop count, so it can't vary per batch element or enter autograd. Gradients through the S-matrix are still exact for any fixed $n$; only the choice of $n$ itself is non-differentiable.
 
 The default budget is $8.0$ for `complex128` ($\varepsilon_\text{rel}\sim2\times10^{-9}$) or $3.0$ for `complex64` ($\varepsilon_\text{rel}\sim5\times10^{-5}$). `Config` exposes full control: `matexp_slicing` (master on/off), `matexp_slices` (explicit override, wins over estimation), `matexp_max_slices` (cap on the automatic estimate), `matexp_max_exponent` (the budget itself).
 
@@ -99,31 +101,63 @@ The default budget is $8.0$ for `complex128` ($\varepsilon_\text{rel}\sim2\times
 
 ## Accuracy and conditioning
 
-The exponent budget above bounds `matrix_exp`'s *own* error. It does not bound the error of the whole `"matexp"` solve — measured on `examples/compare_solvers.ipynb` (an ellipse-patterned metasurface, $m=n=10$, $N_h=317$, 200 nm layer, $n=3.8$ in air, 300–900 nm sweep), `float32` `matexp` with the (pre-fix) automatic slice count reached $\max|\Delta R|=7\times10^{-3}$ against an `eig`/`float64` reference — 20× worse than `eig`/`float32`'s own $3\times10^{-4}$ — at specific, isolated wavelengths, and the error at a given wavelength could appear or vanish depending on `matexp_slices` alone, with no change to the physical geometry.
+The exponent budget bounds `matrix_exp`'s own error, not the error of the whole `"matexp"` solve. Measured on `examples/compare_solvers.ipynb` (ellipse-patterned metasurface, $m=n=10$, $N_h=317$, 200 nm layer, $n=3.8$ in air, 300–900 nm sweep), `float32` `matexp` with vacuum embedding and the automatic slice count reached $\max|\Delta R|=7\times10^{-3}$ against an `eig`/`float64` reference, 20× worse than `eig`/`float32`'s own $3\times10^{-4}$. The error appeared only at isolated wavelengths and depended on `matexp_slices` alone, with no change to the physical geometry.
 
-**Mechanism.** Every slice's S-matrix is built by embedding a *thin, fictitious* sub-slab of the patterned layer's material in the vacuum reference (`transfer_to_smatrix`, above) — a real physical construct only for the whole layer, not for an arbitrary thickness $d/n$ of it. That fictitious sub-slab has its own S-matrix poles: harmonics evanescent in the vacuum reference but propagating inside a high-index sub-slab produce a sharp, wavelength-dependent near-resonance at specific sub-slab thicknesses. On the benchmark structure at 560 nm, scanning sub-slab thickness in isolation (in `float64`, so the numbers below are exact, not roundoff) shows a spike:
+**Mechanism.** Each slice's S-matrix embeds a thin sub-slab of the patterned layer's material — a fictitious construct valid only for the whole layer, not for an arbitrary thickness $d/n$ of it. Under vacuum embedding, harmonics evanescent in vacuum but propagating inside a high-index sub-slab produce a sharp, wavelength-dependent resonance at specific sub-slab thicknesses. Scanning sub-slab thickness in isolation at 560 nm (`float64`, exact arithmetic) shows the spike:
 
 | $t$ (nm) | 20 | 22 | 23 | 24 | **25** | 26 | 27 | 28 | 30 |
 |---|---|---|---|---|---|---|---|---|---|
 | $\max|S_\text{slice}|$ | 1.6 | 2.0 | 2.5 | 3.8 | **28** | 3.9 | 2.0 | 1.4 | 1.0 |
 
-At $t=25\,\text{nm}=d/8$, the Redheffer star product's internal solve — $(I-S_{22}^BS_{11}^A)$ in `Block2x2.star` — has condition number $\sim2\times10^5$, independent of $n$ or `dtype`. At `complex128` ($\varepsilon_\text{machine}\sim2\times10^{-16}$) that costs $\sim5\times10^{-11}$ relative error, negligible; at `complex64` ($\varepsilon_\text{machine}\sim1.2\times10^{-7}$) it costs a few **percent**.
+At $t=25\,\text{nm}=d/8$, the Redheffer star product's internal solve — $(I-S_{22}^BS_{11}^A)$ in `Block2x2.star` — has condition number $\sim2\times10^5$, independent of $n$ or `dtype`. That costs $\sim5\times10^{-11}$ relative error at `complex128` and a few percent at `complex64`.
 
-**Why it appears/disappears with $n$.** `star_power` composes $n$ slices by repeated squaring, so its intermediate thicknesses are exactly $(d/n)\cdot2^k$ for the $k$ visited on the way to $n$. For any even $n$, several of those are exact dyadic fractions of $d$ (e.g. $n=8,16,32,\dots$ all pass through $d/8=25\,\text{nm}$ on this structure); an odd $n>1$ never can, since $2^k/n$ is dyadic only if $n$ divides $2^k$, impossible for odd $n>1$. Measured error in $R$ at 560 nm vs. $n$ (`float32`; `float64` stays at $\lesssim10^{-11}$ for every $n$ shown, confirming the mechanism is precision-limited, not algorithmic):
+**Dyadic slice counts.** `star_power` composes $n$ slices by repeated squaring, visiting intermediate thicknesses $(d/n)\cdot2^k$. For even $n$, several of those are exact dyadic fractions of $d$ (e.g. $n=8,16,32,\dots$ all pass through $d/8=25\,\text{nm}$ on this structure), which can land on the resonance above. An odd $n>1$ never revisits an exact dyadic fraction of $d$. Measured error in $R$ at 560 nm vs. $n$ (`float32`, vacuum embedding; `float64` stays below $10^{-11}$ for every $n$ shown):
 
 | $n$ | 1 | 2 | 3 | 4 | 5 | 8 | 11 | 16 | 32 | 48 | 64 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | err | 2e-1 | 4e-2 | 3e-5 | 6e-4 | 1e-6 | 1e-1 | 3e-5 | **1.2** | 1e-1 | 4e-5 | 4e-2 |
 
-Every power of two $\geq8$ is bad; every odd $n$ shown lands at `eig`/`float32` parity ($\sim10^{-5}$). ($n=1$ fails for the *modeled* reason instead — an unsliced exponent this large simply overflows.)
+Every power of two $\geq8$ is bad; every odd $n$ shown lands at `eig`/`float32` parity ($\sim10^{-5}$). $n=1$ fails for a different reason — an unsliced exponent this large overflows.
 
-**Mitigations, applied by default:**
+**Mitigations applied by default, independent of `matexp_gap`:**
 
-- `slice_count` nudges its automatic estimate to the next odd integer whenever it lands even, keeping the squaring ladder off exact dyadic fractions of $d$. This is the primary fix — on the benchmark it drops full-spectrum $\max|\Delta R|$ from $7\times10^{-3}$ to $1.4\times10^{-3}$, back in `eig`/`float32`'s own range.
-- `star_power` checks each intermediate S-matrix's largest-magnitude entry against a `dtype`-aware threshold ($50$ for `complex64`, $10^4$ for `complex128`) and raises a `RuntimeWarning` if exceeded. This is a **heuristic backstop, not a certificate**: it reliably catches gross under-slicing (the $n=1$ case above), but a resonance narrow enough relative to the accumulated error can corrupt the result by a few percent without the magnitude itself leaving a physically plausible range — an odd `n` chosen right next to a resonance could still, in principle, be unlucky. If the warning fires, try a different `matexp_slices` or switch to `dtype=torch.float64`.
-- `Block2x2.star` itself now solves rather than inverts (`(I-P)^{-1}@rhs` via `Entry.solve`, never a materialized `(I-P)^{-1}`) — repo convention, and the better-conditioned of the two equivalent formulations near a near-pole; it also benefits every other star product in the solver, not just this path.
+- `slice_count` bumps its automatic estimate to the next odd integer whenever it lands even.
+- `star_power` checks each intermediate S-matrix's largest-magnitude entry against a `dtype`-aware threshold ($50$ for `complex64`, $10^4$ for `complex128`) and raises a `RuntimeWarning` if exceeded. This catches gross under-slicing but not every case — a resonance narrow enough relative to the accumulated error can corrupt the result without the magnitude leaving a plausible range. If it fires, try a different `matexp_slices` or `matexp_gap`, or `dtype=torch.float64`.
+- `Block2x2.star` solves rather than inverts (`(I-P)^{-1}@rhs` via `Entry.solve`, never a materialized `(I-P)^{-1}`), which is better conditioned near a near-pole and benefits every star product in the solver.
 
-**Not fixed by any of the above** (future work): the fictitious-slab resonance itself, which is an artifact of referencing every slice to *vacuum* regardless of the layer's actual index. Referencing each slice to a "gap medium" close to the layer's own mean permittivity instead — at the cost of two extra boundary S-matrices at the layer's outer faces — would shrink the index contrast that creates the poles in the first place, addressing the mechanism rather than dodging it. Not implemented.
+**Gap medium.** These mitigations reduce the chance of hitting the resonance; they don't change why it exists, which is that every slice is referenced to vacuum regardless of the layer's actual index. `TransferOperator.smatrix()` instead references each slice to a per-layer gap medium (`Config.matexp_gap`), then transitions back to the stack's vacuum background with two boundary S-matrices at the layer's outer faces — the same $S_\text{in}\star S_\text{prop}\star S_\text{out}$ sandwich [S-matrix algebra](smatrix.md) uses on the `"eig"` path, with the gap medium standing in for the layer's own eigenbasis. The mirror trick used for the second boundary,
+
+$$
+S_\text{out} = J \cdot S_\text{in} \cdot J = \begin{pmatrix}(S_\text{in})_{22} & (S_\text{in})_{21}\\(S_\text{in})_{12} & (S_\text{in})_{11}\end{pmatrix}, \qquad J=\begin{pmatrix}0&I\\I&0\end{pmatrix},
+$$
+
+is an identity of `S_boundary` for any two media, not only equal ones. The whole sandwich is exact for any gap medium — the choice affects conditioning, not the answer. `tests/solver/test_matexpsolver.py::TestGapMediumInvariance` checks this directly (three different gap media, same `smatrix()` output to $\sim10^{-9}$ relative).
+
+`Config.matexp_gap` values:
+
+- **`"mean"`** (default) — the layer's spatial-mean permittivity: the DC/harmonic-0 Fourier coefficient, and the fill-fraction-weighted average of the solid/void materials.
+- **`"max"`** — the componentwise max (real and imaginary parts separately) over the layer's permittivity grid.
+- **`"vacuum"`** — plain vacuum, the behavior before this option existed.
+
+Re-measured on the same benchmark (`float32`, full spectrum, $\max|\Delta R|$ against `eig`/`float64`; `eig`/`float32`'s own error is $2.96\times10^{-4}$):
+
+| `matexp_gap` | $\max|\Delta R|$ | rms $|\Delta R|$ | resonance-guard warnings |
+|---|---|---|---|
+| `"vacuum"` | $1.52\times10^{-3}$ | $2.41\times10^{-4}$ | 1 |
+| `"mean"` | $6.68\times10^{-4}$ | $9.98\times10^{-5}$ | 0 |
+| `"max"` | $3.12\times10^{-4}$ | $5.47\times10^{-5}$ | 0 |
+
+Both `"mean"` and `"max"` land at or inside `eig`/`float32`'s own error, with no resonance-guard warnings over the full sweep. The sub-slab thickness scan at 600 nm (this benchmark's worst `"vacuum"` wavelength) shows the same thing directly: `"vacuum"` peaks at $4.2$ at $t=30\,\text{nm}$, while `"mean"`/`"max"` stay flat and below $1.0$ across the same range:
+
+| $t$ (nm) | 5 | 15 | 22 | 25 | **30** | 35 | 40 | 50 |
+|---|---|---|---|---|---|---|---|---|
+| `"vacuum"` | 1.03 | 1.11 | 1.28 | 1.49 | **4.19** | 1.29 | 0.89 | 0.93 |
+| `"mean"` | 1.00 | 0.97 | 0.94 | 0.93 | 0.91 | 0.89 | 0.87 | 0.83 |
+| `"max"` | 1.00 | 0.97 | 0.94 | 0.92 | 0.89 | 0.86 | 0.82 | 0.77 |
+
+`"mean"` reduces the index contrast that creates the resonance but doesn't remove it: an inhomogeneous layer has regions with $\varepsilon>\varepsilon_\text{gap}$ that can still guide relative to the mean. `"max"` references above every local index in the layer, so nothing can guide relative to it — the measurements above are consistent with this removing the mechanism entirely, though that has only been checked on the structures here, not proven in general. The dyadic-ladder and magnitude-guard mitigations stay in place regardless of `matexp_gap`.
+
+**Cost.** The two extra boundary S-matrices use `DIAG`/`SCALAR` mode matrices (any isotropic homogeneous medium's `W=I`, `V` diagonal), so they hit `Block2x2.solve`'s cheap per-harmonic path ($O(N_h)$, not $O(N_h^3)$), and the `star()` calls that fold them in are cheaper than a typical `star_power` squaring step. Measured overhead on the benchmark above was within run-to-run noise (~0.3%).
 
 ---
 
@@ -133,7 +167,7 @@ Unlike the eig path, where `LayerSolver.prepare()` is the expensive step (eigend
 
 Memory: the system matrix $A$ is $4N_h\times4N_h$ densified once per slice-exponentiation, versus $2N_h\times2N_h$ for $\Omega^2=PQ$ on the eig path — roughly $4\times$ the dense footprint per patterned layer.
 
-**`float64` erodes matexp's GPU speed advantage — a hardware effect, not an algorithmic one.** Consumer GPUs (measured: RTX 4090) run `complex128` GEMM/`matrix_exp` at roughly $1/40$ their `complex64` throughput (`torch.linalg.matrix_exp` measured $36\times$ slower, plain `X@X` $42\times$), because `float64` isn't a first-class datapath on that silicon. `torch.linalg.eig`, by contrast, is latency/reduction-bound (`geev`), not GEMM-bound, so it only slows $\sim4\times$ going to `complex128`. The part matexp *removes* (eigendecomposition) is the part least sensitive to `dtype`; the part it *adds* (dense `matrix_exp`) is the part most sensitive. Net effect, same 20-wavelength benchmark structure as above, split by `Solver.__init__`/`run()`:
+**`float64` GPU throughput.** Consumer GPUs (measured: RTX 4090) run `complex128` GEMM/`matrix_exp` at roughly $1/40$ their `complex64` throughput (`torch.linalg.matrix_exp` measured $36\times$ slower, plain `X@X` $42\times$) — `float64` isn't a first-class datapath on that silicon. `torch.linalg.eig` is latency/reduction-bound (`geev`) rather than GEMM-bound, so it only slows $\sim4\times$ going to `complex128`. The eigendecomposition matexp removes is the least `dtype`-sensitive part of the eig path; the `matrix_exp` it adds is the most sensitive part of its own. Same 20-wavelength benchmark, split by `Solver.__init__`/`run()`:
 
 | dtype | solver | init | run | total | slices |
 |---|---|---|---|---|---|
@@ -160,12 +194,12 @@ def transfer_matrix(A, Nh, k0, d):     # T = expm(A * k0 * d)
     T_dense = torch.linalg.matrix_exp(A_dense * (k0 * d)[..., None, None])
     return Block2x2.from_dense(T_dense, A)
 
-def transfer_to_smatrix(T, background):        # never forms Phi0^-1 (see above)
-    W0, V0 = background.W0, background.V0
-    TW0_s, TW0_u = T.a @ W0, T.c @ W0           # T11 W0, T21 W0
-    TV0_s, TV0_u = T.b @ V0, T.d @ V0           # T12 V0, T22 V0
-    left  = Block2x2(W0, -(TW0_s - TV0_s), V0, -(TW0_u - TV0_u))
-    right = Block2x2(TW0_s + TV0_s, -W0, TW0_u + TV0_u, V0)
+def transfer_to_smatrix(T, background):        # never forms Phi^-1 (see above);
+    W, V = background.W0, background.V0        # "background" here = the gap medium
+    TW_s, TW_u = T.a @ W, T.c @ W               # T11 W, T21 W
+    TV_s, TV_u = T.b @ V, T.d @ V               # T12 V, T22 V
+    left  = Block2x2(W, -(TW_s - TV_s), V, -(TW_u - TV_u))
+    right = Block2x2(TW_s + TV_s, -W, TW_u + TV_u, V)
     M = left.solve(right)                       # [c_R+; c_L-] = M [c_L+; c_R-]
     return Block2x2(M.c, M.d, M.a, M.b)         # swap rows -> [c_L-; c_R+]
 
@@ -178,21 +212,38 @@ def star_power(S, n):                  # S composed with itself n times, O(log n
         if n:
             base = base.star(base)
     return result
+
+# TransferOperator.smatrix(): slice, exponentiate, convert to an S-matrix
+# referenced to the gap medium, recombine, then sandwich back to vacuum --
+# mirrors S_boundary(vacuum,layer) . S_prop . mirror(...) on the eig path,
+# with S_gap (a star_power-composed multi-slice S-matrix) standing in for
+# S_prop, and the gap medium standing in for the layer's own eigenbasis.
+def smatrix(self, background):
+    n = slice_count(self.lam_bound, k0, self.thickness, self.config)
+    A = system_matrix(self.P, self.Q)
+    T_slice = transfer_matrix(A, self.Nh, k0, self.thickness / n)
+    S_slice = transfer_to_smatrix(T_slice, self.gap_background)   # not `background`
+    S_gap = star_power(S_slice, n)
+
+    S_in = S_boundary(background.W0, background.V0,
+                       self.gap_background.W0, self.gap_background.V0)
+    S_out = Block2x2(S_in.d, S_in.c, S_in.b, S_in.a)   # mirror trick
+    return S_in.star(S_gap).star(S_out)
 ```
 
 `Block2x2.from_dense` (the inverse of `.to_dense()`) re-embeds a plain dense tensor into the `Block2x2` tree, matching a template's nesting — the counterpart operation `matrix_exp` needs, since it has no structured/batched-sparse form and must densify.
 
-`star_power` deliberately does **not** seed from `Block2x2.star_identity()`: that returns `SCALAR` leaves, which cannot compose with `S`'s `DENSE`-leaf structure via `.star()`. It accumulates from the first set bit of `n` instead.
+`star_power` doesn't seed from `Block2x2.star_identity()`, since that returns `SCALAR` leaves that can't compose with `S`'s `DENSE`-leaf structure. It accumulates from the first set bit of `n` instead.
 
-The snippet above omits two pieces added for the reasons in "Accuracy and conditioning": `slice_count` nudges its automatic `n` to the next odd integer, and `star_power` checks each intermediate's magnitude against a `dtype`-aware threshold, warning if a fictitious-slab resonance looks like it was hit.
+The snippet omits two pieces covered in "Accuracy and conditioning": `slice_count`'s odd-`n` nudge, and `star_power`'s magnitude check on each intermediate. The mirror trick used for `S_out` is also derived there.
 
-`TransferOperator` (the `LayerOperator` implementation for this path — `LayerOperator` itself is a structural contract, not one concrete type, satisfied by both `ModalOperator` (the eig path) and `TransferOperator`) carries `P`, `Q`, the harmonic count, a detached `lam_bound`, `Config`, and `thickness`; its `smatrix()` runs the slice → exponentiate → convert → `star_power` pipeline above, and its `transfer(background, z)` — the propagator $\psi(0)\to\psi(z)$ needed for interior-field evaluation — is `transfer_matrix` applied directly with no slicing (intended for single-depth evaluation, not cascading; large $z$ faces the same conditioning limits as an unsliced `smatrix()`).
+`TransferOperator` is the `LayerOperator` implementation for this path (`ModalOperator` is the other, for `"eig"`). It carries `P`, `Q`, the harmonic count, a detached `lam_bound`, `Config`, `gap_background`, and `thickness`. `transfer(background, z)` — the propagator $\psi(0)\to\psi(z)$ for interior-field evaluation — is `transfer_matrix` applied directly with no slicing and no gap-medium embedding, since it returns a field-basis propagator rather than an S-matrix. It's meant for single-depth evaluation, not cascading; large $z$ hits the same conditioning limits as an unsliced `smatrix()`.
 
 ---
 
 ## Real-structure benchmark
 
-Measured, not assumed: `examples/2d_grating.ipynb`'s stack (ellipse-patterned metasurface, $m=n=8$, $128\times128$ real-space grid, 61-point wavelength sweep 300–900 nm), solved with `modesolver="eig"` vs. `"matexp"` (default slicing), reflectance/transmittance compared for both polarizations:
+Measured on `examples/2d_grating.ipynb`'s stack (ellipse-patterned metasurface, $m=n=8$, $128\times128$ real-space grid, 61-point wavelength sweep 300–900 nm), `modesolver="eig"` vs. `"matexp"` with default slicing:
 
 | device | dtype | eig | matexp | max\|ΔR\| | max\|ΔT\| |
 |---|---|---|---|---|---|
@@ -200,14 +251,16 @@ Measured, not assumed: `examples/2d_grating.ipynb`'s stack (ellipse-patterned me
 | CPU | `float32` | 5.1 s | 5.3 s | $5\times10^{-5}$ | $8\times10^{-5}$ |
 | CUDA | `float32` | 2.79 s (peak 1.76 GB) | **0.36 s** (peak 4.07 GB) | $6\times10^{-5}$ | $1\times10^{-4}$ |
 
-The premise this solver exists for — avoiding `torch.linalg.eig`'s CPU↔GPU synchronization — holds up: **7.8× faster on GPU**, at the cost of ~2.3× peak memory (consistent with the $4N_h\times4N_h$ vs. $2N_h\times2N_h$ dense footprint above) and no CPU advantage (CPU `eig` isn't bottlenecked by the same synchronization, so the two paths land close together there). Accuracy matches the analysis above: near machine precision at `float64`, ~$10^{-4}$ at `float32` — both easily adequate for design/optimization loops, in line with `eigsolver`'s own `float32` behavior.
+Avoiding `torch.linalg.eig`'s CPU↔GPU synchronization gives a 7.8× speedup on GPU, at the cost of ~2.3× peak memory (consistent with the $4N_h\times4N_h$ vs. $2N_h\times2N_h$ dense footprint above). CPU `eig` isn't bottlenecked by the same synchronization, so the two paths land close together there. Accuracy is near machine precision at `float64` and ~$10^{-4}$ at `float32`, in line with `eigsolver`'s own `float32` behavior.
+
+This table predates `Config.matexp_gap` (still vacuum embedding). The `compare_solvers.ipynb` measurements above show the timing conclusions hold either way; `float32` accuracy on this structure is not re-measured under the current `"mean"` default.
 
 ---
 
 ## Known limitations
 
 - **Anisotropic media are unsupported**, matching `eigsolver`'s current coverage — both solvers dispatch from the same `compute_isotropic` path.
-- **`float32` accuracy is dominated by fictitious-slab resonance conditioning, not the exponent budget** — see "Accuracy and conditioning" above. The default mitigations (odd auto slice count, `star_power`'s magnitude guard) bring it back to `eig`/`float32`'s own ballpark ($\sim10^{-4}$–$10^{-3}$) on the structures measured so far, but the guard is a heuristic, not a certificate; prefer `float64` for tight-tolerance validation, keeping in mind its GPU cost (see "Cost model" above).
+- **`float32` accuracy is dominated by sub-slab resonance conditioning, not the exponent budget** — see "Accuracy and conditioning". `Config.matexp_gap` addresses this; `"max"` measured at `eig`/`float32` parity on the one structure tested. Prefer `float64` for tight-tolerance validation.
 - **`Solver.run()` is no longer cheap** under `modesolver="matexp"` — a thickness sweep or a single-layer optimization step now pays one (sliced) matrix exponential per evaluation, instead of reusing a cached eigendecomposition and only re-cascading star products.
 - **Peak memory is higher** (~2.3× measured above) — the $4N_h\times4N_h$ system matrix, densified once per slice-exponentiation, dominates.
 - **`transfer()` is not yet wired into `Observables`** — the primitive exists and is cross-validated against the eig path's own `transfer()` (`tests/solver/test_matexpsolver.py::TestFieldParity`), but interior-field reconstruction itself is future work (`FieldSolution` in `solver/base.py`, currently unimplemented).

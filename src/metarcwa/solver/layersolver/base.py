@@ -52,6 +52,7 @@ import torch
 from torch.utils.checkpoint import checkpoint
 from typing import Tuple
 
+from metarcwa._dtypes import to_complex
 from metarcwa.model.layer import HomogeneousLayer, PatternedLayer
 from metarcwa.model.medium import MediumSpec, IsotropicMediumSpec
 from metarcwa.solver.blockmatrix import Block2x2
@@ -264,7 +265,11 @@ class LayerSolver:
           "matexp" → :class:`~metarcwa.solver.layersolver.matexpsolver.TransferOperator`
                      (no eigendecomposition; P/Q and a cheap modal-exponent
                      bound are carried directly, exponentiated at
-                     ``smatrix()`` time)
+                     ``smatrix()`` time). Also builds a per-layer "gap medium"
+                     ``Background`` (``Config.matexp_gap``) that
+                     ``TransferOperator.smatrix()`` references its slices to
+                     instead of the shared vacuum ``self.background`` — see
+                     that method's docstring.
         """
         medium_solid = layer.medium_solid
         medium_void  = layer.medium_void
@@ -309,8 +314,34 @@ class LayerSolver:
                             + self.ky.detach().abs() ** 2).amax()
                 eps_max = eps_grid.detach().abs().amax().to(kxy2_max.dtype)
                 lam_bound = torch.sqrt(kxy2_max + eps_max)
+
+                # The gap medium each slice's S-matrix is referenced to
+                # (Config.matexp_gap) -- built from the *undetached* eps_grid
+                # (separately from lam_bound's detached copy above) so eps_gap
+                # stays differentiable w.r.t. eps_solid/eps_void/pattern; the
+                # sandwich in TransferOperator.smatrix() is exact for any gap
+                # choice, so this only affects conditioning, not the gradient
+                # of the physical result.
+                if self.config.matexp_gap == "vacuum":
+                    gap_background = self.background
+                else:
+                    # eps_grid may still be real here if grazing_eps_reg==0
+                    # (the only case _regularize_eps is a no-op); .imag below
+                    # requires complex, so promote unconditionally first --
+                    # matches what compute_isotropic does internally anyway.
+                    eps_grid_c = to_complex(eps_grid)
+                    if self.config.matexp_gap == "mean":
+                        eps_gap = eps_grid_c.mean(dim=(-2, -1))
+                    else:  # "max"
+                        eps_gap = (eps_grid_c.real.amax(dim=(-2, -1))
+                                   + 1j * eps_grid_c.imag.amax(dim=(-2, -1)))
+                    eps_gap = _regularize_eps(eps_gap, self.config.grazing_eps_reg)
+                    _, Vg = homogeneous_modes(eps_gap, self.kx, self.ky)
+                    gap_background = Background(Vg.eye_like(), Vg, self.wvl)
+
                 return TransferOperator(
-                    P, Q, Nh, lam_bound, self.config, layer.thickness,
+                    P, Q, Nh, lam_bound, self.config,
+                    gap_background=gap_background, thickness=layer.thickness,
                 )
             else:
                 raise NotImplementedError(
