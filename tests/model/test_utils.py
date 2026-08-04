@@ -4,7 +4,8 @@ import pytest
 import torch
 import torch.nn as nn
 
-from metarcwa.model.utils import CallableModule, from_metashapes, from_dispertorch, to_complex, to_real
+from metarcwa._dtypes import to_complex, to_real
+from metarcwa.model.nn_helpers import CallableModule
 
 NX, NY = 32, 32
 

@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 
 from metarcwa.model.medium import IsotropicMedium, IsotropicMediumSpec, Medium
-from metarcwa.model.utils import CallableModule
+from metarcwa.model.nn_helpers import CallableModule
 
 N_WL = 5
 

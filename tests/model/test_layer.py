@@ -11,7 +11,7 @@ from metarcwa.model.lattice import Lattice
 from metarcwa.model.layer import Layer, HomogeneousLayer, PatternedLayer
 from metarcwa.model.stack import Stack
 from metarcwa.model.medium import IsotropicMedium, Medium
-from metarcwa.model.utils import from_metashapes, from_dispertorch
+from metarcwa.model.adapters import from_metashapes, from_dispertorch
 
 NX, NY = 32, 32
 

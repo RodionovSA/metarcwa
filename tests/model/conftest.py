@@ -3,7 +3,8 @@ import torch
 
 from metarcwa.model.lattice import Lattice
 from metarcwa.model.medium import IsotropicMedium
-from metarcwa.model.utils import CallableModule, from_metashapes, from_dispertorch
+from metarcwa.model.nn_helpers import CallableModule
+from metarcwa.model.adapters import from_metashapes, from_dispertorch
 
 N_WL = 5
 

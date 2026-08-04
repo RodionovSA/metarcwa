@@ -6,17 +6,23 @@ import torch.nn as nn
 from typing import Callable
 
 
-def register(module, name, value, dtype=torch.float32):
+def register(module, name, value):
     """Register `value` on `module` under `name`.
 
     If `value` is an nn.Parameter it becomes an optimizable parameter;
     otherwise it is stored as a (non-gradient) buffer that still moves
     with .to() and is saved in state_dict().
     """
+    if not isinstance(value, torch.Tensor):
+        value = torch.as_tensor(value, dtype=torch.get_default_dtype())
+
+    if value.dtype not in (torch.float32, torch.float64):
+        raise TypeError("Only float32 and float64 dtype variables can be registered.")
+    
     if isinstance(value, nn.Parameter):
         setattr(module, name, value)
     else:
-        module.register_buffer(name, torch.as_tensor(value, dtype=dtype))
+        module.register_buffer(name, value)
 
 
 class CallableModule(nn.Module):

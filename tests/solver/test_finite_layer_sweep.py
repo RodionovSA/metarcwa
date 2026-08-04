@@ -20,7 +20,7 @@ from metarcwa.model.layer import Layer
 from metarcwa.model.medium import IsotropicMedium
 from metarcwa.model.lattice import Lattice
 from metarcwa.model.source import Source
-from metarcwa.model.utils import CallableModule
+from metarcwa.model.nn_helpers import CallableModule
 from metarcwa.solver.base import Solver
 from metarcwa.solver.config import Config
 

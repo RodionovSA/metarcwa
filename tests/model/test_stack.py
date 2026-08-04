@@ -6,7 +6,7 @@ from metarcwa.model.lattice import Lattice
 from metarcwa.model.layer import Layer, HomogeneousLayer, PatternedLayer
 from metarcwa.model.stack import Stack
 from metarcwa.model.medium import IsotropicMedium
-from metarcwa.model.utils import CallableModule
+from metarcwa.model.nn_helpers import CallableModule
 
 
 # ---------------------------------------------------------------------------
