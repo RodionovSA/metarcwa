@@ -273,7 +273,9 @@ class LayerSolver:
         """
         medium_solid = layer.medium_solid
         medium_void  = layer.medium_void
-        pattern      = layer.pattern
+        # shape_fn output is built fresh at spec() time, so Model.to() can't
+        # cast it — align with the solver's dtype/device here (no-op if equal).
+        pattern      = layer.pattern.to(dtype=self.config.dtype, device=self.kx.device)
 
         if isinstance(medium_solid, IsotropicMediumSpec) and \
                 isinstance(medium_void, IsotropicMediumSpec):

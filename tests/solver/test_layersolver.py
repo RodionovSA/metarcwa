@@ -587,3 +587,26 @@ class TestLayerSolverPrepare:
         S_reused = solver.smatrix(op2)
         S_fresh  = solver.run(_hom(2.5, 0.7, device))
         assert_close(S_reused.to_dense(Nh), S_fresh.to_dense(Nh))
+
+
+# ---------------------------------------------------------------------------
+# Pattern dtype alignment
+# ---------------------------------------------------------------------------
+
+def test_patterned_float32_pattern_under_float64_tvf(device):
+    """A float32 pattern (e.g. a user ``shape_fn`` that returns ``.float()``)
+    must be cast to the solver's dtype: under ``float64`` + TVF it used to
+    crash with a complex64/complex128 matmul mismatch in ``compute_Qfact``,
+    and must give the same S-matrix as a float64 pattern."""
+    a1 = torch.tensor([1.0, 0.0], dtype=torch.float64, device=device)
+    a2 = torch.tensor([0.0, 1.0], dtype=torch.float64, device=device)
+    tvf = TVF(a1, a2, Nh_half, Nh_half, method="Jones")
+    solver, *_ = _make_solver_full(device, Config(dtype=torch.float64), tvf=tvf)
+
+    pat64 = _checkerboard(device)
+    S32 = solver.smatrix(solver.prepare(_pat(4.0, 1.0, 0.1, pat64.float(), device)))
+    S64 = solver.smatrix(solver.prepare(_pat(4.0, 1.0, 0.1, pat64, device)))
+
+    r32, r64 = _get_leaf(S32.a).data, _get_leaf(S64.a).data
+    assert r32.dtype == torch.complex128
+    assert_close(r32, r64)

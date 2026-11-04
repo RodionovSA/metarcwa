@@ -18,20 +18,24 @@ uv add git+https://github.com/RodionovSA/metarcwa.git
 pip install git+https://github.com/RodionovSA/metarcwa.git
 
 # Optional extras (separate git repos)
-uv sync --extra metashapes   # geometry / rasterization
-uv sync --extra dispertorch  # dispersion / material models
+uv sync --extra metashapes   # geometry / rasterization  (adapter: model.adapters.from_metashapes)
+uv sync --extra dispertorch  # dispersion / material models (adapter: model.adapters.from_dispertorch)
+uv sync --extra ridb         # refractive-index database
 
 # Tests
-pytest   # pythonpath=["src"] set in pyproject.toml; suites in tests/
-
-# Interactive usage — root notebooks are the de-facto demo/integration tests
-# example.ipynb, model_tests.ipynb, homogeneous_tests.ipynb, test_solver.ipynb, tvf_playground.ipynb
+pytest   # pythonpath=["src"] set in pyproject.toml; suites in tests/{model,solver,observables}
+         # tests/*_bench.py, tvf_memory_profile.py are benchmarks, not tests
 
 # Config-driven solve
 config = Config.from_yaml("config.yaml")
 ```
 
-> Lint / type-check: none configured [verify]. No CI (.github/ absent) [verify].
+- `examples/` — curated, validated notebooks: `uniform_layer` / `interface` (checked against
+  TMM/Fresnel), `1d_grating`, `2d_grating`, `compare_factorization`, `compare_solvers`,
+  `convergence_test`.
+- `notebooks/` — scratch/dev notebooks (`example`, `model_tests`, `test_solver`, `tvf_playground`, …).
+
+> Lint / type-check: none configured. No CI (`.github/` absent).
 
 ---
 
@@ -42,20 +46,29 @@ config = Config.from_yaml("config.yaml")
 ```
 Model (structure + source)
   └─ .spec(nx, ny) ──► ModelSpec  (immutable snapshot)
-       └─ Solver(model, config)
-            └─ LayerSolver.prepare(element) ──► LayerOperator  (one per stack element)
-                 └─ .solve() / LayerSolver.smatrix(op) ──► Block2x2  (full-stack S-matrix)
+       └─ Solver(model, config)  ≡ prepare(model, config) ──► PreparedStack
+            │    LayerSolver.prepare(element) ──► LayerOperator  (one per stack element)
+            └─ Solver.run() ≡ run(prepared) ──► ModalSolution(S11, S21, prepared)
+                 └─ Observables(solution) ──► jones / reflection / transmission per order
 ```
 
-`Solver.__init__` is the expensive step (under the default `modesolver="eig"`):
-it precomputes harmonics, the TVF, and solves the modal eigenproblem for every
-stack element (`LayerSolver.prepare`), caching the result as a `LayerOperator`
-per element. `Solver.run()` is cheap: pure Redheffer star-product composition
-of the cached operators via `LayerSolver.smatrix`, no eigendecomposition.
-(`modesolver="matexp"` inverts this split — see Gotchas.) Rebuild the `Solver` whenever the
-pattern/geometry changes (already required, since `model.spec()` resolves the
-pattern in `__init__`); a `LayerOperator`'s `thickness` is read at `smatrix()`
-time, so thickness-only changes don't require rebuilding.
+`solver/base.py` is a functional core (`build_layersolver`, `prepare`, `reprepare`, `run`)
+with `Solver` as a thin wrapper. `Solver.__init__` (= `prepare`) is the expensive step under
+the default `modesolver="eig"`: it moves the model to `config.device/dtype`, precomputes
+harmonics + TVF, and solves every stack element's modes once, caching a `LayerOperator` per
+element in a frozen `PreparedStack`. `Solver.run()` is cheap: Redheffer star-product composition
+of the cached operators (via `LayerSolver.smatrix`), no eigendecomposition; it keeps only
+`S11`/`S21` (left excitation). (`modesolver="matexp"` inverts this split — see Gotchas.)
+
+Re-preparing after changes:
+- **Whole-stack geometry / source / lattice change** → new `Solver` (re-`prepare`).
+- **One or a few layers' pattern changes** → `solver.reprepare(layer_indices)`: reuses the
+  `LayerSolver` context and all other layers' operators (one eig per step in inverse design).
+- **Thickness only** → nothing; operators hold a reference to the thickness tensor and read it
+  at `smatrix()` time, so autograd / in-place `nn.Parameter` updates just work.
+
+`Solver.run(fields=True)` / `FieldSolution` / `FieldObservables` are **not implemented**
+(raise `NotImplementedError`).
 
 ### `src/metarcwa/model/` — problem description
 
@@ -65,22 +78,25 @@ time, so thickness-only changes don't require rebuilding.
 | `stack.py` | `Stack` + `StackSpec`: ordered layer sequence + incidence/transmission media |
 | `layer.py` | `Layer`, `HomogeneousLayer`, `PatternedLayer`: per-layer permittivity + thickness |
 | `medium.py` | `Medium`, `IsotropicMedium`: material / permittivity definitions for half-spaces |
-| `source.py` | `Source`: wavelength, incidence angles (theta/phi). No polarization — s/p amplitudes are applied downstream to the computed S-matrix, in the future `results` layer, not needed for the S-matrix itself |
-| `lattice.py` | `Lattice`: 2D Bravais lattice vectors `a1`, `a2` |
+| `source.py` | `Source`: wavelength, incidence angles (theta/phi). No polarization — s/p amplitudes are applied downstream by `Observables`, not needed for the S-matrix itself |
+| `lattice.py` | `Lattice`: 2D Bravais lattice vectors `a1`, `a2`; `Lattice.rectangular(px, py)`, `Lattice.hexagonal(a, orientation=...)` |
+| `adapters.py` | `from_metashapes(shape, soft=, softness=)` → `shape_fn`; `from_dispertorch(model)` → `eps_fn` (optional-extra bridges) |
+| `nn_helpers.py` | `register` (tensor → param/buffer), `CallableModule` (wrap a callable + its deps as an `nn.Module`) |
 
 ### `src/metarcwa/solver/` — numerics
 
 | File/pkg | Responsibility |
 |----------|----------------|
-| `base.py` | `Solver`: top-level driver; precomputes harmonics + TVF + one `LayerOperator` per stack element; `run()` only star-composes |
+| `base.py` | Functional core `build_layersolver` / `prepare` / `reprepare` / `run` + `PreparedStack`, `ModalSolution` (`S11`, `S21`), `FieldSolution` (stub); `Solver` is a thin class wrapper (`.run()`, `.reprepare(layer_indices)`) |
 | `config.py` | `Config` + `Factorization` dataclasses; grid/truncation/dtype/device/solver switches |
 | `harmonics.py` | Harmonic index map `(m,n)`, truncation, in-plane wavevectors `kx`/`ky` |
 | `smatrix.py` | `S_boundary`, `S_prop`, `S_layer`: per-interface/layer S-matrix builders |
 | `blockmatrix.py` | `Block` / `Block2x2`: structured operator algebra + Redheffer star product |
 | `convolution.py` | Fourier convolution matrix helpers |
-| `layersolver/base.py` | `LayerSolver`: `.prepare(element)` builds a `LayerOperator` (expensive: TVF/convolution/eigendecomp, unless `modesolver="matexp"` — see gotchas); `.smatrix(op)` delegates to `op.smatrix(background)` (cheap, unless `matexp`); `.solve()` = both; precomputes vacuum modes `W0`/`V0`/`background` |
+| `layersolver/base.py` | `LayerSolver`: `.prepare(element)` builds a `LayerOperator` (expensive: TVF/convolution/eigendecomp, unless `modesolver="matexp"` — see gotchas); `.smatrix(op)` delegates to `op.smatrix(background)` (cheap, unless `matexp`); `.run(element)` = both (there is no `.solve()`); precomputes vacuum modes `W0`/`V0`/`background` |
 | `layersolver/operator.py` | `LayerOperator`: structural `Protocol` (`thickness`, `.smatrix()`, `.transfer()`), not one concrete type — matches the `Entry` Protocol pattern in `blockmatrix.py`. `ModalOperator` is the `(lam, W, V, thickness)` implementation used by `eigsolver`/`homogeneous_modes`. `Background` bundles `W0`/`V0`/`wvl`. |
 | `layersolver/homogeneous.py` | `homogeneous_modes`: closed-form modes (no eigensolver) |
+| `layersolver/_modes.py` | Shared by both mode solvers: `_branch_select`, regularized `1/λ` (`_lam_inv_block`), `_regularize_eps` (grazing), opt-in `_warn_grazing` |
 | `layersolver/isotropic.py` | `compute_isotropic`: builds patterned-layer eigenproblem matrices (`P`, `Q` — shared by both modesolvers) |
 | `layersolver/eigsolver.py` | `eigsolver`: numerical eigendecomp with stable autograd gradient |
 | `layersolver/matexpsolver.py` | `TransferOperator`: the other `LayerOperator` implementation, for `modesolver="matexp"`. No eigendecomposition — slices the layer, exponentiates `A=[[0,P],[Q,0]]` per slice (`torch.linalg.matrix_exp`), converts to an S-matrix referenced to a per-layer "gap medium" (`Config.matexp_gap`, default the layer's mean permittivity — not vacuum, which reduces a fictitious-sub-slab resonance artifact of slicing), recombines via `star_power` (`O(log n)` Redheffer star products), then sandwiches back to the stack's vacuum background. See `docs/matrixexp.md`. |
@@ -88,7 +104,15 @@ time, so thickness-only changes don't require rebuilding.
 | `tvf/tvf_utils.py` | TVF field math: periodic gradients, Fourier loss, normalization |
 | `tvf/optimizers.py` | `make_optimizer`: Newton + other TVF direction-field optimizers |
 
-`src/metarcwa/results/base.py` — **stub only**, not implemented.
+### `src/metarcwa/observables/base.py` — post-processing
+
+| Class | Responsibility |
+|-------|----------------|
+| `Observables(modal_solution)` | s/p Jones matrices per diffraction channel: `.jones(kind, in_order, out_order)` → `[..., 2, 2]`; `.reflection(pol)` / `.transmission(pol)` → (co, cross) amplitudes; `.scatter(excitation, ...)` for arbitrary `(a_s, a_p)`. Returns amplitudes, not power — the caller applies `|·|²` and the transmission Poynting-flux factor (see `examples/interface.ipynb`). |
+| `FieldObservables` | Field-level API (`intensity`, `absorption_map`) — **stub**, raises `NotImplementedError` |
+
+`src/metarcwa/_dtypes.py` — `to_complex` / `to_real` / `_REAL_TO_COMPLEX`, shared by `model` and
+`solver` (lives at package root so `solver` never imports `model` utils).
 
 ---
 
@@ -135,25 +159,34 @@ time, so thickness-only changes don't require rebuilding.
 **Conventions that bite:**
 - `exp(−jωt)` time convention throughout. Branch selection for `λ = 1j·kz`:
   propagating → `Re(kz) > 0`; evanescent → `Im(kz) > 0` (decaying +z). Getting this wrong
-  silently gives growing evanescent modes (`homogeneous.py:97–103`, `eigsolver.py:99–101`).
+  silently gives growing evanescent modes. Shared by both mode solvers via
+  `layersolver/_modes.py::_branch_select` (classifies on `Re(λ)`, tolerance-based).
 - **All wavevectors are k0-normalized** (dimensionless). `kx0`/`ky0` in `Source` are k0-normalized;
   multiply by `k0` only for physical units.
 - **Axis ↔ lattice mapping** (easy to flip): eps grid shape is `[…, Ny, Nx]`; axis `−1` = Nx = a1
   direction = `m`/`Gx`; axis `−2` = Ny = a2 direction = `n`/`Gy`. `Config.nx` = a1 resolution,
-  `Config.ny` = a2 resolution (`harmonics.py:95–97`).
+  `Config.ny` = a2 resolution (`harmonics.harmonic_wavevectors`).
 
 **Numerical stability:**
-- **Grazing incidence** (`kx² + ky² = ε` exactly → `λ = 0`): column of `V` becomes NaN; emits
-  `RuntimeWarning` and is **not** auto-handled — avoid in inputs (`homogeneous.py:193,209–212`).
-- **Lorentzian regularization** in `homogeneous.py` (default `δ=1e-30`) and custom `Eig` autograd
-  in `eigsolver.py` (`broadening_parameter=1e-10`) give finite gradients near degeneracy at the
-  cost of a small controlled error.
-- `eigsolver_stable=False` is faster but **can produce NaN gradients** (`config.py:118–122`).
-- Default dtype is **float32** — use `float64` for accuracy-sensitive runs (`config.py:91–93`).
+- **Grazing incidence** (`kx² + ky² = ε` exactly → `λ = 0`, e.g. TIR critical angle): handled by
+  `Config.grazing_eps_reg` (default `1e-8`), a tiny imaginary part added to every permittivity in
+  mode solving (`_modes._regularize_eps`). Setting it to `0` can make the boundary solve singular.
+  The grazing `RuntimeWarning` (`_modes._warn_grazing`) is opt-in via `_modes.WARN_GRAZING`
+  (it forces a GPU sync).
+- **Lorentzian regularization** of `1/λ` (`_modes._lam_inv_block`, `δ=1e-30`) and custom `Eig`
+  autograd in `eigsolver.py` (`broadening_parameter=1e-10`) give finite gradients near degeneracy
+  at the cost of a small controlled error.
+- `eigsolver_stable=False` is faster but **can produce NaN gradients**. `checkpoint_eig=True`
+  trades one extra eig per patterned layer in backward for lower peak memory.
+- Default dtype is **float32** — use `float64` for accuracy-sensitive runs.
+- **dtype/device of `shape_fn` output**: patterns are created fresh in `Layer.spec()`, so
+  `Model.to()` can't cast them; `LayerSolver._patterned` casts `pattern` to `config.dtype` /
+  solver device. Keep that cast — without it a float32 mask under float64 + TVF crashes with a
+  complex64/complex128 matmul mismatch.
 
 **TVF-specific:**
 - Fourier loss **must** divide raw `fft2` output by `D0·D1`; omitting this makes the penalty
-  ~`(D0·D1)²` too large and collapses the field to DC (`tvf.md`, `tvf_utils.py:341–387`).
+  ~`(D0·D1)²` too large and collapses the field to DC (`tvf.md`, `tvf/tvf_utils.py`).
 - Use **forward differences**, not central — central differences have a checkerboard null space
   (`tvf.md` "Forward-difference", `_grad_forward_periodic`).
 - Newton optimizer default `steps=1` is the **exact global minimum** (loss is quadratic in Fourier
@@ -161,7 +194,11 @@ time, so thickness-only changes don't require rebuilding.
 
 **Setup quirks:**
 - `medium_void` and `medium_solid` must be the **same `Medium` subclass**; mixing
-  isotropic/anisotropic is unsupported (`layer.py:45–53`).
+  isotropic/anisotropic is unsupported (checked in `Layer.__init__`). Only `IsotropicMedium`
+  exists today.
+- **Wrap callables in `CallableModule`** (`model/nn_helpers.py`) — `eps_fn` / `shape_fn` must be
+  `nn.Module`s so their tensors/parameters move with `Model.to()` and show up in
+  `model.parameters()`. `register()` only accepts float32/float64 values.
 - Reciprocal lattice uses an **explicit 2D cross-product formula** (not `linalg.solve`) — keep
   consistent if editing lattice math (commit `735639b`).
 - Both `modesolver="eig"` and `"matexp"` are implemented (`docs/matrixexp.md`). Under `"matexp"`

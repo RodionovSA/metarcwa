@@ -689,7 +689,7 @@ wheels = [
 
 [[package]]
 name = "metarcwa"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "pyyaml" },
@@ -702,6 +702,9 @@ dispertorch = [
 ]
 metashapes = [
     { name = "metashapes" },
+]
+ridb = [
+    { name = "ridb" },
 ]
 
 [package.dev-dependencies]
@@ -716,9 +719,10 @@ requires-dist = [
     { name = "dispertorch", marker = "extra == 'dispertorch'", git = "https://github.com/RodionovSA/dispertorch.git" },
     { name = "metashapes", marker = "extra == 'metashapes'", git = "https://github.com/RodionovSA/metashapes.git" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "ridb", marker = "extra == 'ridb'", git = "https://github.com/RodionovSA/RIDB.git" },
     { name = "torch", specifier = ">=2.1.0" },
 ]
-provides-extras = ["metashapes", "dispertorch"]
+provides-extras = ["metashapes", "dispertorch", "ridb"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1296,6 +1300,11 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/70/d8/78b1bad170f93fcf5e3536e70e8fadac55030002275c9a29e8f5719185de/pyzmq-27.1.0-cp314-cp314t-win_amd64.whl", hash = "sha256:19c9468ae0437f8074af379e986c5d3d7d7bfe033506af442e8c879732bedbe0", size = 661401, upload-time = "2025-09-08T23:08:59.802Z" },
     { url = "https://files.pythonhosted.org/packages/81/d6/4bfbb40c9a0b42fc53c7cf442f6385db70b40f74a783130c5d0a5aa62228/pyzmq-27.1.0-cp314-cp314t-win_arm64.whl", hash = "sha256:dc5dbf68a7857b59473f7df42650c621d7e8923fb03fa74a526890f4d33cc4d7", size = 575170, upload-time = "2025-09-08T23:09:01.418Z" },
 ]
+
+[[package]]
+name = "ridb"
+version = "0.1.0"
+source = { git = "https://github.com/RodionovSA/RIDB.git#0a711db943859b009e531fd4a493b8989b5d62af" }
 
 [[package]]
 name = "setuptools"

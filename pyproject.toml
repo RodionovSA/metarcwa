@@ -19,6 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 metashapes = ["metashapes"]
 dispertorch = ["dispertorch"]
+ridb = ["ridb"]
 
 [dependency-groups]
 dev = [
@@ -33,3 +34,4 @@ pythonpath = ["src"]
 [tool.uv.sources]
 metashapes = { git = "https://github.com/RodionovSA/metashapes.git" }
 dispertorch = { git = "https://github.com/RodionovSA/dispertorch.git" }
+ridb = { git = "https://github.com/RodionovSA/RIDB.git" }
