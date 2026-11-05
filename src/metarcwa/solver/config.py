@@ -150,12 +150,14 @@ class Config:
     factorization : Factorization or None
         TVF Li-factorization settings.  ``None`` disables TVF and uses the
         plain Laurent convolution rule.  Default ``Factorization()``.
-    modesolver : str
+    modesolver : str or None
         Mode-solving strategy for patterned layers.  One of ``"eig"`` (full
         eigendecomposition via :func:`eigsolver`) or ``"matexp"`` (matrix
         exponential of the first-order system via
         :mod:`~metarcwa.solver.layersolver.matexpsolver`, see
-        ``docs/matrixexp.md``).  Default ``"eig"``.  The ``matexp_*``
+        ``docs/matrixexp.md``).  Default ``None``: ``"matexp"`` with a
+        lateral PML (its patterned-layer eigenvectors become numerically
+        singular in large cells, see ``docs/PML.md``), ``"eig"`` otherwise.  The ``matexp_*``
         settings below apply only to ``"matexp"``; ``eigsolver_stable`` and
         ``checkpoint_eig`` apply only to ``"eig"`` (inert, not an error,
         under the other solver).  Note the cost model inverts relative to
@@ -249,7 +251,7 @@ class Config:
     n:                    int                 = 12
     truncation:           str                 = "circular"    # "circular" | "rectangular"
     factorization:        Factorization|None  = field(default_factory=Factorization)
-    modesolver:           str                 = "eig"         # "eig" | "matexp"
+    modesolver:           str | None          = None          # None (auto) | "eig" | "matexp"
     eigsolver_stable:     bool                = True
     checkpoint_eig:       bool                = False
     grazing_eps_reg:      float               = 1e-8
@@ -268,7 +270,7 @@ class Config:
         if not isinstance(self.device, torch.device):
             self.device = torch.device(self.device)
 
-        if self.modesolver not in Config._MODESOLVERS:
+        if self.modesolver is not None and self.modesolver not in Config._MODESOLVERS:
             raise ValueError(
                 f"modesolver={self.modesolver!r} not supported; must be one "
                 f"of {Config._MODESOLVERS}."

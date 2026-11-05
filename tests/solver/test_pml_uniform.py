@@ -185,7 +185,7 @@ class TestPatternedStack:
 
     def test_matexp_bound_covers_modal_exponents(self):
         """The slice-count bound from the stretched K̃ is a true upper bound."""
-        lam_max = Solver(_patterned_model(PML(width=0.25)), _config())._ops[2].lam.abs().max()
+        lam_max = Solver(_patterned_model(PML(width=0.25)), _config(modesolver="eig"))._ops[2].lam.abs().max()
         op = Solver(_patterned_model(PML(width=0.25)), _config(modesolver="matexp"))._ops[2]
         assert op.lam_bound >= lam_max
 

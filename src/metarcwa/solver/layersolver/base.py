@@ -92,6 +92,9 @@ class LayerSolver:
     Kx, Ky : Block
         Wavevector operators used for patterned layers: DIAG ``kx``/``ky``,
         or the DENSE stretched operators under a lateral PML.
+    modesolver : str
+        Resolved ``Config.modesolver``: ``"matexp"`` under a PML and
+        ``"eig"`` otherwise when the config leaves it ``None``.
     W0 : Block2x2
         Background E-mode matrix (identity for vacuum).
     V0 : Block2x2
@@ -138,6 +141,7 @@ class LayerSolver:
         self.tvf     = tvf
         self.stretched = K is not None
         self.Kx, self.Ky = K if K is not None else (Block(Block.DIAG, kx), Block(Block.DIAG, ky))
+        self.modesolver = config.modesolver or ("matexp" if self.stretched else "eig")
         self.W0, self.V0 = self._prepare_vacuum()
         self.background = Background(self.W0, self.V0, self.wvl)
 
@@ -325,7 +329,7 @@ class LayerSolver:
                 eps_grid, self.m_flat, self.n_flat,
                 self.Kx, self.Ky, tvf_fields,
             )
-            if self.config.modesolver == "eig":
+            if self.modesolver == "eig":
                 if self.config.checkpoint_eig:
                     lam, W, V = checkpoint(
                         eigsolver, P, Q, self.config.eigsolver_stable,
@@ -334,7 +338,7 @@ class LayerSolver:
                 else:
                     lam, W, V = eigsolver(P, Q, self.config.eigsolver_stable)
                 return ModalOperator(lam, W, V, layer.thickness)
-            elif self.config.modesolver == "matexp":
+            elif self.modesolver == "matexp":
                 # Cheap upper bound on the modal exponent, no eigenvalues
                 # needed: lam^2 ~ kx^2 + ky^2 - eps for the isotropic system,
                 # so max|lam| <~ sqrt(max(kx^2+ky^2) + max|eps|). Detached —
@@ -385,7 +389,7 @@ class LayerSolver:
                 )
             else:
                 raise NotImplementedError(
-                    f"modesolver '{self.config.modesolver}' is not supported. "
+                    f"modesolver '{self.modesolver}' is not supported. "
                     "Currently 'eig' and 'matexp' are implemented."
                 )
         else:

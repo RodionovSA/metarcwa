@@ -52,6 +52,12 @@ class PolynomialProfile(nn.Module):
 
         s(d) = 1 + 1j * sigma_max * d**p
 
+    Without a real stretch, evanescent fields (e.g. the tail of a guided
+    mode) are not attenuated inside the PML. If they reach the cell edge
+    they couple to the neighbouring cell; a guided mode then gets a spurious
+    gain and may be returned with the opposite sign of ``kz``. Prefer
+    :class:`StretchAbsorbProfile` for guided or evanescent-dominated problems.
+
     Parameters
     ----------
     sigma_max : float | Tensor

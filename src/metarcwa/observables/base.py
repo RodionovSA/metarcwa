@@ -39,6 +39,13 @@ in the incidence medium (input) and transmission medium (output of S21),
 ``IsotropicMediumSpec``, whose mode matrix ``W = I`` (see
 ``LayerSolver._prepare_vacuum`` / ``homogeneous_modes``). No vacuum-basis
 (``W0``) transform is needed.
+
+With a lateral PML the half-space mode matrix ``W`` is a dense eigenvector
+matrix, so ``S11``/``S21`` are mapped to the field basis first
+(``W_out · S · W_in⁻¹``). Only the specular order ``(0, 0)`` is available
+then: it is the one harmonic that is still an exact plane-wave mode of the
+half-spaces. For an isolated structure it holds the specular background plus
+the cell-averaged scattered field.
 """
 
 from typing import Literal, Tuple
@@ -47,6 +54,8 @@ import torch
 
 from metarcwa.solver.base import ModalSolution, FieldSolution
 from metarcwa.solver.blockmatrix import Block, Block2x2
+from metarcwa.solver.layersolver.homogeneous import homogeneous_kz
+from metarcwa.solver.layersolver._modes import _regularize_eps
 
 # Regularization threshold for the kx=ky=0 singularity (rho -> 0), e.g. the
 # specular order at/near normal incidence. Same regularization philosophy as
@@ -165,15 +174,29 @@ class Observables:
             Block(Block.DIAG, sy), Block(Block.DIAG, py),
         )
 
+    def _kz(self, which: int) -> torch.Tensor:
+        """Forward kz per harmonic in a half-space, shape ``[..., Nh]``.
+
+        ``which`` is the ``ops`` index: ``0`` incidence, ``-1`` transmission.
+        Under a PML the half-space modes come in eigensolver order, not
+        harmonic order, so the closed-form kz is used instead; it is exact
+        for the specular order, the only one available then.
+        """
+        prepared = self.modal.prepared
+        ls = prepared.layersolver
+        Nh = ls.m_flat.shape[0]
+        if not ls.stretched:
+            return prepared.ops[which].lam[..., :Nh] / 1j
+        medium = prepared.model_spec.incidence if which == 0 else prepared.model_spec.transmission
+        eps = _regularize_eps(medium.eps, ls.config.grazing_eps_reg)
+        return homogeneous_kz(eps, ls.kx, ls.ky)[..., :Nh]
+
     def _incidence_rotation(self) -> Block2x2:
         """R_in: incidence medium, forward kz (+kz_inc) — shared by
         reflection and transmission (both are excited from the incidence
         side)."""
         if self._R_in is None:
-            ls = self.modal.prepared.layersolver
-            ops = self.modal.prepared.ops
-            Nh = ls.m_flat.shape[0]
-            kz_inc = ops[0].lam[..., :Nh] / 1j
+            kz_inc = self._kz(0)
             n_inc = self.modal.prepared.model_spec.incidence.refractive_index()
             n_inc = _broadcast_trailing(n_inc, kz_inc)
             self._R_in = self._rotation(kz_inc, n_inc)
@@ -184,14 +207,11 @@ class Observables:
         (backward-propagating); transmission uses the transmission medium,
         forward kz (no sign flip)."""
         if kind not in self._R_out:
-            ls = self.modal.prepared.layersolver
-            ops = self.modal.prepared.ops
-            Nh = ls.m_flat.shape[0]
             if kind == "reflection":
-                kz = -(ops[0].lam[..., :Nh] / 1j)  # incidence medium, backward
+                kz = -self._kz(0)                  # incidence medium, backward
                 n = self.modal.prepared.model_spec.incidence.refractive_index()
             elif kind == "transmission":
-                kz = ops[-1].lam[..., :Nh] / 1j  # transmission medium, forward
+                kz = self._kz(-1)                  # transmission medium, forward
                 n = self.modal.prepared.model_spec.transmission.refractive_index()
             else:
                 raise ValueError(f"kind must be 'reflection' or 'transmission', got {kind!r}")
@@ -208,7 +228,15 @@ class Observables:
             S_xy = self.modal.S11 if kind == "reflection" else self.modal.S21
             R_in = self._incidence_rotation()
             R_out = self._outgoing_rotation(kind)
-            self._jones_full[kind] = R_out.solve(S_xy @ R_in)
+            if self.modal.prepared.layersolver.stretched:
+                # S acts on half-space mode amplitudes: fields -> modes -> fields.
+                ops = self.modal.prepared.ops
+                W_in = ops[0].W
+                W_out = ops[0].W if kind == "reflection" else ops[-1].W
+                S_R_in = W_out @ (S_xy @ W_in.solve(R_in))
+            else:
+                S_R_in = S_xy @ R_in
+            self._jones_full[kind] = R_out.solve(S_R_in)
         return self._jones_full[kind]
 
     # -- public API ----------------------------------------------------------
@@ -234,6 +262,11 @@ class Observables:
             Shape ``[..., 2, 2]``, ``[[J_ss, J_sp], [J_ps, J_pp]]``, such
             that ``(b_s, b_p) = J @ (a_s, a_p)``.
         """
+        if self.modal.prepared.layersolver.stretched and (in_order, out_order) != ((0, 0), (0, 0)):
+            raise ValueError(
+                "With a PML only the specular order (0, 0) is defined; other "
+                "harmonics are not plane-wave modes of the half-spaces."
+            )
         S_sp = self._jones_operator(kind)
         i_in, i_out = self._order_index(in_order), self._order_index(out_order)
         Jss, Jsp = _leaf_element(S_sp.a, i_out, i_in), _leaf_element(S_sp.b, i_out, i_in)

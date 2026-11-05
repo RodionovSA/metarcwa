@@ -193,7 +193,7 @@ class TestPatternedLayer:
     def test_pml_makes_all_modes_lossy(self, truncation):
         """With the PML every mode decays (Re lam < 0), clearly more than the
         regularization-level loss of the periodic layer."""
-        cfg = _config(truncation=truncation)
+        cfg = _config(truncation=truncation, modesolver="eig")      # eigenvalues needed
         ls0, spec0 = _layersolver(None, cfg)
         ls1, spec1 = _layersolver(PML(width=0.25), cfg)
         lam0 = ls0.prepare(spec0.layers[0]).lam
@@ -210,7 +210,8 @@ class TestPatternedLayer:
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
     def test_runs_on_cuda(self):
-        ls, spec = _layersolver(PML(width=0.25), _config(device="cuda", m=4, n=4, nx=32, ny=32))
+        ls, spec = _layersolver(PML(width=0.25), _config(device="cuda", m=4, n=4, nx=32, ny=32,
+                                                         modesolver="eig"))
         lam = ls.prepare(spec.layers[0]).lam
         assert ls.Kx.data.device.type == "cuda" and lam.device.type == "cuda"
         assert lam.real.max() < 0
@@ -240,3 +241,12 @@ class TestConfig:
     def test_dict_round_trip(self):
         cfg = Config(pml_factorization="inverse")
         assert Config.from_dict(cfg.to_dict()).pml_factorization == "inverse"
+
+    def test_modesolver_auto_resolution(self):
+        """Default modesolver=None resolves to matexp with a PML, eig without;
+        an explicit choice is kept."""
+        assert Config().modesolver is None
+        assert _layersolver(None, _config())[0].modesolver == "eig"
+        assert _layersolver(PML(width=0.25), _config())[0].modesolver == "matexp"
+        assert _layersolver(PML(width=0.25), _config(modesolver="eig"))[0].modesolver == "eig"
+        assert Config.from_dict(Config().to_dict()).modesolver is None

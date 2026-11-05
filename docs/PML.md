@@ -49,6 +49,18 @@ $$
 
 The first is the profile of [fmmax](https://github.com/facebookresearch/fmmax) and the default ($a_\text{max} = 4$, $p = 4$, $\sigma_\text{max} = 1$). Its real factor compresses space inside the PML and damps evanescent waves, which a purely imaginary stretch, such as the second profile, does not attenuate. Both are continuous, including across the cell edge where the two PMLs of neighbouring cells meet.
 
+Without a real stretch, an evanescent tail that reaches the cell edge couples to the neighbouring cell through the complex coordinate. For a weakly guided slab mode this produced a spurious gain $\sim 50\times$ larger than the PML loss with the default profile, and the mode was labelled with the opposite sign of $k_z$. S-matrices are not affected (the mode labelling does not change a finite layer's S-matrix), but guided-mode analysis is. Use a profile with real stretch for guided or evanescent-dominated problems.
+
+**Choosing parameters.** Two test problems were swept at wavelength $1$: a weakly guided slab (index $1.6/1.45$, evanescent decay length $0.45$, cell $3$, PML width $0.75$), sensitive to evanescent tails, and an isolated dielectric ridge on a substrate, sensitive to radiated waves. The defaults lie in the region that is good for both:
+
+| Parameter | Slab (evanescent) | Ridge (radiation) |
+|---|---|---|
+| $a_\text{max}$ | $\ge 4$ needed; $1$–$2$ give errors $\sim 5\times10^{-5}$ and a spurious gain | insensitive ($0$–$8$) |
+| $p$ | insensitive ($1$–$4$) | $p = 1$ worse; $2$–$4$ equivalent |
+| $\sigma_\text{max}$ | insensitive ($0.5$–$2$) | $0.5$–$2$ equivalent; $\ge 4$ worse |
+
+Practical guidance: a PML width of about one wavelength, and a margin of a few evanescent decay lengths between the structure and the PML.
+
 **Geometry inside the PML.** A PML is reflectionless only if the structure does not vary along its normal. The pattern is therefore **edge-padded** into the PML: inside the $x$-PML, the geometry at the inner PML boundary is continued unchanged along $x$. A substrate or film that reaches the cell edge continues straight through the PML.
 
 ---
@@ -234,7 +246,7 @@ $\gamma = \lambda$ is a removable singularity, not a resonance: evaluate with th
 | Harmonics | `solver/harmonics.py` | Bloch phase 0 along PML axes. New: build $\tilde K_x$, $\tilde K_y$. |
 | `P`, `Q` assembly | `layersolver/isotropic.py` | Pass dense $\tilde K$ instead of diagonal $K$. Fix `d = Ky @ Kx` in `compute_Q0`. |
 | TVF | `tvf/` | Unchanged (given edge padding). |
-| Patterned modes | `layersolver/eigsolver.py`, `matexpsolver.py` | Unchanged. The matexp slice-count bound uses the $\infty$-norm of $\tilde K$. |
+| Patterned modes | `layersolver/eigsolver.py`, `matexpsolver.py` | Unchanged, but `matexp` is the default under PML (`Config.modesolver=None`). The stretched operator is strongly non-normal, so the eigenvector matrix of a patterned layer becomes numerically singular in large cells ($\mathrm{cond} \sim 10^{12}$–$10^{17}$ for a 16-wavelength cell), and `eig` results become erratic; `matexp` needs no eigenvectors. The matexp slice-count bound uses the $\infty$-norm of $\tilde K$. |
 | Homogeneous modes | `layersolver/base.py` | Closed form lost: $P = Q_0/\varepsilon$ solved by `eigsolver`. |
 | Background `W0`, `V0` | `layersolver/base.py` | Unchanged (unstretched vacuum): the zero-thickness gap is exact for any basis; checked to agree with a stretched gap to $\sim 10^{-12}$. |
 | Background solve | new | 1-harmonic transfer matrix of the background stack, giving $\mathbf E_\text{inc}$ per layer. |
