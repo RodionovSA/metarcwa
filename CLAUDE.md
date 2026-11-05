@@ -25,6 +25,7 @@ uv sync --extra ridb         # refractive-index database
 # Tests
 pytest   # pythonpath=["src"] set in pyproject.toml; suites in tests/{model,solver,observables}
          # tests/*_bench.py, tvf_memory_profile.py are benchmarks, not tests
+         # (tests/pml_scattered_validation_bench.py: PML oblique-incidence validation)
 
 # Config-driven solve
 config = Config.from_yaml("config.yaml")
@@ -32,7 +33,8 @@ config = Config.from_yaml("config.yaml")
 
 - `examples/` — curated, validated notebooks: `uniform_layer` / `interface` (checked against
   TMM/Fresnel), `1d_grating`, `2d_grating`, `compare_factorization`, `compare_solvers`,
-  `convergence_test`.
+  `convergence_test`, `pml_isolated_structures` (PML, normal incidence), `pml_oblique_incidence`
+  (PML scattered-field formulation).
 - `notebooks/` — scratch/dev notebooks (`example`, `model_tests`, `test_solver`, `tvf_playground`, …).
 
 > Lint / type-check: none configured. No CI (`.github/` absent).
@@ -80,6 +82,7 @@ Re-preparing after changes:
 | `medium.py` | `Medium`, `IsotropicMedium`: material / permittivity definitions for half-spaces |
 | `source.py` | `Source`: wavelength, incidence angles (theta/phi). No polarization — s/p amplitudes are applied downstream by `Observables`, not needed for the S-matrix itself |
 | `lattice.py` | `Lattice`: 2D Bravais lattice vectors `a1`, `a2`; `Lattice.rectangular(px, py)`, `Lattice.hexagonal(a, orientation=...)` |
+| `pml.py` | `PML(width, profile, method="stretch")` lateral PML (rectangular lattice only), profiles `StretchAbsorbProfile` / `PolynomialProfile`; `PMLSpec(sx, sy)` stretch sampled on the grid; `PML.pad` edge-pads patterns into the PML (`Stack(pml=...)`) |
 | `adapters.py` | `from_metashapes(shape, soft=, softness=)` → `shape_fn`; `from_dispertorch(model)` → `eps_fn` (optional-extra bridges) |
 | `nn_helpers.py` | `register` (tensor → param/buffer), `CallableModule` (wrap a callable + its deps as an `nn.Module`) |
 
@@ -90,8 +93,11 @@ Re-preparing after changes:
 | `base.py` | Functional core `build_layersolver` / `prepare` / `reprepare` / `run` + `PreparedStack`, `ModalSolution` (`S11`, `S21`), `FieldSolution` (stub); `Solver` is a thin class wrapper (`.run()`, `.reprepare(layer_indices)`) |
 | `config.py` | `Config` + `Factorization` dataclasses; grid/truncation/dtype/device/solver switches |
 | `harmonics.py` | Harmonic index map `(m,n)`, truncation, in-plane wavevectors `kx`/`ky` |
-| `smatrix.py` | `S_boundary`, `S_prop`, `S_layer`: per-interface/layer S-matrix builders |
-| `blockmatrix.py` | `Block` / `Block2x2`: structured operator algebra + Redheffer star product |
+| `smatrix.py` | `S_boundary`, `S_prop`, `S_layer`: per-interface/layer S-matrix builders; `AffineS(S, e_L, e_R)` + extended `.star()` for layers with sources (PML scattered field) |
+| `pml.py` | `stretched_k`: dense stretched `K̃x = [[1/s_x]] Kx`, `K̃y` (Laurent or inverse) |
+| `background.py` | `solve_background` → `BackgroundField`: 1-harmonic solve of the background stack (patterned → `medium_void`) for unit s/p incidence = `E_inc` per layer |
+| `scattered.py` | PML scattered-field source: `layer_source` (FFT of `Δε e^{jk∥·r}` → `f`), `modal_affine` (closed form, stable `phi1`), `transfer_affine` (augmented `matrix_exp` per slice + phase-shifted squaring), `layer_affine` |
+| `blockmatrix.py` | `Block` / `Block2x2`: structured operator algebra + Redheffer star product; `apply_vec` / `solve_vec` (operator × dense vector) |
 | `convolution.py` | Fourier convolution matrix helpers |
 | `layersolver/base.py` | `LayerSolver`: `.prepare(element)` builds a `LayerOperator` (expensive: TVF/convolution/eigendecomp, unless `modesolver="matexp"` — see gotchas); `.smatrix(op)` delegates to `op.smatrix(background)` (cheap, unless `matexp`); `.run(element)` = both (there is no `.solve()`); precomputes vacuum modes `W0`/`V0`/`background` |
 | `layersolver/operator.py` | `LayerOperator`: structural `Protocol` (`thickness`, `.smatrix()`, `.transfer()`), not one concrete type — matches the `Entry` Protocol pattern in `blockmatrix.py`. `ModalOperator` is the `(lam, W, V, thickness)` implementation used by `eigsolver`/`homogeneous_modes`. `Background` bundles `W0`/`V0`/`wvl`. |
@@ -108,7 +114,7 @@ Re-preparing after changes:
 
 | Class | Responsibility |
 |-------|----------------|
-| `Observables(modal_solution)` | s/p Jones matrices per diffraction channel: `.jones(kind, in_order, out_order)` → `[..., 2, 2]`; `.reflection(pol)` / `.transmission(pol)` → (co, cross) amplitudes; `.scatter(excitation, ...)` for arbitrary `(a_s, a_p)`. Returns amplitudes, not power — the caller applies `|·|²` and the transmission Poynting-flux factor (see `examples/interface.ipynb`). |
+| `Observables(modal_solution)` | s/p Jones matrices per diffraction channel: `.jones(kind, in_order, out_order)` → `[..., 2, 2]`; `.reflection(pol)` / `.transmission(pol)` → (co, cross) amplitudes; `.scatter(excitation, ...)` for arbitrary `(a_s, a_p)`. Returns amplitudes, not power — the caller applies `|·|²` and the transmission Poynting-flux factor (see `examples/interface.ipynb`). Under a PML only order `(0, 0)`; with the scattered-field formulation also `background_jones`, `scattered_coefficients` / `scattered_field` (grid), `scattered_power`, `extinction` (`region="cell" \| "physical"`), see `docs/PML.md` "Observables". |
 | `FieldObservables` | Field-level API (`intensity`, `absorption_map`) — **stub**, raises `NotImplementedError` |
 
 `src/metarcwa/_dtypes.py` — `to_complex` / `to_real` / `_REAL_TO_COMPLEX`, shared by `model` and
@@ -147,6 +153,13 @@ Re-preparing after changes:
     `thickness=None` marks a semi-infinite medium (boundary only).
 - **S-matrix composition**: Redheffer star product `Block2x2.star()`. **Not matrix multiply.**
   Associative, not commutative. Convention: `S11/S22` = reflection, `S12/S21` = transmission.
+- **Lateral PML** (`docs/PML.md`): complex coordinate stretch at the edges of a rectangular supercell for
+  aperiodic problems; `K → K̃` (dense), Bloch phase 0 along PML axes, `modesolver` defaults to `"matexp"`
+  (eig vectors ill-conditioned in large cells), uniform media solved numerically (`P = Q0/ε` + `eigsolver`).
+  Illumination: `Config.pml_formulation="scattered"` (default) splits `E = E_inc + E_s`; `run()` solves the
+  background (`background.py`), builds per-patterned-layer source vectors (`scattered.py`) and composes
+  `AffineS`; `ModalSolution` gains `e_L`, `e_R` (`[..., 2Nh, 2]`, s/p columns) and `background`.
+  `"total"` only without tilt along a PML axis (validation).
 - **TVF / FFF**: Tangent Vector Field gives the anisotropic Fourier-space factorization of
   `D`–`E` at discontinuities (Li 1996 rules). Treated as fixed geometry; detached from autograd.
 - **`Block`/`Block2x2`**: lazy structured matrices (SCALAR → DIAG → DENSE promotion only).
@@ -211,6 +224,15 @@ Re-preparing after changes:
   above and ~4x the dense memory per patterned layer (`4Nh×4Nh` system matrix vs `2Nh×2Nh` for `Ω²`).
 - Historically bug-prone areas: sign conventions, TVF scaling, homogeneous layer shapes.
 
+**PML-specific:**
+- Under the scattered formulation the structure (`ε − ε_void`) must stay out of the PML (`prepare()` warns).
+- With TVF the source carries `Qfact = Q − Q0` applied to `E_inc` (kept on operators as `.qfact`, only
+  under PML); without it scattered ≠ total at finite `Nh`. Keep it when touching `compute_isotropic`.
+- Source phase convention: pixel `i` at `x = i·px/nx` (FFT convention of `convolution_matrix`); the
+  background/scattered fields share it.
+- Intermittent segfault / heap abort seen in multithreaded CPU runs of PML + TVF + matexp models with
+  torch 2.13 (also on code predating the scattered formulation); `OMP_NUM_THREADS=1` avoids it.
+
 ---
 
 ## Detailed docs (`docs/`)
@@ -224,4 +246,5 @@ Re-preparing after changes:
 | `homogeneous.md` | Closed-form modes; `λ²=kx²+ky²−ε`; Lorentzian sqrt regularization; grazing incidence |
 | `smatrix.md` | S- vs T-matrix (stability rationale); boundary/layer/Redheffer-star derivations; impl notes |
 | `blockmatrix.md` | `Block`/`Block2x2` system (SCALAR/DIAG/DENSE); memory savings; Schur-complement inverse |
+| `PML.md` | Lateral PML: coordinate stretching, `K̃`, factorization, scattered-field formulation, affine S-matrices, PML observables |
 | `matrixexp.md` | Matrix-exponential patterned-layer solver (`modesolver="matexp"`) — system matrix, T→S conversion, slicing for stability, cost-model inversion |

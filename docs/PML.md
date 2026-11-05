@@ -1,6 +1,6 @@
 # Perfectly matched layers (PML)
 
-> **Status:** design draft. Nothing described here is implemented. Sections marked **TODO** are not worked out yet.
+> **Status:** implemented (PLAN.md phases 0–8): RCWA + PML, the total-field formulation (normal incidence) and the scattered-field formulation (any angle, the default), with PML observables. Sections marked **TODO** are open.
 
 ## Overview
 
@@ -177,7 +177,17 @@ $$
 \end{align}
 $$
 
-where $f$ is the Fourier transform of $\Delta\varepsilon\,\mathbf E_\text{inc}$. It enters the $u$-equations directly and the $s$-equations through the $[S_z]$ elimination. $\mathbf E_\text{inc}$ is continuous, so the Laurent rule for $[[\Delta\varepsilon\,E_\text{inc}]]$ is exact.
+where $f$ is the Fourier transform of $\Delta\varepsilon\,\mathbf E_\text{inc}$. It enters the $u$-equations directly and the $s$-equations through the $[S_z]$ elimination. With $F_i = [[\Delta\varepsilon\,E_{\text{inc},i}]]$ (normalization of [RCWA core](rcwa_core.md), $\tilde z = k_0 z$):
+
+$$
+\begin{align}
+f = \begin{pmatrix} -j\tilde K_x[[\varepsilon]]^{-1}F_z\\ -j\tilde K_y[[\varepsilon]]^{-1}F_z\\ -F_y\\ F_x\end{pmatrix}.
+\end{align}
+$$
+
+$\mathbf E_\text{inc}$ is continuous, so the Laurent rule for $[[\Delta\varepsilon\,E_\text{inc}]]$ is exact in the limit. $F_i$ is computed as the FFT of $\Delta\varepsilon\,e^{j\mathbf k_\parallel\cdot\mathbf r}$ on the pattern grid (pixel $i$ at $x = i\,p_x/N_x$, the FFT convention of the convolution matrices) times the plane-wave amplitude of $\mathbf E_\text{inc}$.
+
+**TVF.** The TVF rule describes the $\mathbf D$–$\mathbf E$ relation of the **total** field (its normal $\mathbf D$ is continuous, not that of $\mathbf E_s$). The source therefore also carries the TVF correction applied to $\mathbf E_\text{inc}$: $f_u \mathrel{+}= Q_\text{fact}\,(\phi E_x, \phi E_y)$, with $Q_\text{fact} = Q - Q_0$ and $\phi$ the Fourier coefficients of $e^{j\mathbf k_\parallel\cdot\mathbf r}$. With it, the scattered-field result equals the total-field one exactly at normal incidence (checked to $\sim 10^{-14}$); with the Laurent source alone they differ at the $10^{-2}$ level at finite $N_h$.
 
 ### Where the angle enters
 
@@ -235,6 +245,18 @@ $\gamma = \lambda$ is a removable singularity, not a resonance: evaluate with th
 
 **Polarization.** $S$ does not depend on polarization, but $e$ does, through $\mathbf E_\text{inc}$. Each $e$ is computed for s and p and stored as two columns, so `Observables` can still apply $(a_s, a_p)$ downstream, as today.
 
+**Matrix-exponential layers.** `TransferOperator` has no eigenbasis. Each slice of thickness $h$ uses the exponential of the augmented system,
+
+$$
+\begin{align}
+\exp\!\left[\begin{pmatrix}A & f\\ 0 & \Gamma\end{pmatrix}k_0h\right] = \begin{pmatrix}T & p\\ 0 & e^{\Gamma k_0 h}\end{pmatrix},
+\end{align}
+$$
+
+where $T = e^{Ak_0h}$ and $p$ is the exact particular solution with zero initial field ($\Gamma = \mathrm{diag}(\gamma)$, one column per term). One `matrix_exp` of size $4N_h + 4$ gives both. $(T, p)$ is converted to an affine S-matrix against the gap medium, and the identical slices are recombined by repeated squaring. Slice $k$ carries the source of slice $0$ times $e^{\lambda_\text{bg}k_0kh}$ (forward terms, referenced to the left face) or $e^{\lambda_\text{bg}k_0(n-1-k)h}$ (backward terms, referenced to the right face): joining a left block of length $L_A$ to a right block of length $L_B$ scales the right block's forward columns by $e^{\lambda_\text{bg}k_0L_A}$ and the left block's backward columns by $e^{\lambda_\text{bg}k_0L_B}$, all bounded by $1$.
+
+**Structure in the PML.** $\Delta\varepsilon$ must vanish inside the PML. `prepare()` warns otherwise (a pattern that is edge-padded into the PML with $\varepsilon_\text{solid} \ne \varepsilon_\text{void}$).
+
 ---
 
 ## How it fits the pipeline
@@ -249,10 +271,10 @@ $\gamma = \lambda$ is a removable singularity, not a resonance: evaluate with th
 | Patterned modes | `layersolver/eigsolver.py`, `matexpsolver.py` | Unchanged, but `matexp` is the default under PML (`Config.modesolver=None`). The stretched operator is strongly non-normal, so the eigenvector matrix of a patterned layer becomes numerically singular in large cells ($\mathrm{cond} \sim 10^{12}$–$10^{17}$ for a 16-wavelength cell), and `eig` results become erratic; `matexp` needs no eigenvectors. The matexp slice-count bound uses the $\infty$-norm of $\tilde K$. |
 | Homogeneous modes | `layersolver/base.py` | Closed form lost: $P = Q_0/\varepsilon$ solved by `eigsolver`. |
 | Background `W0`, `V0` | `layersolver/base.py` | Unchanged (unstretched vacuum): the zero-thickness gap is exact for any basis; checked to agree with a stretched gap to $\sim 10^{-12}$. |
-| Background solve | new | 1-harmonic transfer matrix of the background stack, giving $\mathbf E_\text{inc}$ per layer. |
-| Source vectors | new, in `smatrix()` / `run()` | $f$ from the FFT of $\Delta\varepsilon\,e^{j\mathbf k_\parallel\cdot\mathbf r}$ (a vector, not a matrix), then $(e_L, e_R)$ per patterned layer. |
-| Star product | `solver/blockmatrix.py` | Extended to carry source vectors. |
-| Observables | `observables/base.py` | **TODO:** total = background (analytic) + scattered. Scattered waves are modes of the PML'd half-space, not diffraction orders. |
+| Background solve | `solver/background.py` | 1-harmonic S-matrix solve of the background stack, giving $\mathbf E_\text{inc}$ per layer (`BackgroundField`). |
+| Source vectors | `solver/scattered.py`, in `run()` | $f$ from the FFT of $\Delta\varepsilon\,e^{j\mathbf k_\parallel\cdot\mathbf r}$ (a vector, not a matrix), then $(e_L, e_R)$ per patterned layer (closed form for `ModalOperator`, augmented exponential for `TransferOperator`). |
+| Star product | `solver/smatrix.py::AffineS` | Extended star carrying source vectors; `blockmatrix.apply_vec` / `solve_vec` for the vector products. |
+| Observables | `observables/base.py` | Total = background (analytic) + scattered, reconstructed on the grid; see "Observables" below. |
 
 The expensive/cheap split is preserved: eigendecompositions stay in `prepare()`, while everything that depends on the incident field (background solve, source vectors) is cheap and happens in `run()`.
 
@@ -294,23 +316,36 @@ solution = solver.run()
 - **`Source`**: unchanged. With a PML, its angles define $\mathbf E_\text{inc}$; the Bloch phase along PML axes is set to zero internally.
 - **`Config`**: two new switches, both with defaults that need no attention:
   - `pml_factorization: "laurent" | "inverse"` (default `"laurent"`, debug only);
-  - `pml_formulation: "scattered" | "total"` (default `"scattered"`; `"total"` only valid at normal incidence, for validation).
-- **`ModalSolution`**: gains the source vectors $(e_L, e_R)$ next to `S11`, `S21`.
-- **`Observables`**: new PML-aware outputs. **TODO**, see open questions.
+  - `pml_formulation: "scattered" | "total"` (default `"scattered"`; `"total"` only valid without tilt along a PML axis, for validation).
+- **`ModalSolution`**: gains the source vectors $(e_L, e_R)$ (`[..., 2N_h, 2]`, half-space mode bases, columns s and p) and the `BackgroundField` next to `S11`, `S21`.
+- **`Observables`**: PML-aware outputs, see "Observables" below.
 
 Internally, a new `solver/pml.py` builds $\tilde K_x$, $\tilde K_y$ as `Block`s from `PMLSpec`, and `solver/background.py` solves the background stack.
 
 ---
 
+## Observables
+
+Under the scattered-field formulation the scattered field has no incoming part, so $(e_L, e_R)$ is its whole solution at the two faces: the tangential fields are $W e$, $\pm V e$ in the half-space mode bases (minus sign for the backward waves on the incidence side). They are not diffraction orders: `Observables` reconstructs them on the pattern grid (`scattered_field`) and defines:
+
+- **Specular Jones matrix** (`jones`, `reflection`, `transmission`; order $(0,0)$ only): background plus the scattered field projected on the specular plane wave, $\frac1A\int_\text{region}\mathbf E_{s,t}\,e^{-j\mathbf k_\parallel\cdot\mathbf r}\,dA$, with `region="cell"` (default, the whole cell; equal to the total-field $(0,0)$ order at normal incidence) or `"physical"` (PML excluded; still divided by the cell area $A$). For an isolated structure the scattered part scales as $1/A$, and $A\,(J - J_\text{bg})$ is the cell-independent specular scattering amplitude.
+- **Background Jones matrix** (`background_jones`): the background stack alone.
+- **Scattered power** (`scattered_power(kind, region="physical")`): the Poynting flux $\tfrac12\mathrm{Im}(S_xU_y^* - S_yU_x^*)$ of the scattered field through one face, normalized to the incident power on one cell ($I_\text{inc}A$). Multiply by $A$ for a cross section.
+- **Extinction** (`extinction(region="physical")`): minus the outward flux of the interference term between incident (background) and scattered fields through both faces, i.e. scattered + absorbed power. It ignores the interference flux through the lateral boundaries (e.g. a mode guided away in a film).
+
+Check (lossless ridge on glass, `L = 16`): extinction equals the sum of the scattered powers to $\sim 10^{-3}$; the scattered powers converge with the cell size to 4 digits. Near fields inside the stack need `FieldSolution` (not implemented).
+
+---
+
 ## Open questions
 
-1. **Observables.** Which outputs to provide: total reflection and transmission, scattered power, extinction, near or far field?
+1. **Observables.** Near and far fields (far-field angular spectrum of the scattered field) are not provided yet; near fields need `FieldSolution`.
 2. **Profile.** Add the Hugonin–Lalanne nonlinear map (better convergence) as a built-in profile?
 3. **Gradients.** Should the PML parameters be differentiable?
 4. **Validation.**
    - Laurent vs inverse rule convergence for $[[1/s]]$.
-   - Normal incidence: scattered-field vs total-field formulation.
-   - Oblique incidence: convergence towards a large periodic supercell, and Mie theory for a single cylinder or sphere.
+   - Normal incidence: scattered-field vs total-field formulation. *Done:* equal to $\sim 10^{-14}$ (eig/matexp, with and without TVF).
+   - Oblique incidence: convergence towards a large periodic supercell (*done:* agreement at $\sim 10^{-3}$, `tests/pml_scattered_validation_bench.py`), and Mie theory for a single cylinder or sphere (not done).
    - Slab waveguide mode vs the analytic dispersion relation.
 
 ---

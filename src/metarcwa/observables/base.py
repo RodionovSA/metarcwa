@@ -46,6 +46,29 @@ matrix, so ``S11``/``S21`` are mapped to the field basis first
 then: it is the one harmonic that is still an exact plane-wave mode of the
 half-spaces. For an isolated structure it holds the specular background plus
 the cell-averaged scattered field.
+
+PML scattered-field formulation
+-------------------------------
+With ``Config.pml_formulation == "scattered"`` (the PML default) the
+solution carries the background (incident) field and the scattered waves
+``e_L``/``e_R`` leaving the stack (``docs/PML.md``). The scattered field is
+purely outgoing and is **not** a set of diffraction orders: it is a field on
+the face of the stack, which is reconstructed on the real-space grid. The
+observables are then:
+
+- :meth:`Observables.jones` / ``reflection`` / ``transmission`` (specular
+  order only): background plus the scattered field projected on the
+  incident plane wave ``exp(j k_par . r)`` and averaged over the cell
+  (``region="cell"``, default; equals the total-field ``(0, 0)`` order at
+  normal incidence) or integrated over the physical region only and divided
+  by the cell area (``region="physical"``). For an isolated structure the
+  scattered part scales as ``1 / cell area``; ``area * (J - J_bg)`` is the
+  cell-independent specular scattering amplitude.
+- :meth:`Observables.background_jones`: the background stack alone.
+- :meth:`Observables.scattered_power`: power of the scattered field leaving
+  through one face, normalized to the incident power on one cell.
+- :meth:`Observables.extinction`: power taken from the incident field
+  (scattered + absorbed), from the interference term on both faces.
 """
 
 from typing import Literal, Tuple
@@ -53,9 +76,11 @@ from typing import Literal, Tuple
 import torch
 
 from metarcwa.solver.base import ModalSolution, FieldSolution
-from metarcwa.solver.blockmatrix import Block, Block2x2
+from metarcwa.solver.background import _sp_basis
+from metarcwa.solver.blockmatrix import Block, Block2x2, apply_vec
 from metarcwa.solver.layersolver.homogeneous import homogeneous_kz
 from metarcwa.solver.layersolver._modes import _regularize_eps
+from metarcwa.solver.scattered import _grid_phase, physical_mask
 
 # Regularization threshold for the kx=ky=0 singularity (rho -> 0), e.g. the
 # specular order at/near normal incidence. Same regularization philosophy as
@@ -65,6 +90,7 @@ _RHO_EPS = 1e-8
 
 Kind = Literal["reflection", "transmission"]
 Pol = Literal["s", "p"]
+Region = Literal["cell", "physical"]
 
 
 def _broadcast_trailing(x: torch.Tensor, like: torch.Tensor) -> torch.Tensor:
@@ -246,6 +272,7 @@ class Observables:
         kind: Kind,
         in_order: Tuple[int, int] = (0, 0),
         out_order: Tuple[int, int] = (0, 0),
+        region: Region = "cell",
     ) -> torch.Tensor:
         """2x2 s/p Jones matrix for one diffraction channel.
 
@@ -255,6 +282,10 @@ class Observables:
             Which scattering process to evaluate.
         in_order, out_order : tuple of int, default (0, 0)
             Incident / scattered diffraction order ``(m, n)``.
+        region : {"cell", "physical"}, default "cell"
+            PML scattered-field formulation only: where the scattered field
+            is projected on the specular plane wave (see the module
+            docstring). Ignored otherwise.
 
         Returns
         -------
@@ -267,6 +298,10 @@ class Observables:
                 "With a PML only the specular order (0, 0) is defined; other "
                 "harmonics are not plane-wave modes of the half-spaces."
             )
+        if self.modal.background is not None:
+            bg_t = self._background_face(kind)[..., :2, :]
+            sc_t = self._project_specular(kind, region)
+            return self._sp_solve(kind, bg_t + sc_t)
         S_sp = self._jones_operator(kind)
         i_in, i_out = self._order_index(in_order), self._order_index(out_order)
         Jss, Jsp = _leaf_element(S_sp.a, i_out, i_in), _leaf_element(S_sp.b, i_out, i_in)
@@ -345,6 +380,194 @@ class Observables:
         exc = self._unit_excitation(pol, J.dtype, J.device)
         ts, tp = torch.einsum("...ij,j->...i", J, exc).unbind(-1)
         return ts, tp
+
+
+    # -- PML scattered-field formulation ------------------------------------
+
+    def _require_scattered(self) -> None:
+        if self.modal.background is None:
+            raise ValueError(
+                "Only available for the PML scattered-field formulation "
+                "(a Stack with a PML and Config(pml_formulation='scattered'))."
+            )
+
+    def _sp_solve(self, kind: Kind, tangential: torch.Tensor) -> torch.Tensor:
+        """Map outgoing tangential E ``(Sx, Sy)`` (``[..., 2, ncol]``) of the
+        specular plane wave to s/p amplitudes."""
+        spec = self.modal.prepared.model_spec
+        bg = self.modal.background
+        if kind == "reflection":
+            i, sign, medium = 0, -1.0, spec.incidence
+        elif kind == "transmission":
+            i, sign, medium = -1, 1.0, spec.transmission
+        else:
+            raise ValueError(f"kind must be 'reflection' or 'transmission', got {kind!r}")
+        n = torch.sqrt(medium.eps).reshape(-1, 1, 1)
+        R = _sp_basis(bg.kx0, bg.ky0, sign * bg.lam[i] / 1j, n, torch.atan2(bg.ky0, bg.kx0))
+        return torch.linalg.solve(R, tangential.to(R.dtype))
+
+    def _background_face(self, kind: Kind) -> torch.Tensor:
+        """Outgoing background plane wave at the face, ``[..., 4, 2]`` rows
+        ``(Sx, Sy, Ux, Uy)``, columns s, p excitation."""
+        bg = self.modal.background
+        if kind == "reflection":
+            c, V, sign = bg.c_minus[0], bg.V[0], -1.0
+        elif kind == "transmission":
+            c, V, sign = bg.c_plus[-1], bg.V[-1], 1.0
+        else:
+            raise ValueError(f"kind must be 'reflection' or 'transmission', got {kind!r}")
+        return torch.cat([c, sign * (V @ c)], dim=-2)
+
+    def background_jones(self, kind: Kind) -> torch.Tensor:
+        """s/p Jones matrix of the background stack alone (specular, ``[..., 2, 2]``).
+
+        The background is the stack with every patterned layer filled with
+        its void medium (``metarcwa.solver.background``).
+        """
+        self._require_scattered()
+        return self._sp_solve(kind, self._background_face(kind)[..., :2, :])
+
+    def scattered_coefficients(self, kind: Kind) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Harmonic coefficients of the scattered field on one face.
+
+        Returns
+        -------
+        s, u : torch.Tensor
+            Tangential ``(Sx, Sy)`` and ``(Ux, Uy)`` Fourier coefficients,
+            shape ``[..., 2Nh, 2]`` (columns: unit s, p incident wave). Along
+            PML axes the Bloch phase is zero; along periodic axes the
+            coefficients multiply the usual Bloch harmonics.
+        """
+        self._require_scattered()
+        ops = self.modal.prepared.ops
+        if kind == "reflection":
+            op, e, sign = ops[0], self.modal.e_L, -1.0      # backward waves
+        elif kind == "transmission":
+            op, e, sign = ops[-1], self.modal.e_R, 1.0
+        else:
+            raise ValueError(f"kind must be 'reflection' or 'transmission', got {kind!r}")
+        return apply_vec(op.W, e), sign * apply_vec(op.V, e)
+
+    def _grid(self, coeffs: torch.Tensor) -> torch.Tensor:
+        """Real-space field ``[..., ncol, Ny, Nx]`` from ``[..., Nh, ncol]``
+        coefficients (Bloch phase of periodic axes omitted)."""
+        ls = self.modal.prepared.layersolver
+        nx, ny = ls.config.nx, ls.config.ny
+        c = coeffs.transpose(-1, -2)
+        grid = torch.zeros(*c.shape[:-1], ny, nx, dtype=c.dtype, device=c.device)
+        grid[..., ls.n_flat % ny, ls.m_flat % nx] = c
+        return torch.fft.ifft2(grid, norm="forward")
+
+    def scattered_field(self, kind: Kind) -> torch.Tensor:
+        """Scattered tangential fields on one face, on the real-space grid.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``[..., 4, 2, Ny, Nx]``: components ``(Ex, Ey, Ux, Uy)``
+            (``H = j sqrt(eps0/mu0) U``), columns s, p excitation. Same
+            pixel indexing as the pattern grid; the solver's phase
+            convention puts pixel ``(j, i)`` at ``(y, x) = (j py/Ny, i px/Nx)``
+            (``exp(j k_par . r)`` of the source uses it). Along a
+            periodic axis the Bloch factor ``exp(j k_par . r)`` is omitted
+            (it is common to every field and drops out of fluxes).
+        """
+        s, u = self.scattered_coefficients(kind)
+        Nh = s.shape[-2] // 2
+        comps = [s[..., :Nh, :], s[..., Nh:, :], u[..., :Nh, :], u[..., Nh:, :]]
+        return torch.stack([self._grid(c) for c in comps], dim=-4)
+
+    def _mask(self, region: Region) -> torch.Tensor:
+        ls = self.modal.prepared.layersolver
+        nx, ny = ls.config.nx, ls.config.ny
+        if region == "cell":
+            return torch.ones(ny, nx, dtype=torch.bool, device=ls.m_flat.device)
+        if region == "physical":
+            return physical_mask(self.modal.prepared.model_spec.pml, ny, nx, ls.m_flat.device)
+        raise ValueError(f"region must be 'cell' or 'physical', got {region!r}")
+
+    def _phase(self) -> torch.Tensor:
+        """``exp(j k_par . r)`` on the grid along PML axes, ``[..., Ny, Nx]``."""
+        ls = self.modal.prepared.layersolver
+        spec = self.modal.prepared.model_spec
+        bg = self.modal.background
+        return _grid_phase(spec.pml, bg.kx0, bg.ky0, 2 * torch.pi / bg.wavelength,
+                           spec.a1, spec.a2, ls.config.ny, ls.config.nx)
+
+    def _project_specular(self, kind: Kind, region: Region) -> torch.Tensor:
+        """Scattered tangential E projected on the specular plane wave, ``[..., 2, 2]``.
+
+        ``(1/A) ∫_region E_s exp(-j k_par . r) dA`` with ``A`` the cell area
+        (grid sum, consistent with the FFT convention of the solver).
+        """
+        f = self.scattered_field(kind)[..., :2, :, :, :]         # [..., 2, 2, Ny, Nx]
+        w = self._mask(region) * self._phase().conj()[..., None, None, :, :]
+        return (f * w).mean(dim=(-2, -1))
+
+    @staticmethod
+    def _flux(sx, sy, ux, uy, sx2=None, sy2=None, ux2=None, uy2=None) -> torch.Tensor:
+        """z-flux density ``(1/2) Im(Sx Uy* - Sy Ux*)`` (units of
+        ``sqrt(eps0/mu0)``); with a second field, the symmetric cross term."""
+        if sx2 is None:
+            return 0.5 * (sx * uy.conj() - sy * ux.conj()).imag
+        return 0.5 * (sx * uy2.conj() - sy * ux2.conj()
+                      + sx2 * uy.conj() - sy2 * ux.conj()).imag
+
+    def _incident_flux(self) -> torch.Tensor:
+        """z-flux density of the unit s and p incident waves, ``[..., 2]``."""
+        plus, _ = self.modal.background.waves(0)
+        return self._flux(plus[..., 0, :], plus[..., 1, :], plus[..., 3, :], plus[..., 4, :])
+
+    def scattered_power(self, kind: Kind, region: Region = "physical") -> torch.Tensor:
+        """Scattered power leaving through one face.
+
+        Real-space Poynting flux of the scattered field through the
+        incidence-side (``"reflection"``) or transmission-side face,
+        integrated over ``region`` and normalized to the incident power on
+        one cell (``I_inc * A``). Multiply by the cell area for a cross
+        section. Power that leaves laterally (e.g. guided in a film, or
+        crossing the face inside the PML for ``region="physical"``) is not
+        counted.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``[..., 2]``: unit s and p incident wave.
+        """
+        self._require_scattered()
+        sx, sy, ux, uy = self.scattered_field(kind).unbind(-4)    # [..., 2, Ny, Nx]
+        sign = -1.0 if kind == "reflection" else 1.0
+        density = sign * self._flux(sx, sy, ux, uy) * self._mask(region)
+        return density.mean(dim=(-2, -1)) / self._incident_flux()
+
+    def extinction(self, region: Region = "physical") -> torch.Tensor:
+        """Extinguished power (scattered + absorbed by the structure).
+
+        Minus the outward flux of the interference term between the
+        incident (background) and scattered fields through both faces,
+        integrated over ``region``, normalized as :meth:`scattered_power`.
+        Exact when the scattered field leaves only through the two faces;
+        the interference flux through the lateral boundaries of the region
+        (e.g. a mode guided away in a film) is not included.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``[..., 2]``: unit s and p incident wave.
+        """
+        self._require_scattered()
+        bg = self.modal.background
+        mask = self._mask(region)
+        phase = self._phase()[..., None, :, :]                   # [..., 1, Ny, Nx]
+        total = 0.0
+        for kind, i, sign in (("reflection", 0, -1.0), ("transmission", -1, 1.0)):
+            plus, minus = bg.waves(i)
+            w = plus + minus                                     # both referenced to the face
+            inc = [w[..., r, :, None, None] * phase for r in (0, 1, 3, 4)]
+            sca = self.scattered_field(kind).unbind(-4)
+            cross = self._flux(*sca, *inc) * mask
+            total = total + sign * cross.mean(dim=(-2, -1))
+        return -total / self._incident_flux()
 
 
 class FieldObservables(Observables):

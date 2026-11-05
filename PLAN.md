@@ -101,6 +101,7 @@ Tests:
 
 - Define the PML observables: total R/T (background specular + scattered), scattered power, extinction; near/far field later, together with `FieldSolution`.
 - Update `docs/PML.md` with the decisions taken (gap medium, observables), the `CLAUDE.md` docs table and architecture notes, and add an example notebook for oblique illumination.
+- *Done:* `Observables` gains `background_jones`, `scattered_coefficients`, `scattered_field`, `scattered_power`, `extinction` and the specular `jones` under the scattered formulation (`region="cell" | "physical"`); `docs/PML.md` "Observables"; `CLAUDE.md`; `examples/pml_oblique_incidence.ipynb` (see `Phase_8_comment.md`). Near/far fields remain with `FieldSolution`.
 
 ---
 
