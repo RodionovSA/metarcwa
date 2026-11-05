@@ -22,12 +22,21 @@ All S-matrices follow the convention:
 and compose via the Redheffer star product (⋆), which is associative but
 not commutative — left-to-right physical order must be preserved.
 
+Affine S-matrices (layers with an internal source, used by the PML
+scattered-field formulation) are carried by :class:`AffineS`, whose
+:meth:`AffineS.star` extends the Redheffer star product to the source
+vectors (``docs/PML.md`` "S-matrices with sources").
+
 All functions use the exp(−j ω t) time convention.
 """
 
+from __future__ import annotations
+
+from dataclasses import dataclass
+
 import torch
 
-from metarcwa.solver.blockmatrix import Block, Block2x2
+from metarcwa.solver.blockmatrix import Block, Block2x2, apply_vec, solve_vec
 
 
 def S_boundary(WL: Block2x2, VL: Block2x2,
@@ -195,3 +204,59 @@ def S_layer(W0: Block2x2, V0: Block2x2, W: Block2x2, V: Block2x2,
     S_out = Block2x2(S_in.d, S_in.c,
                      S_in.b, S_in.a)
     return S_in.star(S_p).star(S_out)
+
+
+def _add(x: torch.Tensor | None, y: torch.Tensor | None) -> torch.Tensor | None:
+    """``x + y`` with ``None`` standing for a zero vector."""
+    if x is None:
+        return y
+    if y is None:
+        return x
+    return x + y
+
+
+@dataclass(frozen=True)
+class AffineS:
+    """S-matrix with source vectors: ``(c_L-, c_R+) = S (c_L+, c_R-) + (e_L, e_R)``.
+
+    ``(e_L, e_R)`` are the waves a layer emits through its left / right face
+    when nothing comes in (``docs/PML.md`` "Affine S-matrix"). ``S`` is the
+    ordinary S-matrix, unaffected by the source.
+
+    Attributes
+    ----------
+    S : Block2x2
+        The S-matrix (entries act on ``2Nh`` mode-amplitude vectors).
+    e_L, e_R : torch.Tensor or None
+        Source vectors, shape ``[..., 2Nh, ncol]`` (one column per
+        excitation); ``None`` means zero (no source).
+    """
+    S: Block2x2
+    e_L: torch.Tensor | None = None
+    e_R: torch.Tensor | None = None
+
+    def star(self, o: "AffineS") -> "AffineS":
+        """Extended Redheffer star product ``self`` (left) ⋆ ``o`` (right).
+
+        The S-matrix part is :meth:`Block2x2.star`. Solving for the waves
+        bouncing between the two parts gives the source part::
+
+            e_L = e_AL + S_A12 (I - S_B11 S_A22)^-1 (e_BL + S_B11 e_AR)
+            e_R = e_BR + S_B21 (I - S_A22 S_B11)^-1 (e_AR + S_A22 e_BL)
+
+        With both sources ``None`` this is the plain star product. The two
+        inverses are the ones :meth:`Block2x2.star` forms; they are applied
+        to the source vectors with separate (dense) solves.
+        """
+        A, B = self.S, o.S
+        S = A.star(B)
+        e_L, e_R = self.e_L, o.e_R
+        x = _add(o.e_L, None if self.e_R is None else apply_vec(B.a, self.e_R))
+        if x is not None:
+            P = B.a @ A.d
+            e_L = _add(e_L, apply_vec(A.b, solve_vec(P.eye_like() - P, x)))
+        y = _add(self.e_R, None if o.e_L is None else apply_vec(A.d, o.e_L))
+        if y is not None:
+            Q = A.d @ B.a
+            e_R = _add(e_R, apply_vec(B.c, solve_vec(Q.eye_like() - Q, y)))
+        return AffineS(S, e_L, e_R)

@@ -325,10 +325,15 @@ class LayerSolver:
             else:
                 tvf_fields = None
 
-            P, Q = compute_isotropic(
+            # Under a PML with TVF, keep Qfact = Q - Q0 for the
+            # scattered-field source (metarcwa.solver.scattered).
+            P, Q, qfact = compute_isotropic(
                 eps_grid, self.m_flat, self.n_flat,
                 self.Kx, self.Ky, tvf_fields,
+                return_qfact=True,
             )
+            if not self.stretched:
+                qfact = None
             if self.modesolver == "eig":
                 if self.config.checkpoint_eig:
                     lam, W, V = checkpoint(
@@ -337,7 +342,7 @@ class LayerSolver:
                     )
                 else:
                     lam, W, V = eigsolver(P, Q, self.config.eigsolver_stable)
-                return ModalOperator(lam, W, V, layer.thickness)
+                return ModalOperator(lam, W, V, layer.thickness, qfact=qfact)
             elif self.modesolver == "matexp":
                 # Cheap upper bound on the modal exponent, no eigenvalues
                 # needed: lam^2 ~ kx^2 + ky^2 - eps for the isotropic system,
@@ -386,6 +391,7 @@ class LayerSolver:
                 return TransferOperator(
                     P, Q, Nh, lam_bound, self.config,
                     gap_background=gap_background, thickness=layer.thickness,
+                    qfact=qfact,
                 )
             else:
                 raise NotImplementedError(

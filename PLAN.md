@@ -82,6 +82,7 @@ Goal: the scattered-field formulation in the S-matrix algebra.
 - Layer source vector: modal projection $\Phi^{-1}f$, closed-form integrals with a stable $\varphi_1$, then through the two boundary factors.
 - Affine S-matrix: an `(S, e_L, e_R)` container (e.g. in `smatrix.py`) with an extended `star` that composes $S$ as today and propagates the source vectors. $e$ has two columns (s, p).
 - `run()`: compose the affine S-matrices; `ModalSolution` gains `e_L`, `e_R`.
+- *Done:* `solver/scattered.py`, `smatrix.AffineS`, `blockmatrix.apply_vec/solve_vec`, `Config.pml_formulation` (default `"total"` until phase 7). With TVF the source also carries the TVF correction applied to $\mathbf E_\text{inc}$ (`Qfact`), so that scattered = total at normal incidence exactly (see `Phase_6_comment.md`).
 
 Tests:
 - Extended star is associative, and reduces to the plain star when $e = 0$.

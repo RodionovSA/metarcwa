@@ -59,6 +59,10 @@ from metarcwa.solver.config import Config
 from metarcwa.solver.harmonics import compute_kxy, harmonic_index_map
 from metarcwa.solver.pml import stretched_k
 from metarcwa.solver.blockmatrix import Block2x2, Entry
+from metarcwa.solver.background import BackgroundField, solve_background
+from metarcwa.solver.smatrix import AffineS
+from metarcwa.solver import scattered
+from metarcwa.model.layer import PatternedLayer
 
 
 def build_layersolver(model_spec: ModelSpec, config: Config) -> LayerSolver:
@@ -88,14 +92,16 @@ def build_layersolver(model_spec: ModelSpec, config: Config) -> LayerSolver:
     if pml is not None:
         # Along a PML axis the cells are decoupled, so the Bloch phase is 0.
         # A nonzero incident tangential wavevector there needs the
-        # scattered-field formulation (docs/PML.md "Illumination"). The
+        # scattered-field formulation (docs/PML.md "Illumination"), where
+        # the incident phase is carried by the source instead. The
         # tolerance absorbs angle round-off (e.g. cos(pi/2) in float32).
-        for name, k0_axis, s in (("x", kx0, pml.sx), ("y", ky0, pml.sy)):
-            if s is not None and (k0_axis.abs() > 1e-6).any():
-                raise NotImplementedError(
-                    f"Oblique incidence along the PML axis {name} (nonzero "
-                    f"k{name}0) is not supported yet."
-                )
+        if config.pml_formulation == "total":
+            for name, k0_axis, s in (("x", kx0, pml.sx), ("y", ky0, pml.sy)):
+                if s is not None and (k0_axis.abs() > 1e-6).any():
+                    raise ValueError(
+                        f"Oblique incidence along the PML axis {name} (nonzero "
+                        f"k{name}0) requires Config(pml_formulation='scattered')."
+                    )
         if pml.sx is not None:
             kx0 = torch.zeros_like(kx0)
         if pml.sy is not None:
@@ -193,7 +199,18 @@ def prepare(model: Model, config: Config) -> PreparedStack:
         *(layersolver.prepare(layer) for layer in model_spec.layers),
         layersolver.prepare(model_spec.transmission),
     )
+    if _scattered(model_spec, config):
+        for layer in model_spec.layers:
+            if isinstance(layer, PatternedLayer):
+                scattered.check_structure_in_physical_region(
+                    layer, model_spec.pml, config.grazing_eps_reg,
+                    config.dtype, config.device)
     return PreparedStack(layersolver=layersolver, ops=ops, model_spec=model_spec)
+
+
+def _scattered(model_spec: ModelSpec, config: Config) -> bool:
+    """True when the PML scattered-field formulation is active."""
+    return model_spec.pml is not None and config.pml_formulation == "scattered"
 
 
 def reprepare(prepared: PreparedStack, model: Model, config: Config,
@@ -297,10 +314,23 @@ class ModalSolution:
         The snapshot the blocks were assembled from — carries the per-element
         :class:`~metarcwa.solver.layersolver.operator.LayerOperator` modes and
         the :class:`LayerSolver` context. Held by reference, not copied.
+    e_L, e_R : torch.Tensor or None
+        PML scattered-field formulation only (``None`` otherwise): the
+        scattered waves leaving the stack into the incidence (``e_L``) and
+        transmission (``e_R``) half-spaces, in their mode-amplitude bases,
+        shape ``[..., 2Nh, 2]`` (columns: unit s and p incident wave). The
+        scattered field has no incoming waves, so these are the whole
+        scattered solution at the two faces.
+    background : BackgroundField or None
+        The incident field ``E_inc`` of the background stack (scattered-field
+        formulation only); the total field is background + scattered.
     """
     S11: Entry
     S21: Entry
     prepared: PreparedStack
+    e_L: torch.Tensor | None = None
+    e_R: torch.Tensor | None = None
+    background: BackgroundField | None = None
 
 @dataclass(frozen=True)
 class FieldSolution:
@@ -366,6 +396,9 @@ def run(prepared: PreparedStack) -> ModalSolution:
     """
     ls = prepared.layersolver
     ops = prepared.ops
+    spec = prepared.model_spec
+    if _scattered(spec, ls.config):
+        return _run_scattered(prepared)
     S = ls.smatrix(ops[0], left=True)
     for op in ops[1:-1]:
         S = S.star(ls.smatrix(op))
@@ -373,6 +406,36 @@ def run(prepared: PreparedStack) -> ModalSolution:
     # Keep only the first column (a=S11 reflection, c=S21 transmission); the
     # b=S12 / d=S22 blocks act only on right-side input and are dropped.
     return ModalSolution(S11=S.a, S21=S.c, prepared=prepared)
+
+
+def _run_scattered(prepared: PreparedStack) -> ModalSolution:
+    """:func:`run` under the PML scattered-field formulation.
+
+    Solves the background stack (incident field), builds every patterned
+    layer's source vectors and composes the affine S-matrices with the
+    extended star product (``docs/PML.md`` "S-matrices with sources"). All
+    of it depends on the source only, so it lives here and not in
+    :func:`prepare`.
+    """
+    ls = prepared.layersolver
+    ops = prepared.ops
+    spec = prepared.model_spec
+    cfg = ls.config
+    bg = solve_background(spec, cfg.grazing_eps_reg)
+
+    acc = AffineS(ls.smatrix(ops[0], left=True))
+    for i, (layer, op) in enumerate(zip(spec.layers, ops[1:-1]), start=1):
+        if isinstance(layer, PatternedLayer):
+            src = scattered.layer_source(
+                layer, i, bg, ls.Kx, ls.Ky, spec.pml, spec.a1, spec.a2,
+                ls.m_flat, ls.n_flat, cfg.grazing_eps_reg, cfg.dtype,
+                qfact=getattr(op, "qfact", None))
+            acc = acc.star(scattered.layer_affine(op, ls.background, src))
+        else:
+            acc = acc.star(AffineS(ls.smatrix(op)))
+    acc = acc.star(AffineS(ls.smatrix(ops[-1], left=False)))
+    return ModalSolution(S11=acc.S.a, S21=acc.S.c, prepared=prepared,
+                         e_L=acc.e_L, e_R=acc.e_R, background=bg)
 
 class Solver:
     """Top-level RCWA solver — thin convenience wrapper over the functional

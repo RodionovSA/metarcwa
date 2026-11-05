@@ -585,3 +585,53 @@ def _untile(dense: torch.Tensor, template):
         _untile(dense[..., H2:, W2:], template.d),
     )
     
+
+# ---------------------------------------------------------------------------
+# Operator-vector products (source vectors of the PML scattered-field
+# formulation, docs/PML.md "S-matrices with sources")
+# ---------------------------------------------------------------------------
+
+def _leaf_size(entry, rows: int) -> int:
+    """Leaf block size of ``entry`` acting on vectors with ``rows`` rows."""
+    depth, node = 0, entry
+    while isinstance(node, Block2x2):
+        depth, node = depth + 1, node.a
+    return rows >> depth
+
+
+def apply_vec(entry, v: torch.Tensor) -> torch.Tensor:
+    """``entry @ v`` for a ``Block``/``Block2x2`` and a dense tensor ``v``.
+
+    ``v`` has shape ``[..., rows, ncol]`` with ``rows`` the full (flattened)
+    size of ``entry``; batch dims broadcast. No leaf is densified: SCALAR and
+    DIAG leaves act elementwise.
+    """
+    if isinstance(entry, Block):
+        if entry.kind == Block.SCALAR:
+            return entry.data[..., None, None] * v
+        if entry.kind == Block.DIAG:
+            return entry.data[..., :, None] * v
+        dt = torch.promote_types(entry.data.dtype, v.dtype)
+        return entry.data.to(dt) @ v.to(dt)
+    h = v.shape[-2] // 2
+    top = apply_vec(entry.a, v[..., :h, :]) + apply_vec(entry.b, v[..., h:, :])
+    bot = apply_vec(entry.c, v[..., :h, :]) + apply_vec(entry.d, v[..., h:, :])
+    batch = torch.broadcast_shapes(top.shape[:-2], bot.shape[:-2])
+    return torch.cat([top.expand(*batch, *top.shape[-2:]),
+                      bot.expand(*batch, *bot.shape[-2:])], dim=-2)
+
+
+def solve_vec(entry, v: torch.Tensor) -> torch.Tensor:
+    """``entry^{-1} @ v`` for a ``Block``/``Block2x2`` and a dense ``v`` ``[..., rows, ncol]``.
+
+    SCALAR/DIAG ``Block`` solves are elementwise; anything else is densified
+    and solved with one ``torch.linalg.solve`` (batch dims broadcast).
+    """
+    if isinstance(entry, Block) and entry.kind != Block.DENSE:
+        return apply_vec(entry.inv(), v)
+    n = _leaf_size(entry, v.shape[-2])
+    L = entry.data if isinstance(entry, Block) else entry.to_dense(n)
+    dt = torch.promote_types(L.dtype, v.dtype)
+    L, v = L.to(dt), v.to(dt)
+    batch = torch.broadcast_shapes(L.shape[:-2], v.shape[:-2])
+    return torch.linalg.solve(L.expand(*batch, *L.shape[-2:]), v.expand(*batch, *v.shape[-2:]))

@@ -152,8 +152,8 @@ class TestStretchedK:
 class TestBuildLayerSolver:
 
     def test_oblique_along_pml_axis_raises(self):
-        with pytest.raises(NotImplementedError, match="Oblique incidence along the PML axis x"):
-            _layersolver(PML(width=0.25), _config(), theta=0.3, phi=0.0)
+        with pytest.raises(ValueError, match="Oblique incidence along the PML axis x"):
+            _layersolver(PML(width=0.25), _config(pml_formulation="total"), theta=0.3, phi=0.0)
 
     def test_tilt_along_non_pml_axis(self):
         """x-only PML, plane of incidence along y: kx0 (~1e-17 from cos(pi/2))

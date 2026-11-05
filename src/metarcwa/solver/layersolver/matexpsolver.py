@@ -379,6 +379,9 @@ class TransferOperator:
         semi-infinite medium always goes through
         :class:`~metarcwa.solver.layersolver.operator.ModalOperator` /
         ``homogeneous_modes`` — see ``LayerSolver._medium``).
+    qfact : Block2x2 or None
+        TVF correction ``Q - Q0``, kept only under a lateral PML with TVF
+        (used by the scattered-field source). ``None`` otherwise.
     """
     P: Block2x2
     Q: Block2x2
@@ -387,6 +390,7 @@ class TransferOperator:
     config: Config
     gap_background: Background
     thickness: torch.Tensor | None = None
+    qfact: Block2x2 | None = None
 
     def smatrix(self, background: Background, left: bool = True) -> Block2x2:
         """Assemble the S-matrix: slice, exponentiate each slice, convert

@@ -241,6 +241,12 @@ class Config:
         Fourier factorization of the PML stretch ``(1/s)·∂``: ``"laurent"``
         (default, ``[[1/s]]``) or ``"inverse"`` (``[[s]]⁻¹``). Ignored
         without a PML. See ``docs/PML.md`` "Factorization".
+    pml_formulation : str
+        Illumination under a PML: ``"total"`` (default for now) solves the
+        total field and is valid only without incident tilt along a PML
+        axis; ``"scattered"`` splits ``E = E_inc + E_s`` and solves the
+        scattered field driven by a source in the structure, valid at any
+        angle. Ignored without a PML. See ``docs/PML.md`` "Illumination".
     """
 
     dtype:                torch.dtype         = torch.float32
@@ -261,10 +267,12 @@ class Config:
     matexp_max_exponent:  float | None        = None
     matexp_gap:           str                 = "mean"        # "mean" | "max" | "vacuum"
     pml_factorization:    str                 = "laurent"     # "laurent" | "inverse"
+    pml_formulation:      str                 = "total"       # "total" | "scattered"
 
     _MODESOLVERS = ("eig", "matexp")
     _MATEXP_GAP_MODES = ("mean", "max", "vacuum")
     _PML_FACTORIZATIONS = ("laurent", "inverse")
+    _PML_FORMULATIONS = ("total", "scattered")
 
     def __post_init__(self) -> None:
         if not isinstance(self.device, torch.device):
@@ -286,6 +294,12 @@ class Config:
             raise ValueError(
                 f"pml_factorization={self.pml_factorization!r} not supported; "
                 f"must be one of {Config._PML_FACTORIZATIONS}."
+            )
+
+        if self.pml_formulation not in Config._PML_FORMULATIONS:
+            raise ValueError(
+                f"pml_formulation={self.pml_formulation!r} not supported; "
+                f"must be one of {Config._PML_FORMULATIONS}."
             )
 
         # Harmonic truncation vs. real-space grid: the convolution matrix
@@ -338,6 +352,7 @@ class Config:
             "matexp_max_exponent": self.matexp_max_exponent,
             "matexp_gap": self.matexp_gap,
             "pml_factorization": self.pml_factorization,
+            "pml_formulation": self.pml_formulation,
         }
 
     @classmethod

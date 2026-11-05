@@ -116,11 +116,16 @@ class ModalOperator:
     thickness : torch.Tensor or None
         Layer thickness. ``None`` marks a semi-infinite medium — a
         boundary-only element with no propagation.
+    qfact : Block2x2 or None
+        TVF correction ``Q - Q0`` of a patterned layer, kept only under a
+        lateral PML with TVF (the scattered-field source applies it to the
+        incident field). ``None`` otherwise.
     """
     lam: torch.Tensor
     W: Block2x2
     V: Block2x2
     thickness: torch.Tensor | None = None
+    qfact: Block2x2 | None = None
 
     def smatrix(self, background: Background, left: bool = True) -> Block2x2:
         """Assemble the S-matrix (cheap): boundary matching + propagation.
