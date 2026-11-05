@@ -242,11 +242,12 @@ class Config:
         (default, ``[[1/s]]``) or ``"inverse"`` (``[[s]]⁻¹``). Ignored
         without a PML. See ``docs/PML.md`` "Factorization".
     pml_formulation : str
-        Illumination under a PML: ``"total"`` (default for now) solves the
+        Illumination under a PML: ``"scattered"`` (default) splits
+        ``E = E_inc + E_s`` and solves the scattered field driven by a
+        source in the structure, valid at any angle; ``"total"`` solves the
         total field and is valid only without incident tilt along a PML
-        axis; ``"scattered"`` splits ``E = E_inc + E_s`` and solves the
-        scattered field driven by a source in the structure, valid at any
-        angle. Ignored without a PML. See ``docs/PML.md`` "Illumination".
+        axis (kept for validation). Ignored without a PML. See
+        ``docs/PML.md`` "Illumination".
     """
 
     dtype:                torch.dtype         = torch.float32
@@ -267,7 +268,7 @@ class Config:
     matexp_max_exponent:  float | None        = None
     matexp_gap:           str                 = "mean"        # "mean" | "max" | "vacuum"
     pml_factorization:    str                 = "laurent"     # "laurent" | "inverse"
-    pml_formulation:      str                 = "total"       # "total" | "scattered"
+    pml_formulation:      str                 = "scattered"   # "scattered" | "total"
 
     _MODESOLVERS = ("eig", "matexp")
     _MATEXP_GAP_MODES = ("mean", "max", "vacuum")

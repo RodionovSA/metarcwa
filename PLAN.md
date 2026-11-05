@@ -95,6 +95,7 @@ Tests:
 - Normal incidence: scattered-field result equals the total-field result from phase 4.
 - Oblique incidence: convergence towards a large periodic supercell as the cell grows; an independent reference for a single scatterer (Mie theory for a sphere, or published aperiodic-FMM results).
 - Switch the default of `pml_formulation` to `"scattered"`.
+- *Done:* default switched; normal incidence and tilt along the periodic axis agree with the total field to ~1e-14; tilt along the PML axis converges to the large periodic supercell limit at ~1e-3 (`Phase_7_comment.md`, `tests/pml_scattered_validation_bench.py`). Mie / aperiodic-FMM comparison not done.
 
 ## Phase 8 — Observables and documentation
 
