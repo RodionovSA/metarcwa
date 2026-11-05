@@ -77,13 +77,15 @@ class PMLSpec:
 
     Attributes
     ----------
-    sx : Tensor
-        Complex stretch factor along x, shape ``[Nx]`` (grid axis -1).
-    sy : Tensor
-        Complex stretch factor along y, shape ``[Ny]`` (grid axis -2).
+    sx : Tensor | None
+        Complex stretch factor along x, shape ``[Nx]`` (grid axis -1), or
+        ``None`` if the PML is disabled along x.
+    sy : Tensor | None
+        Complex stretch factor along y, shape ``[Ny]`` (grid axis -2), or
+        ``None`` if the PML is disabled along y.
     """
-    sx: torch.Tensor
-    sy: torch.Tensor
+    sx: torch.Tensor | None
+    sy: torch.Tensor | None
 
 
 class PML(nn.Module):
@@ -168,15 +170,19 @@ class PML(nn.Module):
     def spec(self, lattice: Lattice, nx: int, ny: int) -> PMLSpec:
         """Sample the stretch profile on the ``[ny, nx]`` pattern grid."""
         px, py = self._periods(lattice)
-        dx = self._distance(px, nx, self.width[0])
-        dy = self._distance(py, ny, self.width[1])
-        s0, sx, sy = (self.profile(d) for d in (torch.zeros_like(dx[:1]), dx, dy))
+        s0 = self.profile(torch.zeros(1, dtype=px.dtype, device=px.device))
         if not torch.allclose(s0, torch.ones_like(s0)):
             raise ValueError(f"PML profile must satisfy s(0) = 1, got {s0.item()}")
-        s = torch.cat([sx, sy])
-        if (s.real <= 0).any() or (s.imag < 0).any():
-            raise ValueError("PML profile must satisfy Re s > 0 and Im s >= 0")
-        return PMLSpec(sx=sx, sy=sy)
+        s = []
+        for period, n, width in ((px, nx, self.width[0]), (py, ny, self.width[1])):
+            if width == 0:
+                s.append(None)
+                continue
+            s_axis = self.profile(self._distance(period, n, width))
+            if (s_axis.real <= 0).any() or (s_axis.imag < 0).any():
+                raise ValueError("PML profile must satisfy Re s > 0 and Im s >= 0")
+            s.append(s_axis)
+        return PMLSpec(sx=s[0], sy=s[1])
 
     def pad(self, pattern: torch.Tensor, lattice: Lattice) -> torch.Tensor:
         """Edge-pad ``pattern`` (``[..., Ny, Nx]``) into the PML region.

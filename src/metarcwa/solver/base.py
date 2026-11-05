@@ -57,6 +57,7 @@ from metarcwa.solver.layersolver.operator import LayerOperator
 from metarcwa.solver.tvf import TVF
 from metarcwa.solver.config import Config
 from metarcwa.solver.harmonics import compute_kxy, harmonic_index_map
+from metarcwa.solver.pml import stretched_k
 from metarcwa.solver.blockmatrix import Block2x2, Entry
 
 
@@ -82,18 +83,37 @@ def build_layersolver(model_spec: ModelSpec, config: Config) -> LayerSolver:
     LayerSolver
         Pre-initialised layer-level modal solver / S-matrix assembler.
     """
-    if model_spec.pml is not None:
-        raise NotImplementedError("The solver does not support a lateral PML yet.")
+    pml = model_spec.pml
+    kx0, ky0 = model_spec.kx0, model_spec.ky0
+    if pml is not None:
+        # Along a PML axis the cells are decoupled, so the Bloch phase is 0.
+        # A nonzero incident tangential wavevector there needs the
+        # scattered-field formulation (docs/PML.md "Illumination"). The
+        # tolerance absorbs angle round-off (e.g. cos(pi/2) in float32).
+        for name, k0_axis, s in (("x", kx0, pml.sx), ("y", ky0, pml.sy)):
+            if s is not None and (k0_axis.abs() > 1e-6).any():
+                raise NotImplementedError(
+                    f"Oblique incidence along the PML axis {name} (nonzero "
+                    f"k{name}0) is not supported yet."
+                )
+        if pml.sx is not None:
+            kx0 = torch.zeros_like(kx0)
+        if pml.sy is not None:
+            ky0 = torch.zeros_like(ky0)
+
     m_flat, n_flat = harmonic_index_map(
         config.m, config.n, config.truncation == "circular", config.device
     )
-    
+
     k0 = 2 * torch.pi / model_spec.wavelength.reshape(-1)   # [N_wvl]
     kx, ky = compute_kxy(
-        model_spec.kx0, model_spec.ky0,
+        kx0, ky0,
         model_spec.a1,  model_spec.a2,
         m_flat, n_flat, k0=k0,
     )
+    K = None
+    if pml is not None:
+        K = stretched_k(kx, ky, pml, m_flat, n_flat, config.pml_factorization)
 
     if config.factorization is not None:
         f = config.factorization
@@ -107,7 +127,7 @@ def build_layersolver(model_spec: ModelSpec, config: Config) -> LayerSolver:
     else:
         tvf = None
 
-    return LayerSolver(config, model_spec.wavelength, kx, ky, m_flat, n_flat, tvf)
+    return LayerSolver(config, model_spec.wavelength, kx, ky, m_flat, n_flat, tvf, K=K)
 
 
 @dataclass(frozen=True)

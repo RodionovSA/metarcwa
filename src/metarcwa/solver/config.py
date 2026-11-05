@@ -235,6 +235,10 @@ class Config:
         Exact for any choice; only conditioning changes, not the answer.
         Ignored when ``modesolver != "matexp"``. See ``docs/matrixexp.md``
         "Accuracy and conditioning".
+    pml_factorization : str
+        Fourier factorization of the PML stretch ``(1/s)·∂``: ``"laurent"``
+        (default, ``[[1/s]]``) or ``"inverse"`` (``[[s]]⁻¹``). Ignored
+        without a PML. See ``docs/PML.md`` "Factorization".
     """
 
     dtype:                torch.dtype         = torch.float32
@@ -254,9 +258,11 @@ class Config:
     matexp_max_slices:    int                 = 512
     matexp_max_exponent:  float | None        = None
     matexp_gap:           str                 = "mean"        # "mean" | "max" | "vacuum"
+    pml_factorization:    str                 = "laurent"     # "laurent" | "inverse"
 
     _MODESOLVERS = ("eig", "matexp")
     _MATEXP_GAP_MODES = ("mean", "max", "vacuum")
+    _PML_FACTORIZATIONS = ("laurent", "inverse")
 
     def __post_init__(self) -> None:
         if not isinstance(self.device, torch.device):
@@ -272,6 +278,12 @@ class Config:
             raise ValueError(
                 f"matexp_gap={self.matexp_gap!r} not supported; must be one "
                 f"of {Config._MATEXP_GAP_MODES}."
+            )
+
+        if self.pml_factorization not in Config._PML_FACTORIZATIONS:
+            raise ValueError(
+                f"pml_factorization={self.pml_factorization!r} not supported; "
+                f"must be one of {Config._PML_FACTORIZATIONS}."
             )
 
         # Harmonic truncation vs. real-space grid: the convolution matrix
@@ -323,6 +335,7 @@ class Config:
             "matexp_max_slices": self.matexp_max_slices,
             "matexp_max_exponent": self.matexp_max_exponent,
             "matexp_gap": self.matexp_gap,
+            "pml_factorization": self.pml_factorization,
         }
 
     @classmethod

@@ -55,7 +55,7 @@ from typing import Tuple
 from metarcwa._dtypes import to_complex
 from metarcwa.model.layer import HomogeneousLayer, PatternedLayer
 from metarcwa.model.medium import MediumSpec, IsotropicMediumSpec
-from metarcwa.solver.blockmatrix import Block2x2
+from metarcwa.solver.blockmatrix import Block, Block2x2
 from metarcwa.solver.layersolver.homogeneous import homogeneous_modes
 from metarcwa.solver.layersolver.isotropic import compute_isotropic
 from metarcwa.solver.layersolver.eigsolver import eigsolver
@@ -89,6 +89,9 @@ class LayerSolver:
         Integer harmonic indices along a2, shape ``[Nh]``.
     tvf : TVF or None
         Configured TVF instance for Li-factorization, or ``None``.
+    Kx, Ky : Block
+        Wavevector operators used for patterned layers: DIAG ``kx``/``ky``,
+        or the DENSE stretched operators under a lateral PML.
     W0 : Block2x2
         Background E-mode matrix (identity for vacuum).
     V0 : Block2x2
@@ -102,7 +105,7 @@ class LayerSolver:
     def __init__(self, config: Config, wvl: torch.Tensor,
                  kx: torch.Tensor, ky: torch.Tensor,
                  m_flat: torch.Tensor, n_flat: torch.Tensor,
-                 tvf=None):
+                 tvf=None, K: Tuple[Block, Block] | None = None):
         """
         Parameters
         ----------
@@ -121,6 +124,10 @@ class LayerSolver:
         tvf : TVF or None, optional
             Configured TVF instance for Li-factorization.  Pass ``None``
             (default) to use the plain Laurent convolution rule.
+        K : tuple of Block, optional
+            Stretched wavevector operators ``(K̃x, K̃y)`` of a lateral PML
+            (see :func:`~metarcwa.solver.pml.stretched_k`). ``None``
+            (default) uses DIAG ``kx``, ``ky``.
         """
         self.config  = config
         self.wvl     = wvl
@@ -129,6 +136,8 @@ class LayerSolver:
         self.m_flat  = m_flat
         self.n_flat  = n_flat
         self.tvf     = tvf
+        self.stretched = K is not None
+        self.Kx, self.Ky = K if K is not None else (Block(Block.DIAG, kx), Block(Block.DIAG, ky))
         self.W0, self.V0 = self._prepare_vacuum()
         self.background = Background(self.W0, self.V0, self.wvl)
 
@@ -168,6 +177,10 @@ class LayerSolver:
             Precomputed modal solution; pass to :meth:`smatrix` to assemble
             the S-matrix.
         """
+        if self.stretched and not isinstance(element, PatternedLayer):
+            raise NotImplementedError(
+                "Homogeneous layers and half-spaces are not supported with a PML yet."
+            )
         if isinstance(element, HomogeneousLayer):
             return self._homogeneous(element)
         elif isinstance(element, PatternedLayer):
@@ -294,7 +307,7 @@ class LayerSolver:
 
             P, Q = compute_isotropic(
                 eps_grid, self.m_flat, self.n_flat,
-                self.kx, self.ky, tvf_fields,
+                self.Kx, self.Ky, tvf_fields,
             )
             if self.config.modesolver == "eig":
                 if self.config.checkpoint_eig:

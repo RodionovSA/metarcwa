@@ -37,7 +37,8 @@ Goal: $\tilde K_x$, $\tilde K_y$ in the patterned-layer path.
 - New `solver/pml.py::stretched_k(kx, ky, pml_spec, m_flat, n_flat, factorization)` returning DENSE `Block`s. `[[1/s_x]]` comes from `convolution_matrix` applied to a grid that depends on $x$ only, which gives the $\delta_{nn'}$ structure automatically. `factorization="inverse"` uses $[[s_x]]^{-1}$.
 - `solver/base.py::build_layersolver`: with a PML, set the Bloch phase to 0 along PML axes, build $\tilde K$ once and store it in the `LayerSolver` context.
 - `LayerSolver._patterned`: pass $\tilde K$ to `compute_isotropic`.
-- `Config`: `pml_factorization: "laurent" | "inverse"`, `pml_formulation: "scattered" | "total"` (`"total"` only until M2).
+- `Config`: `pml_factorization: "laurent" | "inverse"`. (`pml_formulation` is added in M2, when there is a second formulation to choose.)
+- Oblique incidence along a PML axis raises `NotImplementedError` until M2; tilt along a non-PML axis is allowed.
 
 Tests: with $s \equiv 1$, $\tilde K = K$ and results match the periodic solver bit-for-bit; $\tilde K_x e_0 = 0$ for $k_{x0} = 0$; $\tilde K_x \tilde K_y = \tilde K_y \tilde K_x$ for rectangular truncation; Laurent and inverse agree for a smooth profile as $N_h$ grows.
 
@@ -49,8 +50,9 @@ Goal: everything that currently uses the closed-form `homogeneous_modes`.
 - `LayerSolver._homogeneous`, `_medium`, `_prepare_vacuum`: use the shared basis under PML.
 - Decide the gap-medium question (stretched vs unstretched `W0`/`V0`) by experiment: both must give the same total S-matrix for a stack; keep the cheaper one.
 - `matexpsolver`: slice-count bound from $\tilde K$ (e.g. a norm bound) instead of $\max(k_x^2 + k_y^2)$.
+- Branch selection under PML. The discretized stretched operator is not exactly passive: truncation error can give a nearly lossless mode a tiny gain ($\mathrm{Im}\,\lambda^2 > 0$), so neither root $\pm\lambda$ is both decaying and forward. `_branch_select` then falls back on its generic tolerance ($|\mathrm{Re}\,\lambda| \le 10^{-4}|\lambda|$) and returns either a slightly growing forward mode or a decaying *backward* mode. Seen for patterned layers with both factorizations (e.g. circular truncation, $M = 6$–$10$, $|\mathrm{Re}\,\lambda/\lambda| \sim 10^{-6}$–$10^{-4}$). Harmless in finite layers (the layer S-matrix does not depend on the labelling; $|X| - 1 \sim 10^{-4}$), but in the half-spaces the branch defines the outgoing wave, so a backward label is a physics error. Fix for this ambiguous case: when $\mathrm{Im}\,\lambda^2$ has the gain sign and $|\mathrm{Re}\,\lambda|$ is at the discretization-error level, select by the sign of $\mathrm{Im}\,\lambda$ (phase direction = energy-flow direction for a nearly lossless mode).
 
-Tests: with $s \equiv 1$ the numerical basis reproduces the closed form; a uniform stack with PML at normal incidence gives the Fresnel / TMM zeroth-order R and T (the zeroth harmonic is an exact mode); `eig` and `matexp` agree under PML.
+Tests: with $s \equiv 1$ the numerical basis reproduces the closed form; a uniform stack with PML at normal incidence gives the Fresnel / TMM zeroth-order R and T (the zeroth harmonic is an exact mode); `eig` and `matexp` agree under PML; half-space branch selection: every mode is forward ($\mathrm{Im}\,\lambda > 0$ for nearly lossless modes) in a case with a guided mode whose discretized $\mathrm{Im}\,\lambda^2$ has the gain sign.
 
 ## Phase 4 — Validation at normal incidence (milestone M1)
 

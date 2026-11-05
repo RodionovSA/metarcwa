@@ -144,9 +144,9 @@ class TestProfile:
         jumps = [self._spec(nx=n).sx.diff().abs().max() for n in (64, 128, 256)]
         assert jumps[1] < 0.6 * jumps[0] and jumps[2] < 0.6 * jumps[1]
 
-    def test_disabled_axis_is_unit(self):
+    def test_disabled_axis_is_none(self):
         spec = self._spec(width=(0.2, 0.0))
-        assert_close(spec.sy, torch.ones_like(spec.sy))
+        assert spec.sx is not None and spec.sy is None
 
     @staticmethod
     def _d(nx=64, w=0.2):
