@@ -70,6 +70,7 @@ Goal: the incident field $\mathbf E_\text{inc}$ at any angle.
 
 - New `solver/background.py`: 1-harmonic transfer-matrix solve of the background stack (each patterned layer filled with `medium_void`), for s and p. Output: up/down amplitudes in every layer, each referenced to the face where the wave enters the layer.
 - Runs in `run()`, since it depends on the source only.
+- *Done:* `solver/background.py::solve_background` → `BackgroundField` (wired into `run()` in phase 6).
 
 Tests: Fresnel coefficients for a single interface; agreement with the existing solver for a stack of homogeneous layers at oblique incidence.
 
