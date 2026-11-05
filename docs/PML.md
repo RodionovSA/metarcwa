@@ -38,15 +38,16 @@ $$
 
 and decays without reflection at the PML entrance (in the continuum limit). With the `exp(−jωt)` convention, absorption requires $\mathrm{Im}\,s_x > 0$.
 
-**Profile.** We use the profile of [fmmax](https://github.com/facebookresearch/fmmax) (`pml.py`): a real stretch times an imaginary absorption,
+**Profile.** The stretch is a function $s(d)$ of the normalized distance $d \in [0,1]$ into the PML ($0$ at the inner edge, $1$ at the cell edge). No single profile is best for every problem, so $s(d)$ is pluggable. Any profile must satisfy $s(0) = 1$ (a continuous entrance, needed for the factorization below), $\mathrm{Re}\,s > 0$ and $\mathrm{Im}\,s \ge 0$. Two are built in:
 
 $$
 \begin{align}
-s_x(d_x) = \big(1 + a_\text{max}\,d_x^{\,p}\big)\big(1 + j\,\sigma_\text{max}\sin^2(\tfrac{\pi}{2}d_x)\big),
+s_\text{stretch-absorb}(d) &= \big(1 + a_\text{max}\,d^{\,p}\big)\big(1 + j\,\sigma_\text{max}\sin^2(\tfrac{\pi}{2}d)\big),\\
+s_\text{polynomial}(d) &= 1 + j\,\sigma_\text{max}\,d^{\,p}.
 \end{align}
 $$
 
-where $d_x \in [0,1]$ is the normalized distance into the PML. The defaults are $a_\text{max} = 4$, $p = 4$, $\sigma_\text{max} = 1$. The real factor compresses space inside the PML and damps evanescent waves, which a purely imaginary stretch does not attenuate. The profile is continuous, including across the cell edge where the two PMLs of neighbouring cells meet, which matters for the factorization below.
+The first is the profile of [fmmax](https://github.com/facebookresearch/fmmax) and the default ($a_\text{max} = 4$, $p = 4$, $\sigma_\text{max} = 1$). Its real factor compresses space inside the PML and damps evanescent waves, which a purely imaginary stretch, such as the second profile, does not attenuate. Both are continuous, including across the cell edge where the two PMLs of neighbouring cells meet.
 
 **Geometry inside the PML.** A PML is reflectionless only if the structure does not vary along its normal. The pattern is therefore **edge-padded** into the PML: inside the $x$-PML, the geometry at the inner PML boundary is continued unchanged along $x$. A substrate or film that reaches the cell edge continues straight through the PML.
 
@@ -249,15 +250,18 @@ The expensive/cheap split is preserved: eigendecompositions stay in `prepare()`,
 The PML is a property of the supercell, so it is attached to the `Stack` next to the `Lattice`. A single `PML` object selects the implementation, so that other routes (e.g. a uniaxial PML material) can be added later without changing user code.
 
 ```python
-from metarcwa import Lattice, Stack, Layer, Source, Model, Solver, Config, PML   # PML is new
+from metarcwa import Lattice, Stack, Layer, Source, Model, Solver, Config
+from metarcwa import PML, StretchAbsorbProfile, PolynomialProfile          # new
 
 pml = PML(
     width=(0.5, 0.5),      # PML width per axis (x, y), physical units; 0 disables an axis
-    a_max=4.0,             # real stretch strength
-    p=4.0,                 # grading order of the real stretch
-    sigma_max=1.0,         # absorption strength
+    profile=StretchAbsorbProfile(a_max=4.0, p=4.0, sigma_max=1.0),   # default profile
     method="stretch",      # only "stretch" (coordinate stretching) for now
 )
+
+# other profiles: a built-in one, or any s(d) wrapped as an nn.Module
+pml = PML(width=0.5, profile=PolynomialProfile(sigma_max=2.0, p=3.0))
+pml = PML(width=0.5, profile=CallableModule(lambda d: 1 + (1 + 1j) * a * d, a))
 
 stack = Stack(
     incidence=air,
@@ -272,8 +276,8 @@ solver = Solver(model, Config(truncation="rectangular"))
 solution = solver.run()
 ```
 
-- **`PML`** (`model/pml.py`): an `nn.Module` like `Lattice`, so its parameters move with `Model.to()`. Its `.spec()` produces a frozen `PMLSpec` holding the profiles $1/s_x$, $1/s_y$ on the grid.
-- **`Stack(pml=...)`**: validates that the lattice is rectangular, and passes the PML region to `Layer.spec()` for edge padding.
+- **`PML`** (`model/pml.py`): an `nn.Module` like `Lattice`, so its parameters (and the profile's) move with `Model.to()`. `method` selects the implementation, `profile` the stretch $s(d)$. Its `.spec()` produces a frozen `PMLSpec` holding $s_x$, $s_y$ sampled on the grid.
+- **`Stack(pml=...)`**: validates that the lattice is rectangular and the widths fit, and edge-pads patterned layers in `spec()`.
 - **`Source`**: unchanged. With a PML, its angles define $\mathbf E_\text{inc}$; the Bloch phase along PML axes is set to zero internally.
 - **`Config`**: two new switches, both with defaults that need no attention:
   - `pml_factorization: "laurent" | "inverse"` (default `"laurent"`, debug only);
@@ -289,7 +293,7 @@ Internally, a new `solver/pml.py` builds $\tilde K_x$, $\tilde K_y$ as `Block`s 
 
 1. **Observables.** Which outputs to provide: total reflection and transmission, scattered power, extinction, near or far field?
 2. **Background `W0`/`V0`.** Can the zero-thickness gap medium stay unstretched, or must it be built with $\tilde K$?
-3. **Profile.** Is the fmmax profile enough, or is the Hugonin–Lalanne nonlinear map (better convergence) worth adding?
+3. **Profile.** Add the Hugonin–Lalanne nonlinear map (better convergence) as a built-in profile?
 4. **Gradients.** Should the PML parameters be differentiable?
 5. **Validation.**
    - Laurent vs inverse rule convergence for $[[1/s]]$.

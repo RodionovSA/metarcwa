@@ -129,4 +129,5 @@ class TestModelSpecEndToEnd:
         model = _make_model()
         spec = model.spec(nx=8, ny=8)
         for f in dataclasses.fields(ModelSpec):
-            assert getattr(spec, f.name) is not None
+            if f.default is dataclasses.MISSING:     # optional fields (e.g. pml) may be None
+                assert getattr(spec, f.name) is not None

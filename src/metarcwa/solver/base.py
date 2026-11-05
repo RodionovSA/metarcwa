@@ -82,6 +82,8 @@ def build_layersolver(model_spec: ModelSpec, config: Config) -> LayerSolver:
     LayerSolver
         Pre-initialised layer-level modal solver / S-matrix assembler.
     """
+    if model_spec.pml is not None:
+        raise NotImplementedError("The solver does not support a lateral PML yet.")
     m_flat, n_flat = harmonic_index_map(
         config.m, config.n, config.truncation == "circular", config.device
     )

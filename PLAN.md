@@ -23,7 +23,7 @@ Tests: the full existing suite passes unchanged; a unit test that `compute_P` / 
 
 Goal: the user-facing `PML` object and geometry handling, without touching the solver yet.
 
-- New `model/pml.py`: `PML(width, a_max=4.0, p=4.0, sigma_max=1.0, method="stretch")` as an `nn.Module` (parameters via `register`), and a frozen `PMLSpec` with the profiles $1/s_x$, $1/s_y$ sampled on the grid. Export `PML` from `metarcwa/__init__.py`.
+- New `model/pml.py`: `PML(width, profile=StretchAbsorbProfile(), method="stretch")` as an `nn.Module` (parameters via `register`), pluggable profiles `s(d)` (`StretchAbsorbProfile`, `PolynomialProfile`, or any `nn.Module`), and a frozen `PMLSpec` with $s_x$, $s_y$ sampled on the grid. Export `PML` and the profiles from `metarcwa/__init__.py`.
 - `model/stack.py`: `Stack(..., pml=None)`. With a PML, require a rectangular lattice and validate the widths against the cell size.
 - `model/layer.py::Layer.spec`: edge-pad the pattern into the PML region. Warn (or raise) when the structure reaches the PML.
 - `ModelSpec` carries the `PMLSpec` (`None` when no PML).

@@ -11,6 +11,7 @@ from .source import Source
 from .._dtypes import _REAL_TO_COMPLEX
 from .medium import MediumSpec
 from .layer import PatternedLayer, HomogeneousLayer
+from .pml import PMLSpec
 
 @dataclass(frozen=True)
 class ModelSpec:
@@ -29,6 +30,8 @@ class ModelSpec:
         Semi-infinite transmission medium. May be lossy.
     a1, a2 : Tensor | nn.Parameter
         Lattice vectors, shape [2] each.
+    pml : PMLSpec | None
+        Lateral PML stretch profiles, or ``None`` for a periodic structure.
 
     Illumination
     ------------
@@ -49,6 +52,8 @@ class ModelSpec:
     wavelength: torch.Tensor
     kx0: torch.Tensor
     ky0: torch.Tensor
+    # structure, optional
+    pml: PMLSpec | None = None
 
 class Model(nn.Module):
     """

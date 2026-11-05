@@ -1,5 +1,6 @@
 from .model.base import Model
 from .model.lattice import Lattice
+from .model.pml import PML, PolynomialProfile, StretchAbsorbProfile
 from .model.layer import Layer
 from .model.source import Source
 from .model.stack import Stack

@@ -1,7 +1,8 @@
 # metarcwa/model/stack.py
 # DESCRIPTION
 
-from typing import Sequence
+import dataclasses
+from typing import Optional, Sequence
 import torch
 import torch.nn as nn
 from dataclasses import dataclass
@@ -9,6 +10,7 @@ from dataclasses import dataclass
 from .layer import Layer, HomogeneousLayer, PatternedLayer
 from .lattice import Lattice
 from .medium import Medium, MediumSpec
+from .pml import PML, PMLSpec
 
 @dataclass(frozen=True)
 class StackSpec:
@@ -43,6 +45,8 @@ class StackSpec:
         construction.
     a2 : Tensor | nn.Parameter
         Second lattice vector, shape [2]. Same convention as ``a1``.
+    pml : PMLSpec | None
+        Lateral PML stretch profiles, or ``None`` for a periodic stack.
     """
 
     layers: tuple["HomogeneousLayer | PatternedLayer", ...]
@@ -50,6 +54,7 @@ class StackSpec:
     transmission: "MediumSpec"
     a1: torch.Tensor
     a2: torch.Tensor
+    pml: Optional[PMLSpec] = None
 
 class Stack(nn.Module):
     """An ordered stack of finite layers between two semi-infinite media.
@@ -73,6 +78,9 @@ class Stack(nn.Module):
         Semi-infinite transmission medium. May be lossy.
     lattice : Lattice
         In-plane periodicity, shared by all layers.
+    pml : PML, optional
+        Lateral PML at the cell edges. Requires a rectangular lattice.
+        Patterned layers are edge-padded into the PML region in ``spec()``.
     """
 
     def __init__(
@@ -81,6 +89,7 @@ class Stack(nn.Module):
         layers: Sequence[Layer],
         transmission: Medium,
         lattice: Lattice,
+        pml: Optional[PML] = None,
     ):
         super().__init__()
         if not isinstance(incidence, Medium):
@@ -92,6 +101,9 @@ class Stack(nn.Module):
         self.layers = nn.ModuleList(layers)
         self.transmission = transmission
         self.lattice = lattice
+        if pml is not None:
+            pml.check(lattice)
+        self.pml = pml
 
     def spec(
         self,
@@ -114,6 +126,14 @@ class Stack(nn.Module):
         layer_specs = [
             layer.spec(wavelength, self.lattice, nx, ny) for layer in self.layers
         ]
+        pml_spec = None
+        if self.pml is not None:
+            layer_specs = [
+                dataclasses.replace(ls, pattern=self.pml.pad(ls.pattern, self.lattice))
+                if isinstance(ls, PatternedLayer) else ls
+                for ls in layer_specs
+            ]
+            pml_spec = self.pml.spec(self.lattice, nx, ny)
         incidence_spec = self.incidence.spec(wavelength)
         transmission_spec = self.transmission.spec(wavelength)
 
@@ -123,6 +143,7 @@ class Stack(nn.Module):
             transmission=transmission_spec,
             a1=self.lattice.a1,
             a2=self.lattice.a2,
+            pml=pml_spec,
         )
 
 
