@@ -57,7 +57,7 @@ from metarcwa.model.layer import HomogeneousLayer, PatternedLayer
 from metarcwa.model.medium import MediumSpec, IsotropicMediumSpec
 from metarcwa.solver.blockmatrix import Block, Block2x2
 from metarcwa.solver.layersolver.homogeneous import homogeneous_modes
-from metarcwa.solver.layersolver.isotropic import compute_isotropic
+from metarcwa.solver.layersolver.isotropic import compute_isotropic, compute_P, compute_Q0
 from metarcwa.solver.layersolver.eigsolver import eigsolver
 from metarcwa.solver.layersolver.matexpsolver import TransferOperator
 from metarcwa.solver.layersolver.operator import Background, LayerOperator, ModalOperator
@@ -177,10 +177,6 @@ class LayerSolver:
             Precomputed modal solution; pass to :meth:`smatrix` to assemble
             the S-matrix.
         """
-        if self.stretched and not isinstance(element, PatternedLayer):
-            raise NotImplementedError(
-                "Homogeneous layers and half-spaces are not supported with a PML yet."
-            )
         if isinstance(element, HomogeneousLayer):
             return self._homogeneous(element)
         elif isinstance(element, PatternedLayer):
@@ -257,13 +253,33 @@ class LayerSolver:
         medium = layer.medium
         if isinstance(medium, IsotropicMediumSpec):
             eps = _regularize_eps(medium.eps, self.config.grazing_eps_reg)
-            lam, V = homogeneous_modes(eps, self.kx, self.ky)
-            W      = V.eye_like()
+            if self.stretched:
+                lam, W, V = self._stretched_uniform_modes(eps)
+            else:
+                lam, V = homogeneous_modes(eps, self.kx, self.ky)
+                W      = V.eye_like()
         else:
             raise NotImplementedError(
                 f"Homogeneous solver not implemented for {type(medium)}"
             )
         return ModalOperator(lam, W, V, layer.thickness)
+
+    def _stretched_uniform_modes(self, eps: torch.Tensor
+                                 ) -> Tuple[torch.Tensor, Block2x2, Block2x2]:
+        """Modes of a uniform medium under a lateral PML.
+
+        The stretched ``K̃`` is dense, so the closed form of
+        :func:`homogeneous_modes` does not apply. With uniform ε,
+        ``P = Q₀/ε`` exactly, so ``P``, ``Q`` are built by
+        :func:`compute_P` / :func:`compute_Q0` with ε as a SCALAR block and
+        solved by :func:`eigsolver`.
+        """
+        eps = to_complex(eps)
+        eps = eps.reshape(*eps.shape, *([1] * (self.kx.ndim - 1 - eps.ndim)))
+        eps_block = Block(Block.SCALAR, eps)
+        P = compute_P(self.Kx, self.Ky, eps_block)
+        Q = compute_Q0(self.Kx, self.Ky, eps_block)
+        return eigsolver(P, Q, self.config.eigsolver_stable)
 
     def _patterned(self, layer: PatternedLayer) -> LayerOperator:
         """Solve a patterned layer via ``Config.modesolver`` ("eig" or
@@ -325,8 +341,17 @@ class LayerSolver:
                 # only sizes the auto slice count (matexpsolver.slice_count),
                 # never enters autograd.
                 Nh = self.m_flat.shape[0]
-                kxy2_max = (self.kx.detach().abs() ** 2
-                            + self.ky.detach().abs() ** 2).amax()
+                if self.stretched:
+                    # Dense K̃: bound its spectral radius by the inf-norm
+                    # (max row sum); a DIAG axis reduces to max|k|.
+                    kxy2_max = sum(
+                        (K.data.detach().abs().sum(-1) if K.kind == Block.DENSE
+                         else K.data.detach().abs()).amax() ** 2
+                        for K in (self.Kx, self.Ky)
+                    )
+                else:
+                    kxy2_max = (self.kx.detach().abs() ** 2
+                                + self.ky.detach().abs() ** 2).amax()
                 eps_max = eps_grid.detach().abs().amax().to(kxy2_max.dtype)
                 lam_bound = torch.sqrt(kxy2_max + eps_max)
 
@@ -379,8 +404,11 @@ class LayerSolver:
         """
         if isinstance(medium, IsotropicMediumSpec):
             eps = _regularize_eps(medium.eps, self.config.grazing_eps_reg)
-            lam, V = homogeneous_modes(eps, self.kx, self.ky)
-            W      = V.eye_like()
+            if self.stretched:
+                lam, W, V = self._stretched_uniform_modes(eps)
+            else:
+                lam, V = homogeneous_modes(eps, self.kx, self.ky)
+                W      = V.eye_like()
         else:
             raise NotImplementedError(
                 f"Medium solver not implemented for {type(medium)}"

@@ -165,11 +165,6 @@ class TestBuildLayerSolver:
         assert_close(ls.ky, ref.ky)
         assert ls.kx[..., (ls.m_flat == 0)].abs().max() == 0
 
-    def test_homogeneous_elements_not_supported_yet(self):
-        ls, spec = _layersolver(PML(width=0.25), _config())
-        with pytest.raises(NotImplementedError, match="PML"):
-            ls.prepare(spec.incidence)
-
     def test_no_pml_keeps_diagonal_k(self):
         ls, _ = _layersolver(None, _config())
         assert not ls.stretched

@@ -234,8 +234,9 @@ $\gamma = \lambda$ is a removable singularity, not a resonance: evaluate with th
 | Harmonics | `solver/harmonics.py` | Bloch phase 0 along PML axes. New: build $\tilde K_x$, $\tilde K_y$. |
 | `P`, `Q` assembly | `layersolver/isotropic.py` | Pass dense $\tilde K$ instead of diagonal $K$. Fix `d = Ky @ Kx` in `compute_Q0`. |
 | TVF | `tvf/` | Unchanged (given edge padding). |
-| Patterned modes | `layersolver/eigsolver.py`, `matexpsolver.py` | Unchanged. The matexp slice-count bound uses $\max(k_x^2+k_y^2)$ and needs a bound for $\tilde K$. |
-| Homogeneous modes | `layersolver/homogeneous.py` | Closed form lost; one shared numerical basis (see TODO above). |
+| Patterned modes | `layersolver/eigsolver.py`, `matexpsolver.py` | Unchanged. The matexp slice-count bound uses the $\infty$-norm of $\tilde K$. |
+| Homogeneous modes | `layersolver/base.py` | Closed form lost: $P = Q_0/\varepsilon$ solved by `eigsolver`. |
+| Background `W0`, `V0` | `layersolver/base.py` | Unchanged (unstretched vacuum): the zero-thickness gap is exact for any basis; checked to agree with a stretched gap to $\sim 10^{-12}$. |
 | Background solve | new | 1-harmonic transfer matrix of the background stack, giving $\mathbf E_\text{inc}$ per layer. |
 | Source vectors | new, in `smatrix()` / `run()` | $f$ from the FFT of $\Delta\varepsilon\,e^{j\mathbf k_\parallel\cdot\mathbf r}$ (a vector, not a matrix), then $(e_L, e_R)$ per patterned layer. |
 | Star product | `solver/blockmatrix.py` | Extended to carry source vectors. |
@@ -292,10 +293,9 @@ Internally, a new `solver/pml.py` builds $\tilde K_x$, $\tilde K_y$ as `Block`s 
 ## Open questions
 
 1. **Observables.** Which outputs to provide: total reflection and transmission, scattered power, extinction, near or far field?
-2. **Background `W0`/`V0`.** Can the zero-thickness gap medium stay unstretched, or must it be built with $\tilde K$?
-3. **Profile.** Add the Hugonin–Lalanne nonlinear map (better convergence) as a built-in profile?
-4. **Gradients.** Should the PML parameters be differentiable?
-5. **Validation.**
+2. **Profile.** Add the Hugonin–Lalanne nonlinear map (better convergence) as a built-in profile?
+3. **Gradients.** Should the PML parameters be differentiable?
+4. **Validation.**
    - Laurent vs inverse rule convergence for $[[1/s]]$.
    - Normal incidence: scattered-field vs total-field formulation.
    - Oblique incidence: convergence towards a large periodic supercell, and Mie theory for a single cylinder or sphere.

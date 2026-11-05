@@ -6,7 +6,7 @@ import pytest
 import torch
 from torch.testing import assert_close
 
-from metarcwa import Config, Model, Solver, Source
+from metarcwa import Model, Source
 from metarcwa.model.lattice import Lattice
 from metarcwa.model.layer import Layer, HomogeneousLayer, PatternedLayer
 from metarcwa.model.medium import IsotropicMedium
@@ -279,8 +279,3 @@ class TestStackIntegration:
         pml = PML(width=0.25, profile=StretchAbsorbProfile(sigma_max=sigma))
         model = Model(_stack(pml=pml), Source(wavelength=1.0))
         assert any(p is sigma for p in model.parameters())
-
-    def test_solver_rejects_pml_until_supported(self):
-        model = Model(_stack(pml=PML(width=0.25)), Source(wavelength=1.0))
-        with pytest.raises(NotImplementedError, match="PML"):
-            Solver(model, Config(nx=8, ny=16, m=1, n=1))
