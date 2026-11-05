@@ -26,6 +26,7 @@ Four internal builders, one combiner, and one top-level entry point:
 
   compute_isotropic(epsilon_grid, m_flat, n_flat, kx, ky, tvf_fields=None) → (P, Q)
       Top-level entry: builds ε_conv once and returns both operators.
+      ``kx``/``ky`` are ``[..., Nh]`` tensors (wrapped as DIAG) or ``Block``s.
       ``tvf_fields`` is a precomputed ``(Tx, Ty)`` pair, not a ``TVF``
       instance — callers compute the field once (see ``LayerSolver._patterned``)
       and may pass a batch-1 field that broadcasts against a batched ε_conv.
@@ -51,17 +52,16 @@ def compute_Q0(Kx: Block, Ky: Block, epsilon_conv: Block) -> Block2x2:
         Q₀ = [[ −Kx·Ky,       Kx²−ε ],
                [  ε−Ky²,       Ky·Kx ]]
 
-    where Kx, Ky are diagonal matrices of in-plane wavevector components
-    and ε is the convolution (Toeplitz) matrix of the permittivity.
+    where Kx, Ky are the in-plane wavevector operators and ε is the
+    convolution (Toeplitz) matrix of the permittivity. DENSE Kx, Ky need
+    not commute, so ``Ky·Kx`` is computed explicitly.
 
     Parameters
     ----------
     Kx : Block
-        Diagonal Block of x-components of the in-plane wavevector, shape
-        ``[..., Nh]``.
+        x-wavevector operator: DIAG ``[..., Nh]`` or DENSE ``[..., Nh, Nh]``.
     Ky : Block
-        Diagonal Block of y-components of the in-plane wavevector, shape
-        ``[..., Nh]``.
+        y-wavevector operator: DIAG ``[..., Nh]`` or DENSE ``[..., Nh, Nh]``.
     epsilon_conv : Block
         Dense Block holding the Toeplitz convolution matrix of ε(r), shape
         ``[..., Nh, Nh]``.
@@ -75,7 +75,7 @@ def compute_Q0(Kx: Block, Ky: Block, epsilon_conv: Block) -> Block2x2:
     a = -Kx @ Ky
     b = Kx @ Kx - epsilon_conv
     c = epsilon_conv - Ky @ Ky
-    d = -a
+    d = Ky @ Kx        # equals -a only when Kx, Ky commute
     return Block2x2(a, b, c, d)
 
 
@@ -212,11 +212,9 @@ def compute_P(Kx: Block, Ky: Block, epsilon_conv: Block) -> Block2x2:
     Parameters
     ----------
     Kx : Block
-        Diagonal Block of x-components of the in-plane wavevector, shape
-        ``[..., Nh]``.
+        x-wavevector operator: DIAG ``[..., Nh]`` or DENSE ``[..., Nh, Nh]``.
     Ky : Block
-        Diagonal Block of y-components of the in-plane wavevector, shape
-        ``[..., Nh]``.
+        y-wavevector operator: DIAG ``[..., Nh]`` or DENSE ``[..., Nh, Nh]``.
     epsilon_conv : Block
         Dense Block of the Toeplitz convolution matrix of ε(r), shape
         ``[..., Nh, Nh]``.
@@ -236,7 +234,7 @@ def compute_P(Kx: Block, Ky: Block, epsilon_conv: Block) -> Block2x2:
 
 def compute_isotropic(epsilon_grid: torch.Tensor,
                       m_flat: torch.Tensor, n_flat: torch.Tensor,
-                      kx: torch.Tensor, ky: torch.Tensor,
+                      kx: torch.Tensor | Block, ky: torch.Tensor | Block,
                       tvf_fields: tuple[torch.Tensor, torch.Tensor] | None = None,
                       ) -> Tuple[Block2x2, Block2x2]:
     """
@@ -256,12 +254,12 @@ def compute_isotropic(epsilon_grid: torch.Tensor,
         Integer harmonic indices along x (b1 direction), shape ``[Nh]``.
     n_flat : torch.Tensor
         Integer harmonic indices along y (b2 direction), shape ``[Nh]``.
-    kx : torch.Tensor
-        x-components of the in-plane wavevectors, normalised by k0,
-        shape ``[..., Nh]``.
-    ky : torch.Tensor
-        y-components of the in-plane wavevectors, normalised by k0,
-        shape ``[..., Nh]``.
+    kx : torch.Tensor or Block
+        x-components of the in-plane wavevectors, normalised by k0: either
+        a tensor of shape ``[..., Nh]`` (wrapped as a DIAG Block), or a
+        Block — DIAG ``[..., Nh]`` or DENSE ``[..., Nh, Nh]``.
+    ky : torch.Tensor or Block
+        y-components, same conventions as ``kx``.
     tvf_fields: Tx, Ty tangent vector field components, shape [B, Ny, Nx].
              B may be 1 (wavelength-independent field, broadcast downstream)
              or match the batch of epsilon_conv. ``None`` (default) uses the plain 
@@ -274,15 +272,16 @@ def compute_isotropic(epsilon_grid: torch.Tensor,
     Q : Block2x2
         Q operator; each entry is a DENSE Block of shape ``[..., Nh, Nh]``.
     """
+    Kx = kx if isinstance(kx, Block) else Block(Block.DIAG, kx)
+    Ky = ky if isinstance(ky, Block) else Block(Block.DIAG, ky)
     epsilon_grid = epsilon_grid.to(dtype=_REAL_TO_COMPLEX[epsilon_grid.real.dtype])
-    n_extra = (kx.ndim - 1) - (epsilon_grid.ndim - 2)
+    k_batch_ndim = Kx.data.ndim - (2 if Kx.kind == Block.DENSE else 1)
+    n_extra = k_batch_ndim - (epsilon_grid.ndim - 2)
     if n_extra > 0:
         epsilon_grid = epsilon_grid.reshape(
             *epsilon_grid.shape[:-2], *([1] * n_extra), *epsilon_grid.shape[-2:]
         )
     epsilon_conv = Block(Block.DENSE, convolution_matrix(epsilon_grid, m_flat, n_flat))
-    Kx = Block(Block.DIAG, kx)
-    Ky = Block(Block.DIAG, ky)
 
     P = compute_P(Kx, Ky, epsilon_conv)
     if tvf_fields is None:

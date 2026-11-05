@@ -157,7 +157,10 @@ class Block:
             return Block(Block.DENSE, self.data[..., :, None] * o.data)
         if o.kind == Block.DIAG:                   # dense @ diag: scale cols
             return Block(Block.DENSE, self.data * o.data[..., None, :])
-        return Block(Block.DENSE, self.data @ o.data)
+        # dense @ dense: torch.matmul needs equal dtypes (unlike the
+        # elementwise DIAG paths above), so promote e.g. real @ complex.
+        dt = torch.promote_types(self.data.dtype, o.data.dtype)
+        return Block(Block.DENSE, self.data.to(dt) @ o.data.to(dt))
 
     # ---- inverse / solve: cheap for SCALAR & DIAG, solve (not inv) for DENSE ----
     def inv(self) -> "Block":

@@ -399,3 +399,113 @@ class TestAPartitionOfUnity:
         eye = torch.eye(Nh_actual, dtype=Axx.data.dtype, device=device)
         total = Axx.data.squeeze(0) + Ayy.data.squeeze(0)
         assert_close(total, eye, atol=1e-6, rtol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# PML Phase 0: DENSE (possibly non-commuting) wavevector operators
+# ---------------------------------------------------------------------------
+
+def _dense_k(Nh: int = Nh, seed: int = 5, device: str = "cpu") -> tuple[Block, Block]:
+    """Return a generic, non-commuting (Kx, Ky) DENSE complex Block pair."""
+    g = torch.Generator(); g.manual_seed(seed)
+    kx = 0.3 * torch.randn(Nh, Nh, dtype=torch.complex128, generator=g)
+    ky = 0.3 * torch.randn(Nh, Nh, dtype=torch.complex128, generator=g)
+    return Block(Block.DENSE, kx.to(device)), Block(Block.DENSE, ky.to(device))
+
+
+def _random_eps_conv(Nh: int = Nh, seed: int = 9, device: str = "cpu") -> Block:
+    """Return a well-conditioned, non-diagonal DENSE eps convolution matrix."""
+    g = torch.Generator(); g.manual_seed(seed)
+    noise = 0.1 * torch.randn(Nh, Nh, dtype=torch.complex128, generator=g)
+    data = 2.0 * torch.eye(Nh, dtype=torch.complex128) + noise
+    return Block(Block.DENSE, data.to(device))
+
+
+def _dense(b: Block, n: int) -> torch.Tensor:
+    return b.to(Block.DENSE, n).data
+
+
+class TestDenseWavevectorOperators:
+    """Under a lateral PML, Kx/Ky become DENSE stretched operators that need
+    not commute (docs/PML.md). These tests pin (1) that DENSE input with
+    diagonal content reproduces the DIAG path exactly, and (2) that the
+    product order of the derivation is kept when Kx, Ky do not commute."""
+
+    def test_dense_diagonal_K_matches_diag_P_Q0(self, device):
+        Kx, Ky = _kxy(device=device)
+        eps = _random_eps_conv(device=device)
+        Kx_d = Block(Block.DENSE, torch.diag_embed(Kx.data))
+        Ky_d = Block(Block.DENSE, torch.diag_embed(Ky.data))
+
+        for f in (compute_P, compute_Q0):
+            ref, new = f(Kx, Ky, eps), f(Kx_d, Ky_d, eps)
+            for r, d in zip((ref.a, ref.b, ref.c, ref.d), (new.a, new.b, new.c, new.d)):
+                assert_close(_dense(d, Nh).to(torch.complex128),
+                             _dense(r, Nh).to(torch.complex128), atol=1e-12, rtol=0)
+
+    def test_Q0_keeps_product_order(self, device):
+        """Q0 = [[-Kx Ky, Kx^2 - eps], [eps - Ky^2, Ky Kx]] with explicit order."""
+        Kx, Ky = _dense_k(device=device)
+        eps = _random_eps_conv(device=device)
+        X, Y, E = Kx.data, Ky.data, eps.data
+        Q0 = compute_Q0(Kx, Ky, eps)
+
+        assert_close(_dense(Q0.a, Nh), -X @ Y,     atol=1e-12, rtol=0)
+        assert_close(_dense(Q0.b, Nh), X @ X - E,  atol=1e-12, rtol=0)
+        assert_close(_dense(Q0.c, Nh), E - Y @ Y,  atol=1e-12, rtol=0)
+        assert_close(_dense(Q0.d, Nh), Y @ X,      atol=1e-12, rtol=0)
+        # Non-commuting inputs: d must NOT equal -a (the old `d = -a` shortcut).
+        assert (_dense(Q0.d, Nh) + _dense(Q0.a, Nh)).abs().max() > 1e-3
+
+    def test_P_keeps_product_order(self, device):
+        """P = [[-Kx e^-1 Ky, -I + Kx e^-1 Kx], [I - Ky e^-1 Ky, Ky e^-1 Kx]]."""
+        Kx, Ky = _dense_k(device=device)
+        eps = _random_eps_conv(device=device)
+        X, Y = Kx.data, Ky.data
+        Ei = torch.linalg.inv(eps.data)
+        I = torch.eye(Nh, dtype=torch.complex128, device=device)
+        P = compute_P(Kx, Ky, eps)
+
+        assert_close(_dense(P.a, Nh), -X @ Ei @ Y,     atol=1e-12, rtol=1e-12)
+        assert_close(_dense(P.b, Nh), -I + X @ Ei @ X, atol=1e-12, rtol=1e-12)
+        assert_close(_dense(P.c, Nh),  I - Y @ Ei @ Y, atol=1e-12, rtol=1e-12)
+        assert_close(_dense(P.d, Nh),  Y @ Ei @ X,     atol=1e-12, rtol=1e-12)
+
+    def test_compute_isotropic_accepts_blocks(self, device):
+        """Tensor kx/ky and the equivalent DIAG / DENSE Blocks give the same P, Q."""
+        m, n = _harmonic_indices(1, device=device)
+        nh = m.shape[0]
+        g = torch.Generator(); g.manual_seed(13)
+        kx = (0.2 * torch.randn(nh, dtype=torch.float64, generator=g)).to(device)
+        ky = (0.2 * torch.randn(nh, dtype=torch.float64, generator=g)).to(device)
+        grid = (torch.rand(1, 8, 8, dtype=torch.float64, generator=g) + 1.0).to(device)
+
+        P0, Q0 = compute_isotropic(grid, m, n, kx, ky)
+        variants = (
+            (Block(Block.DIAG, kx), Block(Block.DIAG, ky)),
+            (Block(Block.DENSE, torch.diag_embed(kx)), Block(Block.DENSE, torch.diag_embed(ky))),
+        )
+        for Kx, Ky in variants:
+            P1, Q1 = compute_isotropic(grid, m, n, Kx, Ky)
+            for r, d in zip((P0.a, P0.b, P0.c, P0.d, Q0.a, Q0.b, Q0.c, Q0.d),
+                            (P1.a, P1.b, P1.c, P1.d, Q1.a, Q1.b, Q1.c, Q1.d)):
+                assert_close(_dense(d, nh), _dense(r, nh), atol=1e-12, rtol=0)
+
+    def test_compute_isotropic_dense_K_batch_broadcast(self, device):
+        """A batched DENSE K (e.g. over wavelength) broadcasts against an
+        unbatched [Ny, Nx] grid, as the DIAG path does."""
+        m, n = _harmonic_indices(1, device=device)
+        nh = m.shape[0]
+        B = 3
+        g = torch.Generator(); g.manual_seed(17)
+        kx = (0.2 * torch.randn(B, nh, dtype=torch.float64, generator=g)).to(device)
+        ky = (0.2 * torch.randn(B, nh, dtype=torch.float64, generator=g)).to(device)
+        grid = (torch.rand(8, 8, dtype=torch.float64, generator=g) + 1.0).to(device)
+
+        P0, Q0 = compute_isotropic(grid, m, n, kx, ky)
+        Kx = Block(Block.DENSE, torch.diag_embed(kx))
+        Ky = Block(Block.DENSE, torch.diag_embed(ky))
+        P1, Q1 = compute_isotropic(grid, m, n, Kx, Ky)
+        assert _dense(P1.a, nh).shape == (B, nh, nh)
+        assert_close(_dense(P1.d, nh), _dense(P0.d, nh), atol=1e-12, rtol=0)
+        assert_close(_dense(Q1.d, nh), _dense(Q0.d, nh), atol=1e-12, rtol=0)
