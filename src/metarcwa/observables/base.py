@@ -569,6 +569,150 @@ class Observables:
             total = total + sign * cross.mean(dim=(-2, -1))
         return -total / self._incident_flux()
 
+    def scattering_pattern(
+        self,
+        kind: Kind,
+        theta,
+        phi=None,
+        region: Region = "physical",
+        periodic_order: int = 0,
+        polarization_resolved: bool = False,
+    ) -> torch.Tensor:
+        """Angular scattering pattern (differential cross section) of the scattered field.
+
+        Uses the angular spectrum of the scattered tangential E on one face,
+        ``Ẽ(k_par) = ∫_region E_s exp(-j k_par . r) dA``. Each propagating
+        ``k_par`` is a plane wave leaving the stack into the half-space (index
+        ``n``) in the direction ``sin(theta) = |k_par| / (n k0)``; its s/p
+        amplitudes come from the same basis as :meth:`jones`. ``theta`` is
+        measured from the outward normal of the face (``-z`` for
+        ``"reflection"``, ``+z`` for ``"transmission"``). The half-space must
+        be lossless (``Re n`` is used).
+
+        - **PML on both axes** (isolated 3D structure): ``theta``, ``phi``
+          (polar angle, azimuth) give ``dsigma/dOmega`` in units of
+          area/steradian. Integrated over the hemisphere it equals
+          ``scattered_power(kind, region) * cell area``.
+        - **PML on one axis** (structure uniform or periodic along the other
+          axis): ``theta`` is the angle in the plane spanned by the PML axis
+          and ``z`` (inside the diffraction cone of ``periodic_order`` along
+          the periodic axis when the incidence is tilted along it); ``phi``
+          must be ``None``. Returns ``dsigma'/dtheta`` per unit length along
+          the periodic axis (units of length/radian). Summed over the
+          propagating ``periodic_order`` values and integrated over
+          ``theta`` in ``(-pi/2, pi/2)`` it equals
+          ``scattered_power(kind, region) * (cell length along the PML axis)``.
+
+        Parameters
+        ----------
+        kind : {"reflection", "transmission"}
+            Face: scattering back into the incidence medium, or into the
+            transmission medium.
+        theta : float or torch.Tensor
+            Polar angle(s) in rad, any shape (flattened to ``N_ang``).
+        phi : float or torch.Tensor, optional
+            Azimuth(s) in rad, broadcast against ``theta``; both-axes PML
+            only (default ``0``).
+        region : {"physical", "cell"}, default "physical"
+            Where the field is integrated. ``"physical"`` excludes the PML,
+            where the field is the stretched (non-physical) continuation; the
+            near field must have decayed before the PML.
+        periodic_order : int, default 0
+            One-axis PML only: diffraction order along the periodic axis.
+        polarization_resolved : bool, default False
+            If ``True``, return the s and p parts of the scattered wave
+            separately.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``[..., N_ang, 2]`` (last axis: unit s, p incident wave),
+            or ``[..., N_ang, 2, 2]`` (scattered s/p, then incident s/p) with
+            ``polarization_resolved``. Normalized to the incident intensity,
+            so the values are cross sections, not power fractions.
+
+        Notes
+        -----
+        The angular resolution is limited by the size of the integration
+        region (``Δk ~ 2π / width``): narrow lobes need a large cell.
+        """
+        self._require_scattered()
+        prepared = self.modal.prepared
+        spec, ls, bg = prepared.model_spec, prepared.layersolver, self.modal.background
+        pml = spec.pml
+        if kind == "reflection":
+            medium, sign = spec.incidence, -1.0
+        elif kind == "transmission":
+            medium, sign = spec.transmission, 1.0
+        else:
+            raise ValueError(f"kind must be 'reflection' or 'transmission', got {kind!r}")
+
+        rdt = bg.kx0.dtype
+        dev = bg.kx0.device
+        nx, ny = ls.config.nx, ls.config.ny
+        px, py = spec.a1[0].abs().to(rdt), spec.a2[1].abs().to(rdt)
+        k0 = (2 * torch.pi / bg.wavelength).to(rdt)                   # [N_wl, 1, 1]
+        nr = torch.sqrt(medium.eps).real.reshape(-1, 1, 1).to(rdt)    # [N_wl, 1, 1]
+        th = torch.as_tensor(theta, dtype=rdt, device=dev).reshape(-1)
+        both = pml.sx is not None and pml.sy is not None
+
+        if both:
+            ph = torch.zeros_like(th) if phi is None else torch.as_tensor(phi, dtype=rdt, device=dev).reshape(-1)
+            th, ph = torch.broadcast_tensors(th, ph)
+            kxn = nr[..., None] * torch.sin(th) * torch.cos(ph)       # [N_wl,1,1,N_ang]
+            kyn = nr[..., None] * torch.sin(th) * torch.sin(ph)
+            phi0 = ph
+            qx, qy = k0[..., None] * kxn, k0[..., None] * kyn
+            propagating = torch.ones_like(kxn, dtype=torch.bool)
+        else:
+            if phi is not None:
+                raise ValueError("phi is only defined when the PML acts on both axes.")
+            along_x = pml.sx is not None
+            G = 2 * torch.pi * periodic_order / (py if along_x else px)
+            k_par0 = (bg.ky0 if along_x else bg.kx0) + G / k0         # periodic-axis k, normalized
+            kperp2 = nr ** 2 - k_par0 ** 2
+            propagating = (kperp2 > 0)[..., None].expand(*kperp2.shape, th.numel())
+            kperp = torch.sqrt(kperp2.clamp_min(0))[..., None]       # [*B, 1]
+            k_pml = kperp * torch.sin(th)                             # [*B, N_ang]
+            k_per = k_par0[..., None].expand_as(k_pml)
+            kxn, kyn = (k_pml, k_per) if along_x else (k_per, k_pml)
+            phi0 = torch.zeros_like(kxn)
+            # The grid omits the Bloch phase of the periodic axis: only G remains there.
+            q_pml = k0[..., None] * k_pml
+            q_per = torch.full_like(q_pml, float(G))
+            qx, qy = (q_pml, q_per) if along_x else (q_per, q_pml)
+
+        kzn = torch.sqrt((nr[..., None] ** 2 - kxn ** 2 - kyn ** 2).clamp_min(0))
+        cos_t = kzn / nr[..., None]
+
+        # Angular spectrum: ∫ E exp(-j(qx x + qy y)) dA, separable in x and y.
+        f = self.scattered_field(kind)[..., :2, :, :, :] * self._mask(region)  # [...,2c,2e,Ny,Nx]
+        x = torch.arange(nx, dtype=rdt, device=dev) * (px / nx)
+        y = torch.arange(ny, dtype=rdt, device=dev) * (py / ny)
+        Ex = torch.exp(-1j * qx[..., None, :] * x[:, None])            # [*B', Nx, N_ang]
+        Ey = torch.exp(-1j * qy[..., None, :] * y[:, None])            # [*B', Ny, N_ang]
+        fx = f @ Ex[..., None, None, :, :].to(f.dtype)                 # [..., 2c, 2e, Ny, N_ang]
+        Et = (fx * Ey[..., None, None, :, :].to(f.dtype)).sum(-2) * (px * py / (nx * ny))
+        Et = Et.movedim(-1, -3)                                        # [..., N_ang, 2c, 2e]
+
+        # s/p amplitudes of each outgoing plane wave. kz is floored so that the
+        # p column of the basis stays invertible at grazing (its weight -> 0).
+        kz = (sign * kzn.clamp_min(1e-9 * float(nr.min()))).to(Et.dtype)
+        R = _sp_basis(kxn, kyn, kz, nr[..., None].to(Et.dtype), phi0)  # [*B', N_ang, 2, 2]
+        a2 = torch.linalg.solve(R, Et).abs() ** 2                      # [..., N_ang, 2s/p, 2e]
+
+        flux = 0.5 * nr[..., None, None, None] * cos_t[..., None, None] * a2   # per (2π)^-d d^dk
+        if both:
+            dens = (nr * k0)[..., None, None, None] ** 2 * cos_t[..., None, None] * flux / (2 * torch.pi) ** 2
+        else:
+            per_len = py if pml.sx is not None else px
+            kperp_phys = (k0[..., None] * kperp)[..., None, None]     # [*B, 1, 1, 1]
+            dens = kperp_phys * torch.cos(th)[..., None, None] * flux / (2 * torch.pi * per_len ** 2)
+        dens = dens * propagating[..., None, None]
+        inc = self._incident_flux()[..., None, None, :]                # [..., 1, 1, 2e]
+        dens = dens / inc
+        return dens if polarization_resolved else dens.sum(-2)
+
 
 class FieldObservables(Observables):
     """Field-level observables built from a :class:`FieldSolution`.

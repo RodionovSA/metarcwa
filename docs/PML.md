@@ -331,6 +331,7 @@ Under the scattered-field formulation the scattered field has no incoming part, 
 - **Specular Jones matrix** (`jones`, `reflection`, `transmission`; order $(0,0)$ only): background plus the scattered field projected on the specular plane wave, $\frac1A\int_\text{region}\mathbf E_{s,t}\,e^{-j\mathbf k_\parallel\cdot\mathbf r}\,dA$, with `region="cell"` (default, the whole cell; equal to the total-field $(0,0)$ order at normal incidence) or `"physical"` (PML excluded; still divided by the cell area $A$). For an isolated structure the scattered part scales as $1/A$, and $A\,(J - J_\text{bg})$ is the cell-independent specular scattering amplitude.
 - **Background Jones matrix** (`background_jones`): the background stack alone.
 - **Scattered power** (`scattered_power(kind, region="physical")`): the Poynting flux $\tfrac12\mathrm{Im}(S_xU_y^* - S_yU_x^*)$ of the scattered field through one face, normalized to the incident power on one cell ($I_\text{inc}A$). Multiply by $A$ for a cross section.
+- **Scattering pattern** (`scattering_pattern(kind, theta, phi=None, region="physical")`): the angular spectrum $\tilde{\mathbf E}(\mathbf k_\parallel) = \int_\text{region}\mathbf E_{s,t}\,e^{-j\mathbf k_\parallel\cdot\mathbf r}\,dA$ on one face; each propagating $\mathbf k_\parallel$ is a plane wave leaving at $\sin\theta = |\mathbf k_\parallel|/(nk_0)$, split into s/p with the `jones` basis. PML on both axes: $d\sigma/d\Omega = (nk_0)^2\cos\theta\,\tfrac12 n\cos\theta\,(|a_s|^2+|a_p|^2)/((2\pi)^2 I_\text{inc})$ (area/sr). PML on one axis: $d\sigma'/d\theta$ per unit length along the periodic axis, per diffraction order along it (length/rad). Integrated over angles it returns `scattered_power × cell area` (resp. × cell length along the PML axis): checked to $\sim 2\times10^{-4}$ for the 2D ridge; for a small 3D disk the reflection side converges with the cell size (11 % at $L=2$, 4 % at $L=3$), since the near field must decay inside the physical region. Angular resolution $\Delta k \sim 2\pi/\text{width}$.
 - **Extinction** (`extinction(region="physical")`): minus the outward flux of the interference term between incident (background) and scattered fields through both faces, i.e. scattered + absorbed power. It ignores the interference flux through the lateral boundaries (e.g. a mode guided away in a film).
 
 Check (lossless ridge on glass, `L = 16`): extinction equals the sum of the scattered powers to $\sim 10^{-3}$; the scattered powers converge with the cell size to 4 digits. Near fields inside the stack need `FieldSolution` (not implemented).
@@ -339,7 +340,7 @@ Check (lossless ridge on glass, `L = 16`): extinction equals the sum of the scat
 
 ## Open questions
 
-1. **Observables.** Near and far fields (far-field angular spectrum of the scattered field) are not provided yet; near fields need `FieldSolution`.
+1. **Observables.** Near fields inside the stack are not provided yet (they need `FieldSolution`).
 2. **Profile.** Add the Hugonin–Lalanne nonlinear map (better convergence) as a built-in profile?
 3. **Gradients.** Should the PML parameters be differentiable?
 4. **Validation.**

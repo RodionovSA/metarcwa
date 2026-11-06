@@ -114,7 +114,7 @@ Re-preparing after changes:
 
 | Class | Responsibility |
 |-------|----------------|
-| `Observables(modal_solution)` | s/p Jones matrices per diffraction channel: `.jones(kind, in_order, out_order)` → `[..., 2, 2]`; `.reflection(pol)` / `.transmission(pol)` → (co, cross) amplitudes; `.scatter(excitation, ...)` for arbitrary `(a_s, a_p)`. Returns amplitudes, not power — the caller applies `|·|²` and the transmission Poynting-flux factor (see `examples/interface.ipynb`). Under a PML only order `(0, 0)`; with the scattered-field formulation also `background_jones`, `scattered_coefficients` / `scattered_field` (grid), `scattered_power`, `extinction` (`region="cell" \| "physical"`), see `docs/PML.md` "Observables". |
+| `Observables(modal_solution)` | s/p Jones matrices per diffraction channel: `.jones(kind, in_order, out_order)` → `[..., 2, 2]`; `.reflection(pol)` / `.transmission(pol)` → (co, cross) amplitudes; `.scatter(excitation, ...)` for arbitrary `(a_s, a_p)`. Returns amplitudes, not power — the caller applies `|·|²` and the transmission Poynting-flux factor (see `examples/interface.ipynb`). Under a PML only order `(0, 0)`; with the scattered-field formulation also `background_jones`, `scattered_coefficients` / `scattered_field` (grid), `scattered_power`, `extinction`, `scattering_pattern` (angular dσ/dΩ, or dσ'/dθ for a one-axis PML) (`region="cell" \| "physical"`), see `docs/PML.md` "Observables". |
 | `FieldObservables` | Field-level API (`intensity`, `absorption_map`) — **stub**, raises `NotImplementedError` |
 
 `src/metarcwa/_dtypes.py` — `to_complex` / `to_real` / `_REAL_TO_COMPLEX`, shared by `model` and
