@@ -326,6 +326,28 @@ Internally, a new `solver/pml.py` builds $\tilde K_x$, $\tilde K_y$ as `Block`s 
 
 ## Observables
 
+### How observables are computed
+
+**Periodic case (reference).** The half-space modes are the harmonics themselves ($W = I$), so `S11`/`S21` map tangential-E Fourier coefficients directly. The incident plane wave is one harmonic, $a = R_\text{in}(a_s, a_p)$, and every outgoing harmonic is converted back to s/p with its own $R_\text{out}$.
+
+**Total-field formulation.** The stack S-matrix still gives the answer, but the half-space modes are eigenvectors of $\tilde K_x^2 + \tilde K_y^2$ (a dense $W$), and $S$ acts on their amplitudes. Fields are therefore mapped into the mode basis and back:
+
+$$
+\begin{align}
+J = R_\text{out}^{-1}\,W_\text{out}\,S\,W_\text{in}^{-1}\,R_\text{in}.
+\end{align}
+$$
+
+Only the $(0,0)$ entry is read: the uniform harmonic is an exact plane-wave mode of the half-spaces because $\tilde K_xe_0 = 0$ at $k_{x0} = 0$ (see "Why the total field does not work").
+
+**Scattered-field formulation.** The two parts of $\mathbf E = \mathbf E_\text{inc} + \mathbf E_s$ come from different calculations:
+
+1. **Incident part.** `solve_background` runs a one-harmonic S-matrix solve of the background stack. It gives the background reflected and transmitted plane waves at the two faces, and $\mathbf E_\text{inc}$ in every layer for the sources. No RCWA, no PML.
+2. **Scattered part.** The affine S-matrices of all elements are composed with the extended star product. Every layer's $S$ still matters: the composition carries the multiple reflections between layers into $(e_L, e_R)$. The scattered field has no incoming waves ($c_L^+ = c_R^- = 0$), so its outgoing waves at the two faces are exactly $(e_L, e_R)$. The final stack `S11`/`S21` are kept in `ModalSolution` but **not used** for the observables. $(e_L, e_R)$ have two columns (unit s and p incident wave), and everything is linear in $(a_s, a_p)$.
+3. **Fields on the faces.** $e$ is in half-space mode amplitudes, so the tangential fields are $s = We_L$, $u = -Ve_L$ on the incidence side (backward waves) and $s = We_R$, $u = +Ve_R$ on the transmission side. These harmonic coefficients are put on the real-space grid by an inverse FFT; every observable below is computed from them, plus the background plane waves.
+
+### Definitions
+
 Under the scattered-field formulation the scattered field has no incoming part, so $(e_L, e_R)$ is its whole solution at the two faces: the tangential fields are $W e$, $\pm V e$ in the half-space mode bases (minus sign for the backward waves on the incidence side). They are not diffraction orders: `Observables` reconstructs them on the pattern grid (`scattered_field`) and defines:
 
 - **Specular Jones matrix** (`jones`, `reflection`, `transmission`; order $(0,0)$ only): background plus the scattered field projected on the specular plane wave, $\frac1A\int_\text{region}\mathbf E_{s,t}\,e^{-j\mathbf k_\parallel\cdot\mathbf r}\,dA$, with `region="cell"` (default, the whole cell; equal to the total-field $(0,0)$ order at normal incidence) or `"physical"` (PML excluded; still divided by the cell area $A$). For an isolated structure the scattered part scales as $1/A$, and $A\,(J - J_\text{bg})$ is the cell-independent specular scattering amplitude.
