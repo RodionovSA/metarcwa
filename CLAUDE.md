@@ -230,8 +230,6 @@ Re-preparing after changes:
   under PML); without it scattered ≠ total at finite `Nh`. Keep it when touching `compute_isotropic`.
 - Source phase convention: pixel `i` at `x = i·px/nx` (FFT convention of `convolution_matrix`); the
   background/scattered fields share it.
-- Intermittent segfault / heap abort seen in multithreaded CPU runs of PML + TVF + matexp models with
-  torch 2.13 (also on code predating the scattered formulation); `OMP_NUM_THREADS=1` avoids it.
 
 ---
 
