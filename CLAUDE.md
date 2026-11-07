@@ -95,7 +95,8 @@ Re-preparing after changes:
 | `harmonics.py` | Harmonic index map `(m,n)`, truncation, in-plane wavevectors `kx`/`ky` |
 | `smatrix.py` | `S_boundary`, `S_prop`, `S_layer`: per-interface/layer S-matrix builders; `AffineS(S, e_L, e_R)` + extended `.star()` for layers with sources (PML scattered field) |
 | `pml.py` | `stretched_k`: dense stretched `K̃x = [[1/s_x]] Kx`, `K̃y` (Laurent or inverse) |
-| `background.py` | `solve_background` → `BackgroundField`: 1-harmonic solve of the background stack (patterned → `medium_void`) for unit s/p incidence = `E_inc` per layer |
+| `background.py` | `solve_background` → `BackgroundField`: 1-harmonic solve of the background stack (patterned → `medium_void`) for unit s/p incidence = `E_inc` per layer; built from `homogeneous_modes` / `S_boundary` / `S_prop` / `.star` with size-1 DIAG leaves |
+| `polarization.py` | `sp_vectors` / `sp_matrix`: the s/p tangential-E basis (with the `rho → 0` fallback), shared by `background.py` and `Observables` |
 | `scattered.py` | PML scattered-field source: `layer_source` (FFT of `Δε e^{jk∥·r}` → `f`), `modal_affine` (closed form, stable `phi1`), `transfer_affine` (augmented `matrix_exp` per slice + phase-shifted squaring), `layer_affine` |
 | `blockmatrix.py` | `Block` / `Block2x2`: structured operator algebra + Redheffer star product; `apply_vec` / `solve_vec` (operator × dense vector) |
 | `convolution.py` | Fourier convolution matrix helpers |

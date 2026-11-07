@@ -76,17 +76,11 @@ from typing import Literal, Tuple
 import torch
 
 from metarcwa.solver.base import ModalSolution, FieldSolution
-from metarcwa.solver.background import _sp_basis
+from metarcwa.solver.polarization import sp_matrix, sp_vectors
 from metarcwa.solver.blockmatrix import Block, Block2x2, apply_vec
 from metarcwa.solver.layersolver.homogeneous import homogeneous_kz
 from metarcwa.solver.layersolver._modes import _regularize_eps
 from metarcwa.solver.scattered import _grid_phase, physical_mask
-
-# Regularization threshold for the kx=ky=0 singularity (rho -> 0), e.g. the
-# specular order at/near normal incidence. Same regularization philosophy as
-# the Lorentzian/broadening constants elsewhere in the solver
-# (homogeneous.py delta=1e-30, eigsolver.py broadening_parameter=1e-10).
-_RHO_EPS = 1e-8
 
 Kind = Literal["reflection", "transmission"]
 Pol = Literal["s", "p"]
@@ -169,32 +163,13 @@ class Observables:
 
         Regularizes the ``rho -> 0`` (normal-incidence) singularity by
         falling back to the global azimuth ``phi0 = atan2(ky0, kx0)`` for
-        the affected harmonic(s).
+        the affected harmonic(s). Same basis as the background solve
+        (:func:`~metarcwa.solver.polarization.sp_vectors`).
         """
         ls = self.modal.prepared.layersolver
-        kx, ky = ls.kx, ls.ky
-        rho = torch.sqrt(kx**2 + ky**2)
-        near_zero = rho < _RHO_EPS
-        rho_safe = torch.where(near_zero, torch.ones_like(rho), rho)
-
         model_spec = self.modal.prepared.model_spec
         phi0 = torch.atan2(model_spec.ky0, model_spec.kx0)[..., None]  # [...,1], broadcasts vs Nh
-
-        cdtype = kz.dtype
-        sx = torch.where(near_zero, -torch.sin(phi0), -ky / rho_safe).to(cdtype)
-        sy = torch.where(near_zero, torch.cos(phi0), kx / rho_safe).to(cdtype)
-        kz_over_n = kz / n
-        px = torch.where(
-            near_zero,
-            -kz_over_n * torch.cos(phi0).to(cdtype),
-            -kz_over_n * (kx / rho_safe).to(cdtype),
-        )
-        py = torch.where(
-            near_zero,
-            -kz_over_n * torch.sin(phi0).to(cdtype),
-            -kz_over_n * (ky / rho_safe).to(cdtype),
-        )
-
+        sx, sy, px, py = sp_vectors(ls.kx, ls.ky, kz, n, phi0)
         return Block2x2(
             Block(Block.DIAG, sx), Block(Block.DIAG, px),
             Block(Block.DIAG, sy), Block(Block.DIAG, py),
@@ -403,7 +378,7 @@ class Observables:
         else:
             raise ValueError(f"kind must be 'reflection' or 'transmission', got {kind!r}")
         n = torch.sqrt(medium.eps).reshape(-1, 1, 1)
-        R = _sp_basis(bg.kx0, bg.ky0, sign * bg.lam[i] / 1j, n, torch.atan2(bg.ky0, bg.kx0))
+        R = sp_matrix(bg.kx0, bg.ky0, sign * bg.lam[i] / 1j, n, torch.atan2(bg.ky0, bg.kx0))
         return torch.linalg.solve(R, tangential.to(R.dtype))
 
     def _background_face(self, kind: Kind) -> torch.Tensor:
@@ -698,7 +673,7 @@ class Observables:
         # s/p amplitudes of each outgoing plane wave. kz is floored so that the
         # p column of the basis stays invertible at grazing (its weight -> 0).
         kz = (sign * kzn.clamp_min(1e-9 * float(nr.min()))).to(Et.dtype)
-        R = _sp_basis(kxn, kyn, kz, nr[..., None].to(Et.dtype), phi0)  # [*B', N_ang, 2, 2]
+        R = sp_matrix(kxn, kyn, kz, nr[..., None].to(Et.dtype), phi0)  # [*B', N_ang, 2, 2]
         a2 = torch.linalg.solve(R, Et).abs() ** 2                      # [..., N_ang, 2s/p, 2e]
 
         flux = 0.5 * nr[..., None, None, None] * cos_t[..., None, None] * a2   # per (2π)^-d d^dk

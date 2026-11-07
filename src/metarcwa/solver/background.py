@@ -11,15 +11,20 @@ stack**: the same stack with every patterned layer filled with its
 wave with the incident in-plane wavevector ``(kx0, ky0)`` in every layer, and
 one Fourier harmonic suffices. No PML is involved.
 
-This module solves that one-harmonic problem with the same conventions as
-the main solver:
+This module solves that one-harmonic problem with the main solver's own
+building blocks, so the conventions cannot drift apart:
 
 - field vector ``psi = (Sx, Sy, Ux, Uy)`` (``docs/rcwa_core.md``), modes of
   a uniform isotropic medium ``W = I``, ``V = Q diag(1/lam)``
   (:func:`~metarcwa.solver.layersolver.homogeneous.homogeneous_modes`);
 - forward waves vary as ``exp(+lam k0 z)``, ``lam = 1j kz``;
-- excitation columns are the s and p unit amplitudes of the
-  :class:`~metarcwa.observables.base.Observables` basis, so ``(a_s, a_p)``
+- interfaces, propagation and composition are
+  :func:`~metarcwa.solver.smatrix.S_boundary`,
+  :func:`~metarcwa.solver.smatrix.S_prop` and :meth:`Block2x2.star` with
+  one harmonic (DIAG leaves of size 1);
+- excitation columns are the s and p unit amplitudes of
+  :func:`~metarcwa.solver.polarization.sp_matrix`, the basis
+  :class:`~metarcwa.observables.base.Observables` uses, so ``(a_s, a_p)``
   can be applied downstream exactly as today.
 
 Amplitude reference planes. Inside finite layer ``i`` (local ``z`` in
@@ -33,9 +38,11 @@ face where it *enters* the layer, so both exponentials are bounded by ``1``
 inside the layer (``Re lam <= 0``). In the half-spaces both amplitudes are
 referenced to the interface.
 
-The whole calculation is a handful of ``2x2`` (polarization) matrix
-operations per layer and batch entry; it depends on the source only and is
-cheap, so it runs in :func:`~metarcwa.solver.base.run`.
+What is specific to this module: building the background stack, and the
+amplitudes inside every layer from its left and right partial S-matrices.
+The calculation is a handful of ``2x2`` (polarization) operations per layer
+and batch entry; it depends on the source only and is cheap, so it runs in
+:func:`~metarcwa.solver.base.run`.
 """
 
 from __future__ import annotations
@@ -47,12 +54,11 @@ import torch
 from metarcwa.model.base import ModelSpec
 from metarcwa.model.layer import HomogeneousLayer, PatternedLayer
 from metarcwa.model.medium import IsotropicMediumSpec, MediumSpec
+from metarcwa.solver.blockmatrix import apply_vec, solve_vec
 from metarcwa.solver.layersolver.homogeneous import homogeneous_modes
 from metarcwa.solver.layersolver._modes import _regularize_eps
-
-# Same threshold as observables.base._RHO_EPS (normal-incidence fallback of
-# the s/p basis); duplicated to avoid a solver -> observables import.
-_RHO_EPS = 1e-8
+from metarcwa.solver.polarization import sp_matrix
+from metarcwa.solver.smatrix import S_boundary, S_prop
 
 
 @dataclass(frozen=True)
@@ -147,64 +153,6 @@ def _medium_eps(element) -> torch.Tensor:
     return medium.eps
 
 
-def _sp_basis(kx: torch.Tensor, ky: torch.Tensor, kz: torch.Tensor,
-              n: torch.Tensor, phi0: torch.Tensor) -> torch.Tensor:
-    """Tangential E of the unit s and p waves, ``[*B, 2, 2]`` (columns s, p).
-
-    Same basis as ``Observables._rotation``: ``s = (-ky, kx)/rho`` and the
-    tangential part of ``p`` is ``-(kz/n) (kx, ky)/rho``, with the global
-    azimuth ``phi0`` as the fallback direction when ``rho -> 0``.
-    """
-    rho = torch.sqrt(kx ** 2 + ky ** 2)
-    near_zero = rho < _RHO_EPS
-    rho_safe = torch.where(near_zero, torch.ones_like(rho), rho)
-    ux = torch.where(near_zero, torch.cos(phi0), kx / rho_safe).to(kz.dtype)
-    uy = torch.where(near_zero, torch.sin(phi0), ky / rho_safe).to(kz.dtype)
-    kz_n = kz / n
-    col_s = torch.stack([-uy, ux], dim=-1)
-    col_p = torch.stack([-kz_n * ux, -kz_n * uy], dim=-1)
-    return torch.stack([col_s, col_p], dim=-1)
-
-
-# -- 2x2-block S-matrices as (S11, S12, S21, S22) tuples of [*B, 2, 2] ------
-
-def _interface(Va: torch.Tensor, Vb: torch.Tensor) -> tuple:
-    """S-matrix of the interface a | b between two uniform media (``W = I``).
-
-    Continuity of ``psi`` gives
-    ``[[I, -I], [-Va, -Vb]] (c-_a, c+_b) = [[-I, I], [-Va, -Vb]] (c+_a, c-_b)``
-    (the one-harmonic form of :func:`~metarcwa.solver.smatrix.S_boundary`).
-    """
-    batch = torch.broadcast_shapes(Va.shape[:-2], Vb.shape[:-2])
-    Va, Vb = Va.expand(*batch, 2, 2), Vb.expand(*batch, 2, 2)
-    eye = torch.eye(2, dtype=Va.dtype, device=Va.device).expand(*batch, 2, 2)
-    left = torch.cat([torch.cat([eye, -eye], -1), torch.cat([-Va, -Vb], -1)], -2)
-    right = torch.cat([torch.cat([-eye, eye], -1), torch.cat([-Va, -Vb], -1)], -2)
-    X = torch.linalg.solve(left, right)
-    return X[..., :2, :2], X[..., :2, 2:], X[..., 2:, :2], X[..., 2:, 2:]
-
-
-def _propagation(x: torch.Tensor) -> tuple:
-    """S-matrix ``[[0, X], [X, 0]]`` of a uniform layer, ``x = exp(lam k0 d)`` of shape ``B``."""
-    X = x[..., None, None] * torch.eye(2, dtype=x.dtype, device=x.device)
-    Z = torch.zeros_like(X)
-    return Z, X, X, Z
-
-
-def _star(A: tuple, B: tuple) -> tuple:
-    """Redheffer star product of two ``2x2``-block S-matrices (A left of B)."""
-    a11, a12, a21, a22 = A
-    b11, b12, b21, b22 = B
-    eye = torch.eye(2, dtype=a11.dtype, device=a11.device)
-    IP = eye - b11 @ a22
-    IQ = eye - a22 @ b11
-    Za = torch.linalg.solve(IP, b11 @ a21)
-    Zb = torch.linalg.solve(IP, b12)
-    Wc = torch.linalg.solve(IQ, a21)
-    Wd = torch.linalg.solve(IQ, a22 @ b12)
-    return a11 + a12 @ Za, a12 @ Zb, b21 @ Wc, b22 + b21 @ Wd
-
-
 def solve_background(model_spec: ModelSpec, grazing_eps_reg: float = 0.0) -> BackgroundField:
     """Solve the background stack for a unit s and a unit p incident wave.
 
@@ -223,53 +171,53 @@ def solve_background(model_spec: ModelSpec, grazing_eps_reg: float = 0.0) -> Bac
     """
     elements = (model_spec.incidence, *model_spec.layers, model_spec.transmission)
     kx0, ky0 = model_spec.kx0, model_spec.ky0                  # B
-    wvl = model_spec.wavelength.reshape(-1, 1, 1)
-    k0 = 2 * torch.pi / wvl
+    wvl = model_spec.wavelength
 
-    eps_l, lam_l, V_l, thick_l = [], [], [], []
+    # One harmonic: modes with DIAG leaves of size 1 (W = I, V = Q diag(1/lam)).
+    eps_l, lam_l, W_l, V_l, thick_l = [], [], [], [], []
     for el in elements:
         eps = _regularize_eps(_medium_eps(el), grazing_eps_reg).reshape(-1, 1, 1)
-        lam, Vb = homogeneous_modes(eps, kx0[..., None], ky0[..., None])
+        lam, V = homogeneous_modes(eps, kx0[..., None], ky0[..., None])
         eps_l.append(eps)
-        lam_l.append(lam[..., 0])                               # B
-        V_l.append(Vb.to_dense(1))                              # [*B, 2, 2]
-        thick_l.append(getattr(el, "thickness", None) if not isinstance(el, MediumSpec) else None)
+        lam_l.append(lam)                                       # [*B, 2]
+        W_l.append(V.eye_like())
+        V_l.append(V)
+        thick_l.append(None if isinstance(el, MediumSpec) else el.thickness)
 
     n_el = len(elements)
     L = n_el - 2
-    x = [None] + [torch.exp(lam_l[i] * k0 * thick_l[i]) for i in range(1, L + 1)] + [None]
-    I = [_interface(V_l[i], V_l[i + 1]) for i in range(n_el - 1)]   # I[i] = i | i+1
+    I = [S_boundary(W_l[i], V_l[i], W_l[i + 1], V_l[i + 1]) for i in range(n_el - 1)]
+    P = [None] + [S_prop(lam_l[i], wvl, thick_l[i]) for i in range(1, L + 1)] + [None]
 
     # SL[i]: everything left of element i's left face; SR[i]: right of its right face.
     SL = [None] * n_el
     SL[1] = I[0]
     for i in range(1, L + 1):
-        SL[i + 1] = _star(_star(SL[i], _propagation(x[i])), I[i])
+        SL[i + 1] = SL[i].star(P[i]).star(I[i])
     SR = [None] * n_el
     SR[L] = I[L]
     for i in range(L, 0, -1):
-        SR[i - 1] = _star(_star(I[i - 1], _propagation(x[i])), SR[i])
+        SR[i - 1] = I[i - 1].star(P[i]).star(SR[i])
     total = SL[L + 1]
 
-    kz_inc = lam_l[0] / 1j
+    kz_inc = lam_l[0][..., 0] / 1j
     n_inc = torch.sqrt(model_spec.incidence.eps).reshape(-1, 1, 1)
-    phi0 = torch.atan2(ky0, kx0)
-    a = _sp_basis(kx0, ky0, kz_inc, n_inc, phi0)               # [*B, 2, 2]
+    a = sp_matrix(kx0, ky0, kz_inc, n_inc, torch.atan2(ky0, kx0))   # [*B, 2, 2]
 
-    eye = torch.eye(2, dtype=a.dtype, device=a.device)
-    c_plus, c_minus = [a], [total[0] @ a]
+    c_plus, c_minus = [a], [apply_vec(total.a, a)]
     for i in range(1, L + 1):
-        X = x[i][..., None, None] * eye
-        t = SL[i][2] @ a
-        RL, RR = SL[i][3], SR[i][0]
-        cp = torch.linalg.solve(eye - RL @ X @ RR @ X, t)     # c+ at the left face
+        X = P[i].b                                              # diag exp(lam k0 d)
+        RL, RR = SL[i].d, SR[i].a
+        M = RL @ X @ RR @ X
+        cp = solve_vec(M.eye_like() - M, apply_vec(SL[i].c, a))     # c+ at the left face
         c_plus.append(cp)
-        c_minus.append(RR @ (X @ cp))                          # c- at the right face
-    c_plus.append(total[2] @ a)
+        c_minus.append(apply_vec(RR, apply_vec(X, cp)))          # c- at the right face
+    c_plus.append(apply_vec(total.c, a))
     c_minus.append(torch.zeros_like(c_plus[-1]))
 
     return BackgroundField(
-        kx0=kx0, ky0=ky0, wavelength=wvl,
-        eps=tuple(eps_l), lam=tuple(lam_l), V=tuple(V_l),
+        kx0=kx0, ky0=ky0, wavelength=wvl.reshape(-1, 1, 1),
+        eps=tuple(eps_l), lam=tuple(l[..., 0] for l in lam_l),
+        V=tuple(V.to_dense(1) for V in V_l),
         c_plus=tuple(c_plus), c_minus=tuple(c_minus), thickness=tuple(thick_l),
     )
