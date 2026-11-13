@@ -53,7 +53,7 @@ from metarcwa.solver.blockmatrix import Block, Block2x2, apply_vec, solve_vec
 from metarcwa.solver.convolution import convolution_matrix
 from metarcwa.solver.layersolver._modes import _regularize_eps
 from metarcwa.solver.layersolver.matexpsolver import (
-    TransferOperator, slice_count, system_matrix,
+    TransferOperator, slice_count, star_power, system_matrix,
 )
 from metarcwa.solver.layersolver.operator import Background, ModalOperator
 from metarcwa.solver.smatrix import AffineS, S_boundary, S_prop
@@ -327,8 +327,9 @@ def transfer_affine(op: TransferOperator, background: Background, src: SourceTer
     length ``L`` for both. Combining a left block ``X`` of length ``Lx``
     with a right block ``Y`` of length ``Ly`` therefore scales ``Y``'s
     forward columns by ``phi(Lx)`` and ``X``'s backward columns by
-    ``phi(Ly)``; :func:`star_power`'s repeated squaring carries over with
-    that bookkeeping.
+    ``phi(Ly)``. That rule is the ``join`` passed to :func:`star_power`, so
+    the repeated squaring and its resonance guard are shared with the
+    source-free path.
     """
     if op.thickness is None:
         raise ValueError("TransferOperator requires a finite thickness.")
@@ -339,20 +340,11 @@ def transfer_affine(op: TransferOperator, background: Background, src: SourceTer
     k0b = k0.reshape(-1, *([1] * (src.lam_bg.ndim - 1)))
     phi = lambda slices: (torch.exp(src.lam_bg * k0b * h * slices))[..., None, None]
 
-    result, r_len, b_len = None, 0, 1
-    while n:
-        if n & 1:
-            if result is None:
-                result, r_len = base, b_len
-            else:
-                result = _shift(result, phi(b_len), forward=False).star(
-                    _shift(base, phi(r_len), forward=True))
-                r_len += b_len
-        n >>= 1
-        if n:
-            base = _shift(base, phi(b_len), forward=False).star(
-                _shift(base, phi(b_len), forward=True))
-            b_len *= 2
+    def join(left, right, left_len, right_len):
+        return _shift(left, phi(right_len), forward=False).star(
+            _shift(right, phi(left_len), forward=True))
+
+    result = star_power(base, n, join=join, matrix=lambda a: a.S)
     gb = op.gap_background
     return _sandwich(result, background, gb.W0, gb.V0)
 

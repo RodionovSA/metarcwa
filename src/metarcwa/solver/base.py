@@ -199,13 +199,21 @@ def prepare(model: Model, config: Config) -> PreparedStack:
         *(layersolver.prepare(layer) for layer in model_spec.layers),
         layersolver.prepare(model_spec.transmission),
     )
-    if _scattered(model_spec, config):
-        for layer in model_spec.layers:
-            if isinstance(layer, PatternedLayer):
-                scattered.check_structure_in_physical_region(
-                    layer, model_spec.pml, config.grazing_eps_reg,
-                    config.dtype, config.device)
+    _check_pml_overlap(model_spec, config, model_spec.layers)
     return PreparedStack(layersolver=layersolver, ops=ops, model_spec=model_spec)
+
+
+def _check_pml_overlap(model_spec: ModelSpec, config: Config, layers) -> None:
+    """Scattered-field formulation: warn if a patterned layer's structure
+    (``eps - eps_void``) reaches the PML. Not checked under the total-field
+    formulation, where a structure continuing through the PML is valid."""
+    if not _scattered(model_spec, config):
+        return
+    for layer in layers:
+        if isinstance(layer, PatternedLayer):
+            scattered.check_structure_in_physical_region(
+                layer, model_spec.pml, config.grazing_eps_reg,
+                config.dtype, config.device)
 
 
 def _scattered(model_spec: ModelSpec, config: Config) -> bool:
@@ -271,6 +279,7 @@ def reprepare(prepared: PreparedStack, model: Model, config: Config,
     ops = list(prepared.ops)
     for i in layer_indices:
         ops[i + 1] = layersolver.prepare(model_spec.layers[i])
+        _check_pml_overlap(model_spec, config, [model_spec.layers[i]])
 
     return replace(prepared, ops=tuple(ops), model_spec=model_spec)
 

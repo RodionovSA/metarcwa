@@ -21,7 +21,9 @@ commit and is checked with small probe scripts (the full pytest suite is not run
 5. `reprepare()` repeats the PML-overlap check for the re-prepared layers.
 6. `scattering_pattern` raises for a lossy half-space (no far field there).
 7. Resonance guard on the scattered matexp path (same warning as `star_power`).
-8. PML-overlap check also under the total-field formulation (PLAN.md phase 1 item).
+8. ~~PML-overlap check also under the total-field formulation.~~ Dropped: under the total-field
+   formulation a structure continuing through the PML (edge padding, e.g. a waveguide core) is
+   valid by design, so a warning there would be wrong.
 
 ## Step 3 — Duplication, caching, repeated work
 

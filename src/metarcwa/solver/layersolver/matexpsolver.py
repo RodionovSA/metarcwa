@@ -194,7 +194,7 @@ def _leaf_dtype(entry) -> torch.dtype:
     return node.data.dtype
 
 
-def star_power(S: Block2x2, n: int) -> Block2x2:
+def star_power(S, n: int, join=None, matrix=None):
     """Compose ``n`` copies of the identical S-matrix ``S`` via the Redheffer
     star product, using repeated squaring (``O(log n)`` star products instead
     of ``n - 1``).
@@ -214,12 +214,25 @@ def star_power(S: Block2x2, n: int) -> Block2x2:
         A single slice's S-matrix.
     n : int
         Number of identical slices to compose, ``n >= 1``.
+    join : callable, optional
+        ``join(left, right, left_len, right_len)`` composing a left block of
+        ``left_len`` slices with a right block of ``right_len`` slices.
+        Defaults to ``left.star(right)``. The PML scattered-field path
+        (:func:`metarcwa.solver.scattered.transfer_affine`) passes slices
+        that carry source vectors, whose phases depend on the block lengths.
+    matrix : callable, optional
+        Maps a block to its ``Block2x2`` S-matrix for the resonance guard.
+        Defaults to the identity (the blocks are S-matrices).
     """
     if n < 1:
         raise ValueError(f"n must be >= 1, got {n}")
+    if join is None:
+        join = lambda left, right, left_len, right_len: left.star(right)
+    if matrix is None:
+        matrix = lambda block: block
 
     threshold = _RESONANCE_GUARD_MAGNITUDE.get(
-        _leaf_dtype(S), _RESONANCE_GUARD_MAGNITUDE[torch.complex64],
+        _leaf_dtype(matrix(S)), _RESONANCE_GUARD_MAGNITUDE[torch.complex64],
     )
     warned = False
 
@@ -233,7 +246,7 @@ def star_power(S: Block2x2, n: int) -> Block2x2:
             warnings.warn(
                 f"star_power: intermediate S-matrix magnitude {mag:.3g} at "
                 f"{label} exceeds the resonance guard ({threshold:.3g} for "
-                f"{_leaf_dtype(S)}). This usually means a fictitious "
+                f"{_leaf_dtype(matrix(S))}). This usually means a fictitious "
                 "gap-medium-embedded matexp sub-slab hit a spurious "
                 "near-pole (see Config.matexp_gap), or the layer is "
                 "under-sliced for the accuracy budget; either way, accuracy "
@@ -244,16 +257,19 @@ def star_power(S: Block2x2, n: int) -> Block2x2:
                 stacklevel=3,
             )
 
-    result = None
-    base = S
+    result, r_len = None, 0
+    base, b_len = S, 1
     while n:
         if n & 1:
-            result = base if result is None else result.star(base)
-            _check(result, "an accumulation step")
+            if result is None:
+                result, r_len = base, b_len
+            else:
+                result, r_len = join(result, base, r_len, b_len), r_len + b_len
+            _check(matrix(result), "an accumulation step")
         n >>= 1
         if n:
-            base = base.star(base)
-            _check(base, "a squaring step")
+            base, b_len = join(base, base, b_len, b_len), 2 * b_len
+            _check(matrix(base), "a squaring step")
     return result
 
 

@@ -627,7 +627,13 @@ class Observables:
         nx, ny = ls.config.nx, ls.config.ny
         px, py = spec.a1[0].abs().to(rdt), spec.a2[1].abs().to(rdt)
         k0 = (2 * torch.pi / bg.wavelength).to(rdt)                   # [N_wl, 1, 1]
-        nr = torch.sqrt(medium.eps).real.reshape(-1, 1, 1).to(rdt)    # [N_wl, 1, 1]
+        n_c = torch.sqrt(medium.eps)
+        if (n_c.imag.abs() > 1e-6 * n_c.abs()).any():
+            raise ValueError(
+                f"scattering_pattern('{kind}') needs a lossless half-space: "
+                "there is no far field in an absorbing medium."
+            )
+        nr = n_c.real.reshape(-1, 1, 1).to(rdt)                       # [N_wl, 1, 1]
         th = torch.as_tensor(theta, dtype=rdt, device=dev).reshape(-1)
         both = pml.sx is not None and pml.sy is not None
 
