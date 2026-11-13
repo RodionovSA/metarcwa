@@ -145,7 +145,9 @@ $$
 
 This generalizes $\lambda^2 = k_x^2 + k_y^2 - \varepsilon$ from [Homogeneous layer](homogeneous.md), but the closed form is lost. The eigenvectors do not depend on $\varepsilon$, so a single basis $W$ serves all homogeneous layers and both half-spaces.
 
-> **TODO:** with a rectangular truncation, $\tilde K_x^2 + \tilde K_y^2$ is a Kronecker sum and diagonalizes from two **1D** eigenproblems of size $2M+1$ and $2N+1$. Work out $W$, $V$.
+**Shared basis (implemented).** When $\tilde K_x$ and $\tilde K_y$ commute, $Q_0^2 = \varepsilon\,(\tilde K_x^2 + \tilde K_y^2 - \varepsilon)\otimes I_2$, so $PQ = (\tilde K_x^2 + \tilde K_y^2 - \varepsilon)\otimes I_2$. With $X$, $\mu$ the eigenvectors and eigenvalues of $\tilde K_x^2 + \tilde K_y^2$, every uniform medium has $W = \mathrm{diag}(X, X)$, $\lambda^2 = \mu - \varepsilon$, $V = Q_0W\lambda^{-1}$. `LayerSolver` computes $(\mu, X)$ once (one $N_h$ eigendecomposition) for all homogeneous layers and both half-spaces. The operators commute for a rectangular truncation and whenever only one axis has a PML; with a circular truncation and a PML on both axes they do not, and each medium falls back to its own $2N_h$ eigendecomposition of $P = Q_0/\varepsilon$, $Q_0$. Checked against the per-medium path to $\sim 10^{-15}$; `prepare()` is $10$–$17\times$ faster for a 3D stack with $N_h = 121$–$225$.
+
+> **TODO:** with a rectangular truncation, $\tilde K_x^2 + \tilde K_y^2$ is a Kronecker sum and $X$ follows from two **1D** eigenproblems of size $2M+1$ and $2N+1$ (cheaper still).
 
 ---
 
@@ -269,7 +271,7 @@ where $T = e^{Ak_0h}$ and $p$ is the exact particular solution with zero initial
 | `P`, `Q` assembly | `layersolver/isotropic.py` | Pass dense $\tilde K$ instead of diagonal $K$. Fix `d = Ky @ Kx` in `compute_Q0`. |
 | TVF | `tvf/` | Unchanged (given edge padding). |
 | Patterned modes | `layersolver/eigsolver.py`, `matexpsolver.py` | Unchanged, but `matexp` is the default under PML (`Config.modesolver=None`). The stretched operator is strongly non-normal, so the eigenvector matrix of a patterned layer becomes numerically singular in large cells ($\mathrm{cond} \sim 10^{12}$–$10^{17}$ for a 16-wavelength cell), and `eig` results become erratic; `matexp` needs no eigenvectors. The matexp slice-count bound uses the $\infty$-norm of $\tilde K$. |
-| Homogeneous modes | `layersolver/base.py` | Closed form lost: $P = Q_0/\varepsilon$ solved by `eigsolver`. |
+| Homogeneous modes | `layersolver/base.py` | Closed form lost: shared eigenbasis of $\tilde K_x^2 + \tilde K_y^2$ for all uniform media when $\tilde K_x$, $\tilde K_y$ commute; otherwise $P = Q_0/\varepsilon$ solved by `eigsolver` per medium. |
 | Background `W0`, `V0` | `layersolver/base.py` | Unchanged (unstretched vacuum): the zero-thickness gap is exact for any basis; checked to agree with a stretched gap to $\sim 10^{-12}$. |
 | Background solve | `solver/background.py` | 1-harmonic S-matrix solve of the background stack, giving $\mathbf E_\text{inc}$ per layer (`BackgroundField`). |
 | Source vectors | `solver/scattered.py`, in `run()` | $f$ from the FFT of $\Delta\varepsilon\,e^{j\mathbf k_\parallel\cdot\mathbf r}$ (a vector, not a matrix), then $(e_L, e_R)$ per patterned layer (closed form for `ModalOperator`, augmented exponential for `TransferOperator`). |

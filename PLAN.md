@@ -46,7 +46,7 @@ Tests: with $s \equiv 1$, $\tilde K = K$ and results match the periodic solver b
 
 Goal: everything that currently uses the closed-form `homogeneous_modes`.
 
-- Numerical modes of uniform media: with uniform ε, $P = Q_0/\varepsilon$ exactly, so `compute_P`/`compute_Q0` (ε as a SCALAR block) + `eigsolver`, per element; works for both truncations. *Done this way.* Follow-up optimization: for rectangular truncation the eigenvectors are shared by all uniform media ($\lambda^2 = \mu_i - \varepsilon$, $\mu_i$ = eigenvalues of $\tilde K_x^2 + \tilde K_y^2$), and come from two 1D eigenproblems.
+- Numerical modes of uniform media: with uniform ε, $P = Q_0/\varepsilon$ exactly, so `compute_P`/`compute_Q0` (ε as a SCALAR block) + `eigsolver`, per element; works for both truncations. *Done this way.* Follow-up optimization: for rectangular truncation the eigenvectors are shared by all uniform media ($\lambda^2 = \mu_i - \varepsilon$, $\mu_i$ = eigenvalues of $\tilde K_x^2 + \tilde K_y^2$), and come from two 1D eigenproblems. *Shared basis done* (`LayerSolver._prepare_uniform_basis`, one $N_h$ eigendecomposition whenever $\tilde K_x$, $\tilde K_y$ commute); the two-1D-eigenproblem form is still open.
 - `LayerSolver._homogeneous`, `_medium`, `_prepare_vacuum`: use the shared basis under PML.
 - Decide the gap-medium question (stretched vs unstretched `W0`/`V0`) by experiment: both must give the same total S-matrix for a stack; keep the cheaper one. *Decided:* both agree to $\sim 10^{-12}$ relative, so the unstretched (DIAG) vacuum gap is kept.
 - `matexpsolver`: slice-count bound from $\tilde K$ (e.g. a norm bound) instead of $\max(k_x^2 + k_y^2)$.

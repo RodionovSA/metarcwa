@@ -59,10 +59,10 @@ from metarcwa.model.medium import MediumSpec, IsotropicMediumSpec
 from metarcwa.solver.blockmatrix import Block, Block2x2
 from metarcwa.solver.layersolver.homogeneous import homogeneous_modes
 from metarcwa.solver.layersolver.isotropic import compute_isotropic, compute_P, compute_Q0
-from metarcwa.solver.layersolver.eigsolver import eigsolver
+from metarcwa.solver.layersolver.eigsolver import Eig, eigsolver
 from metarcwa.solver.layersolver.matexpsolver import TransferOperator
 from metarcwa.solver.layersolver.operator import Background, LayerOperator, ModalOperator, SourceData
-from metarcwa.solver.layersolver._modes import _regularize_eps
+from metarcwa.solver.layersolver._modes import _branch_select, _lam_inv_block, _regularize_eps
 from metarcwa.solver.config import Config
 
 
@@ -144,6 +144,7 @@ class LayerSolver:
         self.Kx, self.Ky = K if K is not None else (Block(Block.DIAG, kx), Block(Block.DIAG, ky))
         self.modesolver = config.modesolver or ("matexp" if self.stretched else "eig")
         self.W0, self.V0 = self._prepare_vacuum()
+        self._uniform_basis = self._prepare_uniform_basis()
         self.background = Background(self.W0, self.V0, self.wvl)
 
     def _prepare_vacuum(self) -> Tuple[Block2x2, Block2x2]:
@@ -269,22 +270,70 @@ class LayerSolver:
             )
         return ModalOperator(lam, W, V, layer.thickness)
 
+    def _prepare_uniform_basis(self) -> Tuple[torch.Tensor, torch.Tensor] | None:
+        """Shared eigenbasis of every uniform medium under a lateral PML.
+
+        When ``K̃x`` and ``K̃y`` commute, a uniform medium has
+        ``P Q = (K̃x² + K̃y² − ε) ⊗ I₂`` (``P = Q₀/ε`` and
+        ``Q₀² = ε (K̃x² + K̃y² − ε) ⊗ I₂``), so all uniform media share the
+        eigenvectors ``X`` of ``K̃x² + K̃y²`` and only ``λ² = μ − ε`` depends
+        on the medium. One ``Nh`` eigendecomposition here replaces one
+        ``2Nh`` eigendecomposition per homogeneous layer and half-space.
+
+        ``K̃x``, ``K̃y`` commute for a rectangular truncation (they act on
+        different harmonic indices) and whenever only one axis has a PML
+        (the other ``K`` is diagonal and constant within each block of the
+        stretched one). With a circular truncation and a PML on both axes
+        they do not; ``None`` is returned and each medium is solved on its
+        own (:meth:`_stretched_uniform_modes`).
+
+        Returns
+        -------
+        (mu, X) or None
+            Eigenvalues ``[..., Nh]`` and eigenvectors ``[..., Nh, Nh]`` of
+            ``K̃x² + K̃y²``.
+        """
+        if not self.stretched:
+            return None
+        both_axes = self.Kx.kind == Block.DENSE and self.Ky.kind == Block.DENSE
+        if both_axes and self.config.truncation != "rectangular":
+            return None
+        Nh = self.m_flat.shape[0]
+        M = (self.Kx @ self.Kx + self.Ky @ self.Ky).to(Block.DENSE, Nh).data
+        if self.config.eigsolver_stable:
+            return Eig.apply(M)
+        return torch.linalg.eig(M)
+
     def _stretched_uniform_modes(self, eps: torch.Tensor
                                  ) -> Tuple[torch.Tensor, Block2x2, Block2x2]:
         """Modes of a uniform medium under a lateral PML.
 
         The stretched ``K̃`` is dense, so the closed form of
-        :func:`homogeneous_modes` does not apply. With uniform ε,
-        ``P = Q₀/ε`` exactly, so ``P``, ``Q`` are built by
-        :func:`compute_P` / :func:`compute_Q0` with ε as a SCALAR block and
+        :func:`homogeneous_modes` does not apply. With the shared basis
+        (:meth:`_prepare_uniform_basis`) the modes are
+        ``W = diag(X, X)``, ``λ² = μ − ε``, ``V = Q₀ W diag(1/λ)``, with the
+        same branch selection and ``1/λ`` regularization as
+        :func:`eigsolver`. Without it (``K̃x``, ``K̃y`` do not commute),
+        ``P = Q₀/ε`` and ``Q₀`` are built with ε as a SCALAR block and
         solved by :func:`eigsolver`.
         """
         eps = to_complex(eps)
         eps = eps.reshape(*eps.shape, *([1] * (self.kx.ndim - 1 - eps.ndim)))
         eps_block = Block(Block.SCALAR, eps)
-        P = compute_P(self.Kx, self.Ky, eps_block)
         Q = compute_Q0(self.Kx, self.Ky, eps_block)
-        return eigsolver(P, Q, self.config.eigsolver_stable)
+        if self._uniform_basis is None:
+            P = compute_P(self.Kx, self.Ky, eps_block)
+            return eigsolver(P, Q, self.config.eigsolver_stable)
+
+        mu, X = self._uniform_basis
+        Nh = mu.shape[-1]
+        lam_half = _branch_select(torch.sqrt(mu - eps[..., None]))
+        lam = torch.cat([lam_half, lam_half], dim=-1)             # [..., 2Nh]
+        Xb = Block(Block.DENSE, X)
+        zero = Block.zeros(device=X.device, dtype=X.dtype)
+        W = Block2x2(Xb, zero, zero, Xb)
+        V = Q @ W @ _lam_inv_block(lam, Nh)
+        return lam, W, V
 
     def _patterned(self, layer: PatternedLayer) -> LayerOperator:
         """Solve a patterned layer via ``Config.modesolver`` ("eig" or

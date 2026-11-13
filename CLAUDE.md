@@ -156,7 +156,8 @@ Re-preparing after changes:
   Associative, not commutative. Convention: `S11/S22` = reflection, `S12/S21` = transmission.
 - **Lateral PML** (`docs/PML.md`): complex coordinate stretch at the edges of a rectangular supercell for
   aperiodic problems; `K → K̃` (dense), Bloch phase 0 along PML axes, `modesolver` defaults to `"matexp"`
-  (eig vectors ill-conditioned in large cells), uniform media solved numerically (`P = Q0/ε` + `eigsolver`).
+  (eig vectors ill-conditioned in large cells), uniform media share one eigenbasis of `K̃x² + K̃y²` (`LayerSolver._prepare_uniform_basis`, `λ² = μ − ε`) when
+  `K̃x`, `K̃y` commute (rectangular truncation or one-axis PML), else `P = Q0/ε` + `eigsolver` per medium.
   Illumination: `Config.pml_formulation="scattered"` (default) splits `E = E_inc + E_s`; `run()` solves the
   background (`background.py`), builds per-patterned-layer source vectors (`scattered.py`) and composes
   `AffineS`; `ModalSolution` gains `e_L`, `e_R` (`[..., 2Nh, 2]`, s/p columns) and `background`.
