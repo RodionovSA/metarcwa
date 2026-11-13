@@ -82,7 +82,7 @@ Re-preparing after changes:
 | `medium.py` | `Medium`, `IsotropicMedium`: material / permittivity definitions for half-spaces |
 | `source.py` | `Source`: wavelength, incidence angles (theta/phi). No polarization — s/p amplitudes are applied downstream by `Observables`, not needed for the S-matrix itself |
 | `lattice.py` | `Lattice`: 2D Bravais lattice vectors `a1`, `a2`; `Lattice.rectangular(px, py)`, `Lattice.hexagonal(a, orientation=...)` |
-| `pml.py` | `PML(width, profile, method="stretch")` lateral PML (rectangular lattice only), profiles `StretchAbsorbProfile` / `PolynomialProfile`; `PMLSpec(sx, sy)` stretch sampled on the grid; `PML.pad` edge-pads patterns into the PML (`Stack(pml=...)`) |
+| `pml.py` | `PML(width, profile, method="stretch")` lateral PML (rectangular lattice only), profiles `StretchAbsorbProfile` / `PolynomialProfile`; `PMLSpec(sx, sy, physical_x, physical_y)` stretch + physical-region masks on the grid; `PML.pad` edge-pads patterns into the PML (`Stack(pml=...)`) |
 | `adapters.py` | `from_metashapes(shape, soft=, softness=)` → `shape_fn`; `from_dispertorch(model)` → `eps_fn` (optional-extra bridges) |
 | `nn_helpers.py` | `register` (tensor → param/buffer), `CallableModule` (wrap a callable + its deps as an `nn.Module`) |
 
@@ -227,8 +227,12 @@ Re-preparing after changes:
 
 **PML-specific:**
 - Under the scattered formulation the structure (`ε − ε_void`) must stay out of the PML (`prepare()` warns).
-- With TVF the source carries `Qfact = Q − Q0` applied to `E_inc` (kept on operators as `.qfact`, only
-  under PML); without it scattered ≠ total at finite `Nh`. Keep it when touching `compute_isotropic`.
+- Patterned-layer operators carry `op.source` (`SourceData`: `d_eps`, `eps_conv`, `qfact`, `phi_lu`) only
+  under the scattered formulation; `run()` builds the source vectors from it. With TVF the source carries
+  `Qfact = Q − Q0` applied to `E_inc`; without it scattered ≠ total at finite `Nh`. Keep it when touching
+  `compute_isotropic` (`return_parts=True`).
+- The background solve takes layer thicknesses from the prepared operators (not `model_spec`), so
+  `dataclasses.replace(op, thickness=...)` stays consistent.
 - Source phase convention: pixel `i` at `x = i·px/nx` (FFT convention of `convolution_matrix`); the
   background/scattered fields share it.
 

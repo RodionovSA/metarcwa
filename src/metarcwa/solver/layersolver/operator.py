@@ -71,6 +71,33 @@ class Background:
     wvl: torch.Tensor
 
 
+@dataclass(frozen=True)
+class SourceData:
+    """What the PML scattered-field source of a patterned layer is built from.
+
+    Prepared once with the layer (``LayerSolver._patterned``) so that
+    :func:`~metarcwa.solver.base.run` does not rebuild it; see
+    :mod:`metarcwa.solver.scattered`.
+
+    Attributes
+    ----------
+    d_eps : torch.Tensor
+        ``eps - eps_void`` on the pattern grid (regularized exactly as the
+        layer operators), shape ``[..., Ny, Nx]``.
+    eps_conv : Block
+        Convolution matrix ``[[eps]]`` of the layer (the one in ``P``).
+    qfact : Block2x2 or None
+        TVF correction ``Q - Q0``; ``None`` without TVF.
+    phi_lu : tuple or None
+        ``torch.linalg.lu_factor`` of the gap matrix ``[[W, W], [V, -V]]``
+        (eigenmode operators only), reused for every source vector.
+    """
+    d_eps: torch.Tensor
+    eps_conv: Block
+    qfact: Block2x2 | None = None
+    phi_lu: tuple | None = None
+
+
 @runtime_checkable
 class LayerOperator(Protocol):
     """Structural contract for a prepared stack-element operator.
@@ -116,16 +143,15 @@ class ModalOperator:
     thickness : torch.Tensor or None
         Layer thickness. ``None`` marks a semi-infinite medium — a
         boundary-only element with no propagation.
-    qfact : Block2x2 or None
-        TVF correction ``Q - Q0`` of a patterned layer, kept only under a
-        lateral PML with TVF (the scattered-field source applies it to the
-        incident field). ``None`` otherwise.
+    source : SourceData or None
+        Source data of a patterned layer, kept only under the PML
+        scattered-field formulation. ``None`` otherwise.
     """
     lam: torch.Tensor
     W: Block2x2
     V: Block2x2
     thickness: torch.Tensor | None = None
-    qfact: Block2x2 | None = None
+    source: SourceData | None = None
 
     def smatrix(self, background: Background, left: bool = True) -> Block2x2:
         """Assemble the S-matrix (cheap): boundary matching + propagation.

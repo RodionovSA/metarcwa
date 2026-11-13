@@ -67,7 +67,7 @@ import torch
 from metarcwa._dtypes import _REAL_TO_COMPLEX
 from metarcwa.solver.blockmatrix import Block2x2
 from metarcwa.solver.config import Config
-from metarcwa.solver.layersolver.operator import Background
+from metarcwa.solver.layersolver.operator import Background, SourceData
 from metarcwa.solver.smatrix import S_boundary
 
 #: Default per-slice exponent budget ``max(k0*d*|lam|)``, keyed by the
@@ -395,9 +395,9 @@ class TransferOperator:
         semi-infinite medium always goes through
         :class:`~metarcwa.solver.layersolver.operator.ModalOperator` /
         ``homogeneous_modes`` — see ``LayerSolver._medium``).
-    qfact : Block2x2 or None
-        TVF correction ``Q - Q0``, kept only under a lateral PML with TVF
-        (used by the scattered-field source). ``None`` otherwise.
+    source : SourceData or None
+        Source data of the layer, kept only under the PML scattered-field
+        formulation. ``None`` otherwise.
     """
     P: Block2x2
     Q: Block2x2
@@ -406,7 +406,7 @@ class TransferOperator:
     config: Config
     gap_background: Background
     thickness: torch.Tensor | None = None
-    qfact: Block2x2 | None = None
+    source: SourceData | None = None
 
     def smatrix(self, background: Background, left: bool = True) -> Block2x2:
         """Assemble the S-matrix: slice, exponentiate each slice, convert

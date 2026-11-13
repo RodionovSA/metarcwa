@@ -49,6 +49,7 @@ late-binding of ``thickness``). See ``docs/matrixexp.md``.
 """
 
 import torch
+from dataclasses import replace
 from torch.utils.checkpoint import checkpoint
 from typing import Tuple
 
@@ -60,7 +61,7 @@ from metarcwa.solver.layersolver.homogeneous import homogeneous_modes
 from metarcwa.solver.layersolver.isotropic import compute_isotropic, compute_P, compute_Q0
 from metarcwa.solver.layersolver.eigsolver import eigsolver
 from metarcwa.solver.layersolver.matexpsolver import TransferOperator
-from metarcwa.solver.layersolver.operator import Background, LayerOperator, ModalOperator
+from metarcwa.solver.layersolver.operator import Background, LayerOperator, ModalOperator, SourceData
 from metarcwa.solver.layersolver._modes import _regularize_eps
 from metarcwa.solver.config import Config
 
@@ -325,15 +326,20 @@ class LayerSolver:
             else:
                 tvf_fields = None
 
-            # Under a PML with TVF, keep Qfact = Q - Q0 for the
-            # scattered-field source (metarcwa.solver.scattered).
-            P, Q, qfact = compute_isotropic(
+            P, Q, eps_conv, qfact = compute_isotropic(
                 eps_grid, self.m_flat, self.n_flat,
                 self.Kx, self.Ky, tvf_fields,
-                return_qfact=True,
+                return_parts=True,
             )
-            if not self.stretched:
-                qfact = None
+            # PML scattered-field formulation: keep what the layer's source
+            # vector is built from (metarcwa.solver.scattered), so run() does
+            # not rebuild the eps grid or [[eps]].
+            source = None
+            if self.stretched and self.config.pml_formulation == "scattered":
+                eps_void_reg = _regularize_eps(eps_void[..., None, None],
+                                               self.config.grazing_eps_reg)
+                source = SourceData(d_eps=to_complex(eps_grid) - eps_void_reg,
+                                    eps_conv=eps_conv, qfact=qfact)
             if self.modesolver == "eig":
                 if self.config.checkpoint_eig:
                     lam, W, V = checkpoint(
@@ -342,7 +348,10 @@ class LayerSolver:
                     )
                 else:
                     lam, W, V = eigsolver(P, Q, self.config.eigsolver_stable)
-                return ModalOperator(lam, W, V, layer.thickness, qfact=qfact)
+                if source is not None:
+                    Phi = Block2x2(W, W, V, -V).to_dense(self.m_flat.shape[0])
+                    source = replace(source, phi_lu=torch.linalg.lu_factor(Phi))
+                return ModalOperator(lam, W, V, layer.thickness, source=source)
             elif self.modesolver == "matexp":
                 # Cheap upper bound on the modal exponent, no eigenvalues
                 # needed: lam^2 ~ kx^2 + ky^2 - eps for the isotropic system,
@@ -391,7 +400,7 @@ class LayerSolver:
                 return TransferOperator(
                     P, Q, Nh, lam_bound, self.config,
                     gap_background=gap_background, thickness=layer.thickness,
-                    qfact=qfact,
+                    source=source,
                 )
             else:
                 raise NotImplementedError(

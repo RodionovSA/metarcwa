@@ -62,7 +62,6 @@ from metarcwa.solver.blockmatrix import Block2x2, Entry
 from metarcwa.solver.background import BackgroundField, solve_background
 from metarcwa.solver.smatrix import AffineS
 from metarcwa.solver import scattered
-from metarcwa.model.layer import PatternedLayer
 
 
 def build_layersolver(model_spec: ModelSpec, config: Config) -> LayerSolver:
@@ -199,21 +198,19 @@ def prepare(model: Model, config: Config) -> PreparedStack:
         *(layersolver.prepare(layer) for layer in model_spec.layers),
         layersolver.prepare(model_spec.transmission),
     )
-    _check_pml_overlap(model_spec, config, model_spec.layers)
+    _check_pml_overlap(model_spec, ops)
     return PreparedStack(layersolver=layersolver, ops=ops, model_spec=model_spec)
 
 
-def _check_pml_overlap(model_spec: ModelSpec, config: Config, layers) -> None:
+def _check_pml_overlap(model_spec: ModelSpec, ops) -> None:
     """Scattered-field formulation: warn if a patterned layer's structure
-    (``eps - eps_void``) reaches the PML. Not checked under the total-field
-    formulation, where a structure continuing through the PML is valid."""
-    if not _scattered(model_spec, config):
-        return
-    for layer in layers:
-        if isinstance(layer, PatternedLayer):
-            scattered.check_structure_in_physical_region(
-                layer, model_spec.pml, config.grazing_eps_reg,
-                config.dtype, config.device)
+    (``eps - eps_void``) reaches the PML. Operators carry ``source`` only
+    under that formulation; under the total-field one a structure continuing
+    through the PML is valid and nothing is checked."""
+    for op in ops:
+        source = getattr(op, "source", None)
+        if source is not None:
+            scattered.check_structure_in_physical_region(source.d_eps, model_spec.pml)
 
 
 def _scattered(model_spec: ModelSpec, config: Config) -> bool:
@@ -279,7 +276,7 @@ def reprepare(prepared: PreparedStack, model: Model, config: Config,
     ops = list(prepared.ops)
     for i in layer_indices:
         ops[i + 1] = layersolver.prepare(model_spec.layers[i])
-        _check_pml_overlap(model_spec, config, [model_spec.layers[i]])
+        _check_pml_overlap(model_spec, [ops[i + 1]])
 
     return replace(prepared, ops=tuple(ops), model_spec=model_spec)
 
@@ -435,12 +432,11 @@ def _run_scattered(prepared: PreparedStack) -> ModalSolution:
                           thicknesses=[op.thickness for op in ops[1:-1]])
 
     acc = AffineS(ls.smatrix(ops[0], left=True))
-    for i, (layer, op) in enumerate(zip(spec.layers, ops[1:-1]), start=1):
-        if isinstance(layer, PatternedLayer):
+    for i, op in enumerate(ops[1:-1], start=1):
+        if getattr(op, "source", None) is not None:      # patterned layer
             src = scattered.layer_source(
-                layer, i, bg, ls.Kx, ls.Ky, spec.pml, spec.a1, spec.a2,
-                ls.m_flat, ls.n_flat, cfg.grazing_eps_reg, cfg.dtype,
-                qfact=getattr(op, "qfact", None))
+                op.source, i, bg, ls.Kx, ls.Ky, spec.pml, spec.a1, spec.a2,
+                ls.m_flat, ls.n_flat)
             acc = acc.star(scattered.layer_affine(op, ls.background, src))
         else:
             acc = acc.star(AffineS(ls.smatrix(op)))

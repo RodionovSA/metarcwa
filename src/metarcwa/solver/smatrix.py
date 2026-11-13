@@ -36,7 +36,7 @@ from dataclasses import dataclass
 
 import torch
 
-from metarcwa.solver.blockmatrix import Block, Block2x2, apply_vec, solve_vec
+from metarcwa.solver.blockmatrix import Block, Block2x2, _leaf_size, apply_vec
 
 
 def S_boundary(WL: Block2x2, VL: Block2x2,
@@ -238,25 +238,46 @@ class AffineS:
     def star(self, o: "AffineS") -> "AffineS":
         """Extended Redheffer star product ``self`` (left) ⋆ ``o`` (right).
 
-        The S-matrix part is :meth:`Block2x2.star`. Solving for the waves
-        bouncing between the two parts gives the source part::
+        The S-matrix part is the ordinary star product. Solving for the
+        waves bouncing between the two parts gives the source part::
 
             e_L = e_AL + S_A12 (I - S_B11 S_A22)^-1 (e_BL + S_B11 e_AR)
             e_R = e_BR + S_B21 (I - S_A22 S_B11)^-1 (e_AR + S_A22 e_BL)
 
-        With both sources ``None`` this is the plain star product. The two
-        inverses are the ones :meth:`Block2x2.star` forms; they are applied
-        to the source vectors with separate (dense) solves.
+        With both sources ``None`` this is :meth:`Block2x2.star` (structured
+        leaves are kept). Otherwise the two inverses are the ones the star
+        product needs anyway, so each is factorized once (densely) and
+        applied to the matrix and the vector right-hand sides together.
         """
         A, B = self.S, o.S
-        S = A.star(B)
-        e_L, e_R = self.e_L, o.e_R
         x = _add(o.e_L, None if self.e_R is None else apply_vec(B.a, self.e_R))
-        if x is not None:
-            P = B.a @ A.d
-            e_L = _add(e_L, apply_vec(A.b, solve_vec(P.eye_like() - P, x)))
         y = _add(self.e_R, None if o.e_L is None else apply_vec(A.d, o.e_L))
-        if y is not None:
-            Q = A.d @ B.a
-            e_R = _add(e_R, apply_vec(B.c, solve_vec(Q.eye_like() - Q, y)))
-        return AffineS(S, e_L, e_R)
+        if x is None:                       # then y is None too: no sources
+            return AffineS(A.star(B), self.e_L, o.e_R)
+
+        n = _leaf_size(B.a, x.shape[-2])
+        P = B.a @ A.d                       # S11^B S22^A
+        Q = A.d @ B.a                       # S22^A S11^B
+        Za, Zb, zx = _solve_together(P.eye_like() - P, n, (B.a, B.b), x)
+        Wc, Wdb, wy = _solve_together(Q.eye_like() - Q, n, (A.c, A.d @ B.b), y)
+        S = Block2x2(
+            A.a + A.b @ Za @ A.c,  A.b @ Zb,
+            B.c @ Wc,              B.d + B.c @ Wdb,
+        )
+        return AffineS(S, _add(self.e_L, apply_vec(A.b, zx)), _add(o.e_R, apply_vec(B.c, wy)))
+
+
+def _solve_together(lhs, n: int, mats, vec: torch.Tensor):
+    """Solve ``lhs^-1`` against several operators and one vector with a
+    single dense factorization. Returns the solved operators (DENSE leaves,
+    nested like the inputs) followed by the solved vector."""
+    L = lhs.to_dense(n)
+    dense = [m.to_dense(n) for m in mats]
+    dt = torch.promote_types(L.dtype, vec.dtype)
+    cols = [d.to(dt) for d in dense] + [vec.to(dt)]
+    batch = torch.broadcast_shapes(L.shape[:-2], *(c.shape[:-2] for c in cols))
+    rhs = torch.cat([c.expand(*batch, *c.shape[-2:]) for c in cols], dim=-1)
+    X = torch.linalg.solve(L.to(dt).expand(*batch, *L.shape[-2:]), rhs)
+    size = L.shape[-1]
+    out = [Block2x2.from_dense(X[..., k * size:(k + 1) * size], m) for k, m in enumerate(mats)]
+    return (*out, X[..., len(mats) * size:])

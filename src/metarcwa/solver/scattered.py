@@ -45,17 +45,13 @@ from dataclasses import dataclass
 
 import torch
 
-from metarcwa._dtypes import to_complex
-from metarcwa.model.layer import PatternedLayer
 from metarcwa.model.pml import PMLSpec
 from metarcwa.solver.background import BackgroundField
 from metarcwa.solver.blockmatrix import Block, Block2x2, apply_vec, solve_vec
-from metarcwa.solver.convolution import convolution_matrix
-from metarcwa.solver.layersolver._modes import _regularize_eps
 from metarcwa.solver.layersolver.matexpsolver import (
     TransferOperator, slice_count, star_power, system_matrix,
 )
-from metarcwa.solver.layersolver.operator import Background, ModalOperator
+from metarcwa.solver.layersolver.operator import Background, ModalOperator, SourceData
 from metarcwa.solver.smatrix import AffineS, S_boundary, S_prop
 
 
@@ -123,22 +119,10 @@ def _grid_phase(pml: PMLSpec, kx0, ky0, k0, a1, a2, ny: int, nx: int) -> torch.T
     return torch.exp(1j * phase)
 
 
-def _layer_eps(layer: PatternedLayer, reg: float, dtype, device):
-    """Regularized ``eps`` and ``eps_void`` grids exactly as ``LayerSolver._patterned``."""
-    pattern = layer.pattern.to(dtype=dtype, device=device)
-    eps_s = layer.medium_solid.eps.reshape(-1, 1, 1, 1, 1)
-    eps_v = layer.medium_void.eps.reshape(-1, 1, 1, 1, 1)
-    eps_grid = _regularize_eps(eps_s * pattern + (1 - pattern) * eps_v, reg)
-    eps_void = _regularize_eps(eps_v, reg)
-    return to_complex(eps_grid), to_complex(eps_void)
-
-
-def check_structure_in_physical_region(layer: PatternedLayer, pml: PMLSpec,
-                                        reg: float, dtype, device) -> None:
-    """Warn if ``Delta eps`` reaches the PML (the scattered-field source must
-    lie in the physical region, ``docs/PML.md``)."""
-    eps_grid, eps_void = _layer_eps(layer, reg, dtype, device)
-    d_eps = (eps_grid - eps_void).detach().abs()
+def check_structure_in_physical_region(d_eps: torch.Tensor, pml: PMLSpec) -> None:
+    """Warn if ``Delta eps`` (``SourceData.d_eps``) reaches the PML: the
+    scattered-field source must lie in the physical region (``docs/PML.md``)."""
+    d_eps = d_eps.detach().abs()
     ny, nx = d_eps.shape[-2:]
     outside = ~pml.physical_mask(ny, nx, d_eps.device)
     # Relative tolerance: a soft (e.g. sigmoid) pattern is never exactly zero.
@@ -149,7 +133,7 @@ def check_structure_in_physical_region(layer: PatternedLayer, pml: PMLSpec,
             "(eps - eps_void) lies in the physical region; the result is "
             "not reliable. Move the structure away from the PML or make the "
             "pattern's void medium the material that crosses the PML.",
-            RuntimeWarning, stacklevel=3,
+            RuntimeWarning, stacklevel=4,
         )
 
 
@@ -163,16 +147,22 @@ def _bcast(*ts: torch.Tensor) -> list[torch.Tensor]:
     return [t.expand(*batch, *t.shape[-2:]) for t in ts]
 
 
-def layer_source(layer: PatternedLayer, i: int, bg: BackgroundField,
+def layer_source(source: SourceData, i: int, bg: BackgroundField,
                  Kx: Block, Ky: Block, pml: PMLSpec, a1, a2,
-                 m_flat, n_flat, reg: float, dtype,
-                 qfact: Block2x2 | None = None) -> SourceTerms:
+                 m_flat, n_flat) -> SourceTerms:
     """Build the :class:`SourceTerms` of patterned layer ``i`` (``ops`` index).
 
     Parameters
     ----------
-    layer : PatternedLayer
-        The (edge-padded) layer spec.
+    source : SourceData
+        The layer's prepared source data (``op.source``): ``eps - eps_void``
+        on the grid, ``[[eps]]`` and the TVF correction ``Qfact``. The TVF
+        rule describes the ``D``-``E`` relation of the *total* field, so the
+        source carries it for ``E_inc`` too:
+        ``f_u += Qfact (phi E_x, phi E_y)`` with ``phi`` the Fourier
+        coefficients of ``exp(j k_par . r)``. With it the scattered
+        formulation reproduces the total-field one exactly at normal
+        incidence.
     i : int
         Element index of the layer in ``PreparedStack.ops`` / ``bg``.
     bg : BackgroundField
@@ -185,28 +175,16 @@ def layer_source(layer: PatternedLayer, i: int, bg: BackgroundField,
         Lattice vectors (rectangular).
     m_flat, n_flat : torch.Tensor
         Harmonic index map.
-    reg : float
-        ``Config.grazing_eps_reg``.
-    dtype : torch.dtype
-        Real solver dtype.
-    qfact : Block2x2, optional
-        TVF correction ``Q - Q0`` of the layer. The TVF rule describes the
-        ``D``-``E`` relation of the *total* field, so the source must carry
-        it for ``E_inc`` too: ``f_u += Qfact (phi E_x, phi E_y)`` with
-        ``phi`` the Fourier coefficients of ``exp(j k_par . r)``. With it the
-        scattered formulation reproduces the total-field one exactly at
-        normal incidence.
     """
-    device = m_flat.device
-    eps_grid, eps_void = _layer_eps(layer, reg, dtype, device)   # [N_wl,1,1,Ny,Nx]
-    ny, nx = eps_grid.shape[-2:]
+    qfact = source.qfact
+    ny, nx = source.d_eps.shape[-2:]
+    d_eps = source.d_eps.reshape(-1, 1, 1, ny, nx)                # [N_wl,1,1,Ny,Nx]
     k0 = 2 * torch.pi / bg.wavelength                             # [N_wl,1,1]
     phase = _grid_phase(pml, bg.kx0, bg.ky0, k0, a1, a2, ny, nx)   # [*B,Ny,Nx]
-    g_hat = torch.fft.fft2((eps_grid - eps_void) * phase, norm="forward")
+    g_hat = torch.fft.fft2(d_eps * phase, norm="forward")
     g = g_hat[..., n_flat % ny, m_flat % nx][..., None]          # [*B,Nh,1]
 
-    eps_conv = Block(Block.DENSE, convolution_matrix(eps_grid, m_flat, n_flat))
-    h = solve_vec(eps_conv, g)                                    # [[eps]]^-1 g
+    h = solve_vec(source.eps_conv, g)                             # [[eps]]^-1 g
     kxh, kyh = apply_vec(Kx, h), apply_vec(Ky, h)
 
     if qfact is not None:
@@ -251,8 +229,14 @@ def modal_affine(op: ModalOperator, background: Background, src: SourceTerms) ->
     Nh2 = op.lam.shape[-1]
     k0 = 2 * torch.pi / background.wvl.reshape(-1, *([1] * (op.lam.ndim - 1)))
     d = k0 * op.thickness                                         # [N_wl,1,..,1]
-    Phi = Block2x2(op.W, op.W, op.V, -op.V)
-    q = solve_vec(Phi, src.f)                                     # [*B,4Nh,4]
+    if op.source is not None and op.source.phi_lu is not None:
+        LU, piv = op.source.phi_lu                                # factorized in prepare()
+        batch = torch.broadcast_shapes(LU.shape[:-2], src.f.shape[:-2])
+        q = torch.linalg.lu_solve(LU.expand(*batch, *LU.shape[-2:]),
+                                  piv.expand(*batch, piv.shape[-1]),
+                                  src.f.expand(*batch, *src.f.shape[-2:]).to(LU.dtype))
+    else:
+        q = solve_vec(Block2x2(op.W, op.W, op.V, -op.V), src.f)   # [*B,4Nh,4]
     gp, gm = q[..., :Nh2, :], q[..., Nh2:, :]
     lam = op.lam[..., :, None]                                    # [*B,2Nh,1]
     mu = src.lam_bg[..., None, None]                              # [*B,1,1]
@@ -278,7 +262,8 @@ def _affine_slice(op: TransferOperator, src: SourceTerms, k0, h) -> AffineS:
     plus ``e = left^-1 p``.
     """
     Nh = op.Nh
-    A = system_matrix(op.P, op.Q).to_dense(Nh)                    # [*B',4Nh,4Nh]
+    A_blocks = system_matrix(op.P, op.Q)
+    A = A_blocks.to_dense(Nh)                                     # [*B',4Nh,4Nh]
     f = src.f
     batch = torch.broadcast_shapes(A.shape[:-2], f.shape[:-2])
     A, f = A.expand(*batch, *A.shape[-2:]), f.expand(*batch, *f.shape[-2:])
@@ -291,7 +276,7 @@ def _affine_slice(op: TransferOperator, src: SourceTerms, k0, h) -> AffineS:
     aug[..., :n4, n4:] = f.to(A.dtype)
     aug[..., n4:, n4:] = torch.diag_embed(gamma.to(A.dtype))
     E = torch.linalg.matrix_exp(aug * kh[..., None, None])
-    T = Block2x2.from_dense(E[..., :n4, :n4], system_matrix(op.P, op.Q))
+    T = Block2x2.from_dense(E[..., :n4, :n4], A_blocks)
     p = E[..., :n4, n4:]
     back = torch.exp(mu * kh)[..., None, None]
     p = torch.cat([p[..., :2], p[..., 2:] * back], dim=-1)
@@ -301,8 +286,10 @@ def _affine_slice(op: TransferOperator, src: SourceTerms, k0, h) -> AffineS:
     TV0_s, TV0_u = T.b @ V0, T.d @ V0
     left = Block2x2(W0, -(TW0_s - TV0_s), V0, -(TW0_u - TV0_u))
     right = Block2x2(TW0_s + TV0_s, -W0, TW0_u + TV0_u, V0)
-    M = left.solve(right)
-    e = solve_vec(left, p)                                        # [c_R+; c_L-] part
+    # One factorization of `left` for the S-matrix and the source vector.
+    X = torch.linalg.solve(left.to_dense(Nh), torch.cat(_bcast(right.to_dense(Nh), p), dim=-1))
+    M = Block2x2.from_dense(X[..., :n4], right)                   # [c_R+; c_L-] = M [c_L+; c_R-]
+    e = X[..., n4:]
     S = Block2x2(M.c, M.d, M.a, M.b)
     Nh2 = 2 * Nh
     return AffineS(S, e_L=e[..., Nh2:, :], e_R=e[..., :Nh2, :])

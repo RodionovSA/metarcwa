@@ -236,8 +236,8 @@ def compute_isotropic(epsilon_grid: torch.Tensor,
                       m_flat: torch.Tensor, n_flat: torch.Tensor,
                       kx: torch.Tensor | Block, ky: torch.Tensor | Block,
                       tvf_fields: tuple[torch.Tensor, torch.Tensor] | None = None,
-                      return_qfact: bool = False,
-                      ) -> Tuple[Block2x2, Block2x2] | Tuple[Block2x2, Block2x2, Block2x2 | None]:
+                      return_parts: bool = False,
+                      ) -> Tuple[Block2x2, Block2x2] | Tuple[Block2x2, Block2x2, Block, Block2x2 | None]:
     """
     Build the P and Q operators for an isotropic patterned layer.
 
@@ -265,10 +265,11 @@ def compute_isotropic(epsilon_grid: torch.Tensor,
              B may be 1 (wavelength-independent field, broadcast downstream)
              or match the batch of epsilon_conv. ``None`` (default) uses the plain 
              Laurent rule (no correction).
-    return_qfact : bool, optional
-        Also return the TVF correction ``Qfact = Q - Q0`` (``None`` without
-        TVF). The PML scattered-field source applies it to the incident
-        field (``metarcwa.solver.scattered``).
+    return_parts : bool, optional
+        Also return the convolution matrix ``[[eps]]`` and the TVF
+        correction ``Qfact = Q - Q0`` (``None`` without TVF), i.e.
+        ``(P, Q, epsilon_conv, Qfact)``. The PML scattered-field source is
+        built from them (``metarcwa.solver.scattered``).
 
     Returns
     -------
@@ -297,11 +298,11 @@ def compute_isotropic(epsilon_grid: torch.Tensor,
         epsilon_inv_conv = Block(Block.DENSE,
                                  convolution_matrix(1.0 / epsilon_grid, m_flat, n_flat))
         Axx, Axy, Ayx, Ayy = compute_A(Tx, Ty, m_flat, n_flat)
-        if return_qfact:
+        if return_parts:
             Qfact = compute_Qfact(epsilon_conv, epsilon_inv_conv, Axx, Axy, Ayx, Ayy)
             Q = compute_Q0(Kx, Ky, epsilon_conv) + Qfact
         else:
             Q = compute_Q(Kx, Ky, epsilon_conv, epsilon_inv_conv, Axx, Axy, Ayx, Ayy)
-    if return_qfact:
-        return P, Q, Qfact
+    if return_parts:
+        return P, Q, epsilon_conv, Qfact
     return P, Q

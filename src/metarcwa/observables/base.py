@@ -140,6 +140,9 @@ class Observables:
         self._R_in: Block2x2 | None = None
         self._R_out: dict[Kind, Block2x2] = {}
         self._jones_full: dict[Kind, Block2x2] = {}
+        # PML scattered-field formulation: per-face grid fields, specular Jones.
+        self._scattered_field: dict[Kind, torch.Tensor] = {}
+        self._scattered_jones: dict[Tuple[Kind, Region], torch.Tensor] = {}
 
     # -- harmonic order lookup ---------------------------------------------
 
@@ -274,9 +277,11 @@ class Observables:
                 "harmonics are not plane-wave modes of the half-spaces."
             )
         if self.modal.background is not None:
-            bg_t = self._background_face(kind)[..., :2, :]
-            sc_t = self._project_specular(kind, region)
-            return self._sp_solve(kind, bg_t + sc_t)
+            if (kind, region) not in self._scattered_jones:
+                bg_t = self._background_face(kind)[..., :2, :]
+                sc_t = self._project_specular(kind, region)
+                self._scattered_jones[kind, region] = self._sp_solve(kind, bg_t + sc_t)
+            return self._scattered_jones[kind, region]
         S_sp = self._jones_operator(kind)
         i_in, i_out = self._order_index(in_order), self._order_index(out_order)
         Jss, Jsp = _leaf_element(S_sp.a, i_out, i_in), _leaf_element(S_sp.b, i_out, i_in)
@@ -445,12 +450,15 @@ class Observables:
             convention puts pixel ``(j, i)`` at ``(y, x) = (j py/Ny, i px/Nx)``
             (``exp(j k_par . r)`` of the source uses it). Along a
             periodic axis the Bloch factor ``exp(j k_par . r)`` is omitted
-            (it is common to every field and drops out of fluxes).
+            (it is common to every field and drops out of fluxes). Cached
+            per face; do not modify the returned tensor in place.
         """
-        s, u = self.scattered_coefficients(kind)
-        Nh = s.shape[-2] // 2
-        comps = [s[..., :Nh, :], s[..., Nh:, :], u[..., :Nh, :], u[..., Nh:, :]]
-        return torch.stack([self._grid(c) for c in comps], dim=-4)
+        if kind not in self._scattered_field:
+            s, u = self.scattered_coefficients(kind)
+            Nh = s.shape[-2] // 2
+            comps = [s[..., :Nh, :], s[..., Nh:, :], u[..., :Nh, :], u[..., Nh:, :]]
+            self._scattered_field[kind] = torch.stack([self._grid(c) for c in comps], dim=-4)
+        return self._scattered_field[kind]
 
     def _mask(self, region: Region) -> torch.Tensor:
         ls = self.modal.prepared.layersolver
