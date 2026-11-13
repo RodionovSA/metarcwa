@@ -12,7 +12,8 @@ it runs on the GPU, and the whole pipeline (geometry → S-matrix → R/T) is di
 - **Fast Fourier factorization**: Laurent/inverse rules (Li 1996) with Tangent Vector Field (TVF) normal-vector fields (`Jones`, `Pol`, `Normal`, `Jones_direct`).
 - **Redheffer star-product S-matrices**: stable for thick and lossy layers. Lazy SCALAR/DIAG/DENSE block algebra avoids dense `N_h × N_h` allocations.
 - **Batched sweeps**: wavelength × θ × φ, plus batched geometry.
-- **Observables**: s/p Jones matrices, reflection/transmission amplitudes per diffraction order.
+- **Lateral PML for isolated structures**: `Stack(pml=PML(width=...))` turns a rectangular supercell into an aperiodic problem (single scatterers, finite arrays, waveguides). A scattered-field formulation handles any angle of incidence.
+- **Observables**: s/p Jones matrices, reflection/transmission amplitudes per diffraction order. With a PML: specular amplitudes, scattered power, extinction and the angular scattering pattern.
 - **Config**: `Config` dataclass with YAML round-trip (`Config.from_yaml("config.yaml")`).
 
 ## Installation
@@ -80,8 +81,8 @@ With `modesolver="matexp"` this split is reversed: setup is cheap and `run()` do
 
 ## Examples & docs
 
-- `examples/`: uniform layer and interface (validated against TMM/Fresnel), 1D/2D gratings, factorization and solver comparisons, convergence.
-- `docs/`: theory and implementation notes. Start with `rcwa_core.md`, then `factorization.md`, `tvf.md`, `eigenproblem.md`, `matrixexp.md`, `smatrix.md`, `blockmatrix.md`.
+- `examples/`: uniform layer and interface (validated against TMM/Fresnel), 1D/2D gratings, factorization and solver comparisons, convergence, PML for isolated structures (normal and oblique incidence).
+- `docs/`: theory and implementation notes. Start with `rcwa_core.md`, then `factorization.md`, `tvf.md`, `eigenproblem.md`, `matrixexp.md`, `smatrix.md`, `blockmatrix.md`, `PML.md`.
 
 Conventions: `exp(−jωt)` time dependence; all wavevectors are k0-normalized; the permittivity grid is `[…, Ny, Nx]`, with `Nx` along `a1`.
 

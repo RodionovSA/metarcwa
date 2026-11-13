@@ -29,6 +29,5 @@
 - No test files were added (per your instruction). The tests listed in PLAN.md for this phase
   (Fresnel, agreement with the homogeneous-stack solver) correspond to the checks above and
   are still to be written as pytest tests.
-- PLAN.md Phase 3 says `_branch_select_direction` is done and used for half-spaces under PML,
-  but it does not exist anywhere in the code (it only appears in PLAN.md in commit 5b60d5b).
-  I did not add it; please check whether it was lost.
+- `_branch_select_direction` (PLAN.md Phase 3) is not in the code: it was removed on purpose
+  (PLAN.md now says so).

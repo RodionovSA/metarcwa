@@ -21,6 +21,13 @@ excitation needs, in a :class:`ModalSolution` that also retains the
 reconstruction via :class:`FieldSolution`) can reach every layer's modes
 without re-solving.
 
+With a lateral PML and ``Config.pml_formulation == "scattered"`` (the PML
+default, ``docs/PML.md``) :func:`run` additionally solves the one-harmonic
+background stack (the incident field), builds every patterned layer's source
+vectors and composes affine S-matrices; the :class:`ModalSolution` then also
+carries the scattered waves ``e_L``/``e_R`` and the ``background``. All of
+that depends on the source only and stays cheap relative to :func:`prepare`.
+
 There is a single solver for both regular (batched wavelength/angle sweep)
 runs and inverse-design optimization steps — they differ only in autograd
 context (``torch.no_grad()`` vs a retained graph), not in structure.
@@ -385,6 +392,10 @@ def run(prepared: PreparedStack) -> ModalSolution:
     (``S11`` reflection, ``S21`` transmission) is retained in the returned
     :class:`ModalSolution` — the ``S12``/``S22`` blocks are unused for
     left-side excitation and are left to be garbage-collected.
+
+    Under the PML scattered-field formulation the composition also carries
+    the layers' source vectors (:func:`_run_scattered`) and the solution
+    holds ``e_L``, ``e_R`` and ``background`` as well.
 
     Parameters
     ----------

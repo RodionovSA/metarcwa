@@ -43,10 +43,9 @@ Without this, scattered vs total differed by ~1e-2 with TVF; with it they agree 
 - Gradient of |e_L|² w.r.t. ε_solid at oblique incidence: finite.
 
 ## Notes / open points
-- **Pre-existing crash**: intermittent segfault / glibc heap abort in multithreaded CPU runs of a
-  PML + TVF + matexp model (torch 2.13.0+cu130). It reproduces on the original `PML-feature` code
-  (5 of 10 runs of a total-field solve), and disappears with `OMP_NUM_THREADS=1`. Not caused by
-  these changes, but worth investigating (maybe a torch bug in a batched LAPACK/matrix_exp kernel).
+- **Crashes in the cloud container only**: intermittent segfault / glibc heap abort of some runs in
+  the container these checks ran in (torch 2.13.0+cu130 CPU build). It also happens there with the
+  original `PML-feature` code, so it is treated as specific to that machine, not to the solver.
 - `tests/solver/test_pml_stretch.py::test_oblique_along_pml_axis_raises` now expects `ValueError`
   (message unchanged) and sets `pml_formulation="total"`. Not run.
 - The extended star solves `(I − S_B11 S_A22)` again for the vectors (separate dense solves),

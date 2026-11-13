@@ -3,6 +3,9 @@
 Follow-up to the review of `PML-feature-Claude`. Ordered from small to large; each step is one
 commit and is checked with small probe scripts (the full pytest suite is not run).
 
+**Status: all steps done** (item 8 dropped, see below). Only `tests/solver/test_pml_scattered.py`
+was run from the test suite.
+
 ## Step 1 — Bugs
 
 1. **Uniform stack + PML crashes `Observables`** under the scattered formulation (`e_L`/`e_R` are
@@ -34,6 +37,9 @@ commit and is checked with small probe scripts (the full pytest suite is not run
 12. `_affine_slice`: one factorization for the S-matrix and the source vector.
 13. `AffineS.star`: one factorization of `(I − S_B11 S_A22)` / `(I − S_A22 S_B11)` for the matrix
     and vector right-hand sides.
+
+Also done here: the LU of the gap matrix `Φ` of eigenmode layers is computed in `prepare()` and
+reused for every source vector (`SourceData.phi_lu`).
 
 ## Step 4 — Shared basis for uniform media under PML
 

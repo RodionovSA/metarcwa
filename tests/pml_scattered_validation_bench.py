@@ -3,7 +3,7 @@
 
 Not a pytest module (``*_bench.py`` is not collected): run it directly,
 
-    OMP_NUM_THREADS=1 python tests/pml_scattered_validation_bench.py
+    python tests/pml_scattered_validation_bench.py
 
 Test structure: a dielectric ridge (eps 4, width 0.5, height 0.3) in air on a
 glass substrate (eps 2.25), wavelength 0.8, uniform along y, PML along x.

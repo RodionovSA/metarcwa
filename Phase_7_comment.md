@@ -2,8 +2,10 @@
 
 ## What was done
 - `Config.pml_formulation` now defaults to `"scattered"` (PLAN.md). `"total"` remains for validation.
-  At normal incidence both give the same S-matrix, so `Observables` results of the Phase 4 tests
-  are unchanged; `run()` additionally does the (cheap) background + source work.
+  At normal incidence both give the same S-matrix; `run()` additionally does the (cheap)
+  background + source work. *Correction:* as committed in this phase, `Observables` crashed for a
+  PML stack with no patterned layer (the uniform-stack tests of Phase 4); fixed later, see
+  `FIX_PLAN.md` step 1.
 - Validation (numbers below). The runnable version is `tests/pml_scattered_validation_bench.py`,
   added in the Phase 8 commit because it uses the Phase 8 `Observables` API
   (`jones()` under the scattered formulation, `background_jones()`).
@@ -36,4 +38,3 @@ limit as an (independent) large periodic supercell, at the 1e-3 level for amplit
 - The remaining ~1e-3–1e-2 spread with L comes mostly from the observable: the projection over the
   cell window truncates the slowly decaying lateral tails of the scattered field. Wider PMLs reduce
   it (w = 3 at L = 16 is best). A physical-region-only projection is offered in Phase 8.
-- All runs used `OMP_NUM_THREADS` ≤ 4; see the crash note in `Phase_6_comment.md`.

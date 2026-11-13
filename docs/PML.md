@@ -49,7 +49,7 @@ $$
 
 The first is the profile of [fmmax](https://github.com/facebookresearch/fmmax) and the default ($a_\text{max} = 4$, $p = 4$, $\sigma_\text{max} = 1$). Its real factor compresses space inside the PML and damps evanescent waves, which a purely imaginary stretch, such as the second profile, does not attenuate. Both are continuous, including across the cell edge where the two PMLs of neighbouring cells meet.
 
-Without a real stretch, an evanescent tail that reaches the cell edge couples to the neighbouring cell through the complex coordinate. For a weakly guided slab mode this produced a spurious gain $\sim 50\times$ larger than the PML loss with the default profile, and the mode was labelled with the opposite sign of $k_z$. S-matrices are not affected (the mode labelling does not change a finite layer's S-matrix), but guided-mode analysis is. Use a profile with real stretch for guided or evanescent-dominated problems.
+Without a real stretch, an evanescent tail that reaches the cell edge couples to the neighbouring cell through the complex coordinate. For a weakly guided slab mode this produced a spurious gain more than an order of magnitude larger than the PML loss with the default profile ($13$–$18\times$ for cell $3$, PML width $0.75$), and the mode was labelled with the opposite sign of $k_z$. The labelling itself does not change a finite layer's S-matrix; the coupling to the neighbouring cell is a (small) truncation error of the model, and it matters most for guided-mode analysis. Use a profile with real stretch for guided or evanescent-dominated problems.
 
 **Choosing parameters.** Two test problems were swept at wavelength $1$: a weakly guided slab (index $1.6/1.45$, evanescent decay length $0.45$, cell $3$, PML width $0.75$), sensitive to evanescent tails, and an isolated dielectric ridge on a substrate, sensitive to radiated waves. The defaults lie in the region that is good for both:
 
@@ -282,7 +282,7 @@ The expensive/cheap split is preserved: eigendecompositions stay in `prepare()`,
 
 ---
 
-## Proposed API
+## API
 
 The PML is a property of the supercell, so it is attached to the `Stack` next to the `Lattice`. A single `PML` object selects the implementation, so that other routes (e.g. a uniaxial PML material) can be added later without changing user code.
 

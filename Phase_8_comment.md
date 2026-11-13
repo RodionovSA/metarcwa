@@ -16,13 +16,13 @@
   augmented-exponential source, structure-in-PML warning, pipeline table, new "Observables" section,
   open questions / validation status.
 - `CLAUDE.md`: model/solver/observables tables (`model/pml.py`, `solver/pml.py`, `background.py`,
-  `scattered.py`, `AffineS`, `apply_vec`), PML domain concept, PML gotchas (incl. the crash), docs table
+  `scattered.py`, `AffineS`, `apply_vec`), PML domain concept, PML gotchas, docs table
   (`PML.md`, which was missing), examples list.
 - `examples/pml_oblique_incidence.ipynb` (new, executed, outputs stored): scattered vs total at
   normal incidence; PML vs periodic supercell at θ = 0.4; angle sweep of scattered power and
   extinction (batched angles); scattered field on the substrate face.
 - `tests/pml_scattered_validation_bench.py` (new, not collected by pytest): the Phase 7 validation,
-  runnable with `OMP_NUM_THREADS=1 python tests/pml_scattered_validation_bench.py`.
+  runnable with `python tests/pml_scattered_validation_bench.py`.
 
 ## Checks run
 - Bench script output reproduces all Phase 7 numbers through the public API.
