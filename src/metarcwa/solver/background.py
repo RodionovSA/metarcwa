@@ -153,7 +153,8 @@ def _medium_eps(element) -> torch.Tensor:
     return medium.eps
 
 
-def solve_background(model_spec: ModelSpec, grazing_eps_reg: float = 0.0) -> BackgroundField:
+def solve_background(model_spec: ModelSpec, grazing_eps_reg: float = 0.0,
+                     thicknesses=None) -> BackgroundField:
     """Solve the background stack for a unit s and a unit p incident wave.
 
     Parameters
@@ -164,6 +165,11 @@ def solve_background(model_spec: ModelSpec, grazing_eps_reg: float = 0.0) -> Bac
         ``Config.grazing_eps_reg``, applied to every background permittivity
         exactly as the main solver does, so the background is the exact
         solution of the regularized problem the solver solves.
+    thicknesses : sequence of torch.Tensor, optional
+        Thickness of every finite layer, overriding ``model_spec.layers``.
+        :func:`~metarcwa.solver.base.run` passes the thicknesses held by the
+        prepared operators, which are the ones the layer S-matrices use
+        (they differ after ``dataclasses.replace(op, thickness=...)``).
 
     Returns
     -------
@@ -183,6 +189,10 @@ def solve_background(model_spec: ModelSpec, grazing_eps_reg: float = 0.0) -> Bac
         W_l.append(V.eye_like())
         V_l.append(V)
         thick_l.append(None if isinstance(el, MediumSpec) else el.thickness)
+    if thicknesses is not None:
+        if len(thicknesses) != len(model_spec.layers):
+            raise ValueError("thicknesses must have one entry per finite layer")
+        thick_l[1:-1] = list(thicknesses)
 
     n_el = len(elements)
     L = n_el - 2

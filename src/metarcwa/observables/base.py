@@ -80,7 +80,7 @@ from metarcwa.solver.polarization import sp_matrix, sp_vectors
 from metarcwa.solver.blockmatrix import Block, Block2x2, apply_vec
 from metarcwa.solver.layersolver.homogeneous import homogeneous_kz
 from metarcwa.solver.layersolver._modes import _regularize_eps
-from metarcwa.solver.scattered import _grid_phase, physical_mask
+from metarcwa.solver.scattered import _grid_phase
 
 Kind = Literal["reflection", "transmission"]
 Pol = Literal["s", "p"]
@@ -458,7 +458,7 @@ class Observables:
         if region == "cell":
             return torch.ones(ny, nx, dtype=torch.bool, device=ls.m_flat.device)
         if region == "physical":
-            return physical_mask(self.modal.prepared.model_spec.pml, ny, nx, ls.m_flat.device)
+            return self.modal.prepared.model_spec.pml.physical_mask(ny, nx, ls.m_flat.device)
         raise ValueError(f"region must be 'cell' or 'physical', got {region!r}")
 
     def _phase(self) -> torch.Tensor:

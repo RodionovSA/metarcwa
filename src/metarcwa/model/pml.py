@@ -89,9 +89,30 @@ class PMLSpec:
     sy : Tensor | None
         Complex stretch factor along y, shape ``[Ny]`` (grid axis -2), or
         ``None`` if the PML is disabled along y.
+    physical_x, physical_y : Tensor | None
+        Boolean masks of the physical (non-PML) pixels along x (``[Nx]``)
+        and y (``[Ny]``): the pixels at zero distance into the PML, the same
+        test :meth:`PML.pad` uses. ``None`` for a disabled axis (all
+        physical), or when the spec was built by hand without them (then
+        ``s == 1`` up to round-off is used, see :meth:`physical_mask`).
     """
     sx: torch.Tensor | None
     sy: torch.Tensor | None
+    physical_x: torch.Tensor | None = None
+    physical_y: torch.Tensor | None = None
+
+    def physical_mask(self, ny: int, nx: int, device=None) -> torch.Tensor:
+        """Boolean ``[ny, nx]`` mask of the physical (non-PML) pixels."""
+        masks = []
+        for s, phys, n in ((self.sx, self.physical_x, nx), (self.sy, self.physical_y, ny)):
+            if s is None:
+                m = torch.ones(n, dtype=torch.bool, device=device)
+            elif phys is not None:
+                m = phys.to(device)
+            else:
+                m = torch.isclose(s, torch.ones_like(s)).to(device)
+            masks.append(m)
+        return masks[1][:, None] & masks[0][None, :]
 
 
 class PML(nn.Module):
@@ -179,16 +200,19 @@ class PML(nn.Module):
         s0 = self.profile(torch.zeros(1, dtype=px.dtype, device=px.device))
         if not torch.allclose(s0, torch.ones_like(s0)):
             raise ValueError(f"PML profile must satisfy s(0) = 1, got {s0.item()}")
-        s = []
+        s, phys = [], []
         for period, n, width in ((px, nx, self.width[0]), (py, ny, self.width[1])):
             if width == 0:
                 s.append(None)
+                phys.append(None)
                 continue
-            s_axis = self.profile(self._distance(period, n, width))
+            d = self._distance(period, n, width)
+            s_axis = self.profile(d)
             if (s_axis.real <= 0).any() or (s_axis.imag < 0).any():
                 raise ValueError("PML profile must satisfy Re s > 0 and Im s >= 0")
             s.append(s_axis)
-        return PMLSpec(sx=s[0], sy=s[1])
+            phys.append(d == 0)
+        return PMLSpec(sx=s[0], sy=s[1], physical_x=phys[0], physical_y=phys[1])
 
     def pad(self, pattern: torch.Tensor, lattice: Lattice) -> torch.Tensor:
         """Edge-pad ``pattern`` (``[..., Ny, Nx]``) into the PML region.

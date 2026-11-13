@@ -421,7 +421,9 @@ def _run_scattered(prepared: PreparedStack) -> ModalSolution:
     ops = prepared.ops
     spec = prepared.model_spec
     cfg = ls.config
-    bg = solve_background(spec, cfg.grazing_eps_reg)
+    # Thicknesses from the operators: they are what the layer S-matrices use.
+    bg = solve_background(spec, cfg.grazing_eps_reg,
+                          thicknesses=[op.thickness for op in ops[1:-1]])
 
     acc = AffineS(ls.smatrix(ops[0], left=True))
     for i, (layer, op) in enumerate(zip(spec.layers, ops[1:-1]), start=1):
@@ -434,8 +436,15 @@ def _run_scattered(prepared: PreparedStack) -> ModalSolution:
         else:
             acc = acc.star(AffineS(ls.smatrix(op)))
     acc = acc.star(AffineS(ls.smatrix(ops[-1], left=False)))
+    # No patterned layer -> no source: the scattered field is zero, not absent.
+    e_L, e_R = acc.e_L, acc.e_R
+    if e_L is None or e_R is None:
+        zeros = torch.zeros(*bg.kx0.shape, 2 * ls.m_flat.shape[0], 2,
+                            dtype=bg.c_plus[0].dtype, device=bg.kx0.device)
+        e_L = zeros if e_L is None else e_L
+        e_R = zeros if e_R is None else e_R
     return ModalSolution(S11=acc.S.a, S21=acc.S.c, prepared=prepared,
-                         e_L=acc.e_L, e_R=acc.e_R, background=bg)
+                         e_L=e_L, e_R=e_R, background=bg)
 
 class Solver:
     """Top-level RCWA solver — thin convenience wrapper over the functional

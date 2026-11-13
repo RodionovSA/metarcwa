@@ -133,17 +133,6 @@ def _layer_eps(layer: PatternedLayer, reg: float, dtype, device):
     return to_complex(eps_grid), to_complex(eps_void)
 
 
-def physical_mask(pml: PMLSpec, ny: int, nx: int, device=None) -> torch.Tensor:
-    """Boolean ``[ny, nx]`` mask of the physical (non-PML) pixels."""
-    mx = torch.ones(nx, dtype=torch.bool, device=device)
-    my = torch.ones(ny, dtype=torch.bool, device=device)
-    if pml.sx is not None:
-        mx = (pml.sx == 1).to(device)
-    if pml.sy is not None:
-        my = (pml.sy == 1).to(device)
-    return my[:, None] & mx[None, :]
-
-
 def check_structure_in_physical_region(layer: PatternedLayer, pml: PMLSpec,
                                         reg: float, dtype, device) -> None:
     """Warn if ``Delta eps`` reaches the PML (the scattered-field source must
@@ -151,8 +140,9 @@ def check_structure_in_physical_region(layer: PatternedLayer, pml: PMLSpec,
     eps_grid, eps_void = _layer_eps(layer, reg, dtype, device)
     d_eps = (eps_grid - eps_void).detach().abs()
     ny, nx = d_eps.shape[-2:]
-    outside = ~physical_mask(pml, ny, nx, d_eps.device)
-    if outside.any() and (d_eps[..., outside] > 0).any():
+    outside = ~pml.physical_mask(ny, nx, d_eps.device)
+    # Relative tolerance: a soft (e.g. sigmoid) pattern is never exactly zero.
+    if outside.any() and (d_eps[..., outside] > _DEPS_TOL * d_eps.amax()).any():
         warnings.warn(
             "A patterned layer differs from its medium_void inside the PML. "
             "The scattered-field formulation assumes the structure "
@@ -161,6 +151,10 @@ def check_structure_in_physical_region(layer: PatternedLayer, pml: PMLSpec,
             "pattern's void medium the material that crosses the PML.",
             RuntimeWarning, stacklevel=3,
         )
+
+
+#: |Delta eps| in the PML above this fraction of its maximum counts as structure.
+_DEPS_TOL = 1e-4
 
 
 def _bcast(*ts: torch.Tensor) -> list[torch.Tensor]:
